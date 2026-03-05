@@ -15,18 +15,10 @@ def register(mcp: FastMCP) -> None:
     async def perplexity_search(
         query: str,
         detail_level: str = "normal",
+        model: Optional[str] = None,
         ctx: Optional[Context] = None
     ) -> dict:
-        """
-        Recherche internet via Perplexity AI.
-
-        Args:
-            query: La question ou requête de recherche
-            detail_level: Niveau de détail ('brief', 'normal', 'detailed')
-
-        Returns:
-            La réponse de l'IA (texte Markdown)
-        """
+        """Recherche internet via Perplexity AI. Niveaux : brief, normal, detailed. Retourne du Markdown avec citations."""
         try:
             check_tool_access("perplexity_search")
 
@@ -47,8 +39,11 @@ def register(mcp: FastMCP) -> None:
                 "Content-Type": "application/json"
             }
 
+            # Modèle : param optionnel, sinon config, sinon défaut
+            effective_model = model or settings.perplexity_model
+
             payload = {
-                "model": settings.perplexity_model,
+                "model": effective_model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": query}
@@ -56,8 +51,9 @@ def register(mcp: FastMCP) -> None:
             }
 
             url = f"{settings.perplexity_api_url.rstrip('/')}/chat/completions"
+            timeout = float(settings.tool_default_timeout)
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
@@ -69,6 +65,7 @@ def register(mcp: FastMCP) -> None:
 
                 return {
                     "status": "success",
+                    "model": effective_model,
                     "content": content,
                     "citations": data.get("citations", []),
                     "usage": data.get("usage", {})

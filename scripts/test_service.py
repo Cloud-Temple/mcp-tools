@@ -449,8 +449,8 @@ async def test_04_network():
 
 
 async def test_05_http():
-    """Test 5: Outil http"""
-    print("\n🌐 TEST 5 — Outil http")
+    """Test 5: Outil http (sandbox Docker + anti-SSRF)"""
+    print("\n🌐 TEST 5 — Outil http (sandbox)")
     print("=" * 50)
 
     # 5a. GET simple
@@ -461,7 +461,15 @@ async def test_05_http():
     except Exception as e:
         record("http GET httpbin.org", False, str(e))
 
-    # 5b. POST avec body JSON
+    # 5b. Sandbox active
+    try:
+        data = await call_tool("http", {"url": "https://httpbin.org/get"})
+        is_sandbox = data.get("sandbox", None)
+        record("http sandbox active", is_sandbox is True, f"sandbox={is_sandbox}")
+    except Exception as e:
+        record("http sandbox active", False, str(e))
+
+    # 5c. POST avec body JSON
     try:
         data = await call_tool("http", {
             "url": "https://httpbin.org/post",
@@ -469,17 +477,75 @@ async def test_05_http():
             "json_body": {"test": "mcp-tools", "value": 42}
         })
         ok = data.get("status") == "success" and data.get("status_code") == 200
-        record("http POST httpbin.org", ok, f"HTTP {data.get('status_code')}")
+        body = data.get("body", "")
+        has_json = "mcp-tools" in body
+        record("http POST JSON", ok and has_json, f"HTTP {data.get('status_code')}, body contient data={has_json}")
     except Exception as e:
-        record("http POST httpbin.org", False, str(e))
+        record("http POST JSON", False, str(e))
 
-    # 5c. Méthode invalide
+    # 5d. POST avec body texte brut
+    try:
+        data = await call_tool("http", {
+            "url": "https://httpbin.org/post",
+            "method": "POST",
+            "body": "Hello from MCP Tools"
+        })
+        ok = data.get("status") == "success" and data.get("status_code") == 200
+        record("http POST body texte", ok, f"HTTP {data.get('status_code')}")
+    except Exception as e:
+        record("http POST body texte", False, str(e))
+
+    # 5e. HTTP 404 → status success (réponse reçue, pas une erreur transport)
+    try:
+        data = await call_tool("http", {"url": "https://httpbin.org/status/404"})
+        ok = data.get("status") == "success" and data.get("status_code") == 404
+        record("http 404 = success", ok, f"status={data.get('status')}, code={data.get('status_code')}")
+    except Exception as e:
+        record("http 404 = success", False, str(e))
+
+    # 5f. Méthode invalide
     try:
         data = await call_tool("http", {"url": "https://httpbin.org/get", "method": "INVALID"})
         ok = data.get("status") == "error"
-        record("http méthode invalide", ok, data.get("message", "?"))
+        record("http méthode invalide", ok, data.get("message", "?")[:60])
     except Exception as e:
         record("http méthode invalide", False, str(e))
+
+    # 5g. Anti-SSRF : 127.0.0.1 bloqué
+    try:
+        data = await call_tool("http", {"url": "http://127.0.0.1:8080/test"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("http SSRF 127.0.0.1 bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("http SSRF 127.0.0.1 bloqué", False, str(e))
+
+    # 5h. Anti-SSRF : 10.0.0.1 bloqué
+    try:
+        data = await call_tool("http", {"url": "http://10.0.0.1/admin"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("http SSRF 10.0.0.1 bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("http SSRF 10.0.0.1 bloqué", False, str(e))
+
+    # 5i. Anti-SSRF : 169.254.169.254 (metadata cloud) bloqué
+    try:
+        data = await call_tool("http", {"url": "http://169.254.169.254/latest/meta-data"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("http SSRF metadata cloud bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("http SSRF metadata cloud bloqué", False, str(e))
+
+    # 5j. Auth bearer (httpbin renvoie les headers)
+    try:
+        data = await call_tool("http", {
+            "url": "https://httpbin.org/headers",
+            "auth_type": "bearer",
+            "auth_value": "test_token_123"
+        })
+        ok = data.get("status") == "success" and "test_token_123" in data.get("body", "")
+        record("http auth bearer", ok, f"token visible dans headers={ok}")
+    except Exception as e:
+        record("http auth bearer", False, str(e))
 
 
 async def test_06_perplexity():

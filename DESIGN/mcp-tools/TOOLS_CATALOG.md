@@ -9,18 +9,18 @@
 
 ### Infra (4 tools)
 
-| Tool       | Opérations                                                                                     | Params clés                                                                                                     | Source                             |
-| ---------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **ssh**    | `exec`, `upload`, `download`, `status`                                                         | host, username, auth_type (password/key/agent), command, sudo, timeout (60s max), remote_path, local_path       | Dragonfly `ssh_client`             |
-| **shell**  | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL) | command, shell (bash/sh), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
-| **network**| `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites. | From scratch (sandbox Docker)      |
-| **docker** | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                 | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
+| Tool        | Opérations                                                                                                      | Params clés                                                                                                     | Source                             |
+| ----------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **ssh**     | `exec`, `upload`, `download`, `status`                                                                          | host, username, auth_type (password/key/agent), command, sudo, timeout (60s max), remote_path, local_path       | Dragonfly `ssh_client`             |
+| **shell**   | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL)                  | command, shell (bash/sh), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
+| **network** | `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites.                       | From scratch (sandbox Docker)      |
+| **docker**  | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                                  | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
 
 ### Réseau (1 tool)
 
-| Tool     | Opérations                          | Params clés                                                                                                | Source                  |
-| -------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------- |
-| **http** | GET, POST, PUT, DELETE, PATCH, HEAD | url, method, headers, json, body, auth_type (basic/bearer/api_key), timeout (30s), max_retries, verify_ssl | Dragonfly `http_client` |
+| Tool     | Opérations                                                                                                    | Params clés                                                                                              | Source                      |
+| -------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------- |
+| **http** | GET, POST, PUT, DELETE, PATCH, HEAD — Sandbox Docker (--network=bridge, anti-SSRF, RFC 1918 + résolution DNS) | url, method, headers, body, json_body, auth_type (basic/bearer/api_key), auth_value, timeout, verify_ssl | Sandbox curl (from scratch) |
 
 ### Données (1 tool)
 
@@ -46,7 +46,7 @@
 
 | Tool                  | Description                              | Params clés                                 | Source                             |
 | --------------------- | ---------------------------------------- | ------------------------------------------- | ---------------------------------- |
-| **perplexity_search** | Recherche internet avec niveau de détail | query, detail_level (brief/normal/detailed) | perplexity-mcp `search`            |
+| **perplexity_search** | Recherche internet avec niveau de détail | query, detail_level (brief/normal/detailed), model (optionnel) | perplexity-mcp `search`            |
 | **perplexity_doc**    | Documentation d'une techno/lib/API       | query, context                              | perplexity-mcp `get_documentation` |
 | **perplexity_chat**   | Conversation continue avec historique    | message, chat_id (optionnel)                | perplexity-mcp `chat_perplexity`   |
 
@@ -117,13 +117,13 @@
 
 ## Mapping Persona → Tools
 
-| Persona                | Tools autorisés (via `tool_ids` du token)                                                                            |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Persona                | Tools autorisés (via `tool_ids` du token)                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **sre-operator**       | ssh, shell, http, network, docker, files, date, calc, git, s3, host_audit, ssh_diagnostics, perplexity_search, generate |
 | **security-auditor**   | http, network, ssh_diagnostics, host_audit, pdf_search, doc_scraper, perplexity_search, perplexity_doc                  |
 | **dba**                | ssh, db, sqlite, files, calc, date, perplexity_search, generate                                                         |
 | **monitoring-analyst** | http, network, calc, date, files, perplexity_search, generate                                                           |
-| **doc-writer**         | files, pdf2text, pdf_search, office_to_pdf, doc_scraper, generate, perplexity_doc, perplexity_chat                   |
+| **doc-writer**         | files, pdf2text, pdf_search, office_to_pdf, doc_scraper, generate, perplexity_doc, perplexity_chat                      |
 
 ---
 

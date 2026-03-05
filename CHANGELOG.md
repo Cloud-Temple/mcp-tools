@@ -4,6 +4,22 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] — 2026-03-05
+
+### Changed
+- **Tool `perplexity_search`** — Timeout depuis config (`settings.tool_default_timeout`), plus de hardcode. Nouveau param `model` optionnel (défaut : config `PERPLEXITY_MODEL`). Modèle effectif retourné dans la réponse
+- **Tools `system_health` et `system_about`** — Ajout `check_tool_access()` + pattern `try/except` pour cohérence avec tous les autres tools. Description `system_about` améliorée
+- **Tool `http` réécrit — Sandbox Docker + anti-SSRF** — Les requêtes HTTP sont désormais exécutées via `curl` dans un conteneur Docker éphémère (`--network=bridge`, `--read-only`, `--cap-drop=ALL`, `--user=sandbox`). Protection anti-SSRF complète :
+  - Résolution DNS côté serveur avant exécution
+  - Blocage RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), loopback (127.0.0.0/8), link-local (169.254.0.0/16 — metadata cloud), IPv6 privé
+  - Validation du schéma URL (http/https uniquement)
+- **Sémantique du status HTTP** — `status: "success"` = réponse reçue (même 404/500), `status: "error"` = erreur de transport uniquement (timeout, DNS, connexion, SSRF)
+- **Nouveau param `body`** — Body texte brut en plus de `json_body` (JSON)
+- **Nouveau param `auth_type` / `auth_value`** — Helpers d'authentification : `basic` (user:pass), `bearer` (token), `api_key` (X-API-Key)
+- **Timeout depuis config** — Plus aucun hardcode, utilise `settings.tool_max_timeout`
+- **Fallback local** — `SANDBOX_ENABLED=false` utilise httpx avec la même validation anti-SSRF
+- **Tests E2E** — 10 tests http (GET, sandbox, POST JSON, POST body, 404=success, méthode invalide, SSRF ×3, auth bearer)
+
 ## [0.1.1] — 2026-03-05
 
 ### Changed

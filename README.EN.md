@@ -108,7 +108,7 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | ------------------ | ---------------------------------------------------- |
 | `shell`            | Isolated Docker sandbox (bash, sh, python3, node, openssl) — no network |
 | `network`          | Network diagnostics in Docker sandbox (ping, traceroute, nslookup, dig) — RFC 1918 private IPs blocked |
-| `http`             | HTTP/REST client (GET, POST, PUT, DELETE, PATCH)     |
+| `http`             | HTTP/REST client in Docker sandbox (anti-SSRF, auth basic/bearer/api_key) — private IPs blocked |
 | `perplexity_search`| Internet search via Perplexity AI                    |
 | `system_health`    | Service health check                                 |
 | `system_about`     | Metadata and tool listing                            |
@@ -118,7 +118,8 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 - **WAF Caddy + Coraza**: OWASP CRS, security headers, rate limiting
 - **Bearer token auth**: Every /mcp request is authenticated
 - **`tool_ids`**: Token can restrict access to a subset of tools
-- **Docker sandbox**: Each shell command runs in an ephemeral isolated container (--network=none, --cap-drop=ALL, --read-only, non-root)
+- **Docker sandbox**: Each shell/network/http command runs in an ephemeral isolated container (--cap-drop=ALL, --read-only, non-root)
+- **Anti-SSRF**: DNS resolution + RFC 1918 / loopback / cloud metadata blocking for `http` and `network` tools
 - **Non-root user** in Docker
 - **Timeouts and limits** on all tools
 - **Automatic kill** of sandbox containers on timeout

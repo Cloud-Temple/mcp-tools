@@ -29,6 +29,7 @@ mcp = FastMCP(
 # Les outils s'enregistrent eux-mêmes auprès de l'instance `mcp`.
 
 from .tools import register_all_tools
+from .auth.context import check_tool_access
 
 register_all_tools(mcp)
 
@@ -40,48 +41,58 @@ register_all_tools(mcp)
 @mcp.tool()
 async def system_health() -> dict:
     """Vérifie l'état de santé du service MCP Tools. Retourne le statut, la version, le nombre d'outils et l'état de la sandbox."""
-    version = "dev"
-    version_file = Path(__file__).parent.parent.parent / "VERSION"
-    if version_file.exists():
-        version = version_file.read_text().strip()
+    try:
+        check_tool_access("system_health")
 
-    tools_count = len(mcp._tool_manager.list_tools())
+        version = "dev"
+        version_file = Path(__file__).parent.parent.parent / "VERSION"
+        if version_file.exists():
+            version = version_file.read_text().strip()
 
-    return {
-        "status": "ok",
-        "service_name": settings.mcp_server_name,
-        "version": version,
-        "tools_count": tools_count,
-        "sandbox_enabled": settings.sandbox_enabled,
-    }
+        tools_count = len(mcp._tool_manager.list_tools())
+
+        return {
+            "status": "ok",
+            "service_name": settings.mcp_server_name,
+            "version": version,
+            "tools_count": tools_count,
+            "sandbox_enabled": settings.sandbox_enabled,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @mcp.tool()
 async def system_about() -> dict:
-    """Informations sur le service MCP Tools."""
-    version = "dev"
-    version_file = Path(__file__).parent.parent.parent / "VERSION"
-    if version_file.exists():
-        version = version_file.read_text().strip()
+    """Informations détaillées sur le service MCP Tools : version, plateforme, liste complète des outils avec descriptions."""
+    try:
+        check_tool_access("system_about")
 
-    tools = []
-    for tool in mcp._tool_manager.list_tools():
-        # Extraire uniquement la première ligne du docstring
-        raw_desc = (tool.description or "").strip()
-        first_line = raw_desc.split("\n")[0].strip()
-        tools.append({
-            "name": tool.name,
-            "description": first_line,
-        })
+        version = "dev"
+        version_file = Path(__file__).parent.parent.parent / "VERSION"
+        if version_file.exists():
+            version = version_file.read_text().strip()
 
-    return {
-        "status": "ok",
-        "service_name": settings.mcp_server_name,
-        "version": version,
-        "python_version": platform.python_version(),
-        "platform": platform.platform(),
-        "tools_count": len(tools),
-        "tools": tools,
-    }
+        tools = []
+        for tool in mcp._tool_manager.list_tools():
+            # Extraire uniquement la première ligne du docstring
+            raw_desc = (tool.description or "").strip()
+            first_line = raw_desc.split("\n")[0].strip()
+            tools.append({
+                "name": tool.name,
+                "description": first_line,
+            })
+
+        return {
+            "status": "ok",
+            "service_name": settings.mcp_server_name,
+            "version": version,
+            "python_version": platform.python_version(),
+            "platform": platform.platform(),
+            "tools_count": len(tools),
+            "tools": tools,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # =============================================================================
