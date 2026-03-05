@@ -5,7 +5,7 @@ Script de recette end-to-end — MCP Tools
 
 Teste toutes les fonctionnalités du service MCP Tools via le protocole
 MCP Streamable HTTP (endpoint /mcp). Vérifie la connectivité, l'auth,
-et chaque outil implémenté (shell, ping, http, perplexity_search).
+et chaque outil implémenté (shell, network, http, perplexity_search).
 
 Usage:
     # Serveur local (défaut : http://localhost:8050)
@@ -28,7 +28,7 @@ Catégories de tests (5) :
     1. Connectivité     — REST /health + MCP system_health + system_about
     2. Authentification  — Sans token → 401, mauvais token → 401, admin → OK
     3. Outil shell       — Exécution de commandes
-    4. Outil ping        — ping, nslookup, dig
+    4. Outil network     — ping, traceroute, nslookup, dig (sandbox + RFC 1918)
     5. Outil http        — Requête GET externe
     6. Outil perplexity  — Recherche IA (si clé API configurée)
 
@@ -361,42 +361,91 @@ async def test_03_shell():
         record("shell timeout", False, str(e))
 
 
-async def test_04_ping():
-    """Test 4: Outil ping"""
-    print("\n📡 TEST 4 — Outil ping")
+async def test_04_network():
+    """Test 4: Outil network (sandbox Docker avec réseau)"""
+    print("\n📡 TEST 4 — Outil network (sandbox)")
     print("=" * 50)
 
-    # 4a. Ping localhost
+    # 4a. Ping IP publique (8.8.8.8)
     try:
-        data = await call_tool("ping", {"host": "127.0.0.1", "operation": "ping", "count": 2})
+        data = await call_tool("network", {"host": "8.8.8.8", "operation": "ping", "count": 2})
         ok = data.get("status") == "success"
-        record("ping 127.0.0.1", ok, f"{data.get('stdout', '')[:60]}...")
+        record("network ping 8.8.8.8", ok, f"{data.get('stdout', '')[:60]}...")
     except Exception as e:
-        record("ping 127.0.0.1", False, str(e))
+        record("network ping 8.8.8.8", False, str(e))
 
-    # 4b. nslookup google.com
+    # 4b. Sandbox active
     try:
-        data = await call_tool("ping", {"host": "google.com", "operation": "nslookup"})
+        data = await call_tool("network", {"host": "8.8.8.8", "operation": "ping", "count": 1})
+        is_sandbox = data.get("sandbox", None)
+        record("network sandbox active", is_sandbox is True, f"sandbox={is_sandbox}")
+    except Exception as e:
+        record("network sandbox active", False, str(e))
+
+    # 4c. nslookup google.com
+    try:
+        data = await call_tool("network", {"host": "google.com", "operation": "nslookup"})
         ok = data.get("status") == "success"
-        record("nslookup google.com", ok, f"{data.get('stdout', '')[:60]}...")
+        record("network nslookup google.com", ok, f"{data.get('stdout', '')[:60]}...")
     except Exception as e:
-        record("nslookup google.com", False, str(e))
+        record("network nslookup google.com", False, str(e))
 
-    # 4c. dig google.com
+    # 4d. dig google.com
     try:
-        data = await call_tool("ping", {"host": "google.com", "operation": "dig"})
+        data = await call_tool("network", {"host": "google.com", "operation": "dig"})
         ok = data.get("status") == "success"
-        record("dig google.com", ok, f"{data.get('stdout', '')[:60]}...")
+        record("network dig google.com", ok, f"{data.get('stdout', '')[:60]}...")
     except Exception as e:
-        record("dig google.com", False, str(e))
+        record("network dig google.com", False, str(e))
 
-    # 4d. Opération invalide
+    # 4e. traceroute (court, IP publique)
     try:
-        data = await call_tool("ping", {"host": "google.com", "operation": "invalid_op"})
+        data = await call_tool("network", {"host": "8.8.8.8", "operation": "traceroute", "timeout": 15})
+        # traceroute peut ne pas aboutir complètement, mais doit répondre
+        ok = data.get("status") in ("success", "error") and len(data.get("stdout", "")) > 0
+        record("network traceroute 8.8.8.8", ok, f"{data.get('stdout', '')[:60]}...")
+    except Exception as e:
+        record("network traceroute 8.8.8.8", False, str(e))
+
+    # 4f. Opération invalide
+    try:
+        data = await call_tool("network", {"host": "google.com", "operation": "invalid_op"})
         ok = data.get("status") == "error"
-        record("ping opération invalide", ok, data.get("message", "?"))
+        record("network opération invalide", ok, data.get("message", "?")[:60])
     except Exception as e:
-        record("ping opération invalide", False, str(e))
+        record("network opération invalide", False, str(e))
+
+    # 4g. RFC 1918 bloqué — 127.0.0.1 (loopback)
+    try:
+        data = await call_tool("network", {"host": "127.0.0.1", "operation": "ping"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("network RFC1918 127.0.0.1 bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("network RFC1918 127.0.0.1 bloqué", False, str(e))
+
+    # 4h. RFC 1918 bloqué — 10.0.0.1
+    try:
+        data = await call_tool("network", {"host": "10.0.0.1", "operation": "ping"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("network RFC1918 10.0.0.1 bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("network RFC1918 10.0.0.1 bloqué", False, str(e))
+
+    # 4i. RFC 1918 bloqué — 192.168.1.1
+    try:
+        data = await call_tool("network", {"host": "192.168.1.1", "operation": "ping"})
+        ok = data.get("status") == "error" and "privée" in data.get("message", "").lower()
+        record("network RFC1918 192.168.1.1 bloqué", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("network RFC1918 192.168.1.1 bloqué", False, str(e))
+
+    # 4j. Injection commande bloquée
+    try:
+        data = await call_tool("network", {"host": "8.8.8.8; echo hacked", "operation": "ping"})
+        ok = data.get("status") == "error" and "invalide" in data.get("message", "").lower()
+        record("network injection bloquée", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("network injection bloquée", False, str(e))
 
 
 async def test_05_http():
@@ -470,7 +519,7 @@ TEST_REGISTRY = {
     "connectivity": test_01_connectivity,
     "auth":         test_02_auth,
     "shell":        test_03_shell,
-    "ping":         test_04_ping,
+    "network":      test_04_network,
     "http":         test_05_http,
     "perplexity":   test_06_perplexity,
 }
@@ -510,7 +559,7 @@ async def run_all_tests(only: str = None):
         # Lancer tous les tests
         await test_02_auth()
         await test_03_shell()
-        await test_04_ping()
+        await test_04_network()
         await test_05_http()
         await test_06_perplexity()
 

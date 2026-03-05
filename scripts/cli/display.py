@@ -98,16 +98,19 @@ def show_shell_result(result: dict):
 
 
 # =============================================================================
-# Affichage outil ping
+# Affichage outil network
 # =============================================================================
 
-def show_ping_result(result: dict):
+def show_network_result(result: dict):
     status = result.get("status", "?")
+    operation = result.get("operation", "?")
+    host = result.get("host", "?")
     stdout = result.get("stdout", "")
     stderr = result.get("stderr", "")
 
     icon = "✅" if status == "success" else "❌"
-    console.print(f"\n{icon} [bold]Résultat ping[/bold]")
+    sandbox_tag = " [dim](sandbox)[/dim]" if result.get("sandbox") else ""
+    console.print(f"\n{icon} [bold]{operation}[/bold] → {host}{sandbox_tag}")
     if stdout.strip():
         console.print(stdout)
     if stderr.strip():

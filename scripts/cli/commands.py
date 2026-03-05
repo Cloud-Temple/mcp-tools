@@ -6,7 +6,7 @@ Usage :
     python scripts/mcp_cli.py health
     python scripts/mcp_cli.py about
     python scripts/mcp_cli.py run-shell "echo hello"
-    python scripts/mcp_cli.py ping google.com
+    python scripts/mcp_cli.py network ping google.com
     python scripts/mcp_cli.py http https://httpbin.org/get
     python scripts/mcp_cli.py search "Qu'est-ce que MCP ?"
     python scripts/mcp_cli.py shell
@@ -19,7 +19,7 @@ from .client import MCPClient
 from .display import (
     console, show_error, show_success, show_json,
     show_health_result, show_about_result,
-    show_shell_result, show_ping_result,
+    show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
 )
 
@@ -100,28 +100,112 @@ def run_shell_cmd(ctx, command, cwd, timeout, output_json):
 
 
 # =============================================================================
-# Outil ping
+# Outil network (groupe de sous-commandes)
 # =============================================================================
 
-@cli.command("ping")
-@click.argument("host")
-@click.option("--op", default="ping", type=click.Choice(["ping", "traceroute", "nslookup", "dig"]),
-              help="Opération réseau")
-@click.option("--count", "-c", default=4, type=int, help="Nombre de paquets (ping)")
-@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@cli.group("network")
 @click.pass_context
-def ping_cmd(ctx, host, op, count, output_json):
-    """📡 Diagnostic réseau (ping, nslookup, dig, traceroute)."""
+def network_group(ctx):
+    """📡 Diagnostic réseau en sandbox Docker (IPs privées RFC 1918 interdites).
+
+    Sous-commandes : ping, traceroute, dig, nslookup.
+
+    \b
+    Exemples :
+      network ping google.com
+      network ping 8.8.8.8 -c 2
+      network dig google.com
+      network traceroute 8.8.8.8
+      network nslookup google.com
+    """
+    pass
+
+
+def _run_network(ctx, host: str, operation: str, extra_args: str = "", timeout: int = 15, output_json: bool = False):
+    """Helper partagé pour toutes les sous-commandes network."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
-        result = await client.call_tool("ping", {
-            "host": host, "operation": op, "count": count
-        })
+        params = {"host": host, "operation": operation, "timeout": timeout}
+        if extra_args:
+            params["extra_args"] = extra_args
+        result = await client.call_tool("network", params)
         if output_json:
             show_json(result)
         else:
-            show_ping_result(result)
+            show_network_result(result)
     asyncio.run(_run())
+
+
+@network_group.command("ping", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.argument("host")
+@click.argument("extra", nargs=-1, type=click.UNPROCESSED)
+@click.option("--timeout", default=15, type=int, help="Timeout en secondes (max 30)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def network_ping(ctx, host, extra, timeout, output_json):
+    """🏓 Tester la connectivité (ICMP). Arguments passés directement à ping.
+
+    \b
+    Exemples :
+      network ping google.com
+      network ping 8.8.8.8 -c 2
+      network ping cloudflare.com -c 1 -W 3
+    """
+    _run_network(ctx, host, "ping", extra_args=" ".join(extra), timeout=timeout, output_json=output_json)
+
+
+@network_group.command("traceroute", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.argument("host")
+@click.argument("extra", nargs=-1, type=click.UNPROCESSED)
+@click.option("--timeout", default=15, type=int, help="Timeout en secondes (max 30)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def network_traceroute(ctx, host, extra, timeout, output_json):
+    """🗺️  Tracer le chemin réseau vers un host. Arguments passés directement.
+
+    \b
+    Exemples :
+      network traceroute google.com
+      network traceroute 8.8.8.8 -m 10
+    """
+    _run_network(ctx, host, "traceroute", extra_args=" ".join(extra), timeout=timeout, output_json=output_json)
+
+
+@network_group.command("dig", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.argument("host")
+@click.argument("extra", nargs=-1, type=click.UNPROCESSED)
+@click.option("--timeout", default=15, type=int, help="Timeout en secondes (max 30)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def network_dig(ctx, host, extra, timeout, output_json):
+    """🔎 Requête DNS détaillée. Arguments passés après le host.
+
+    \b
+    Exemples :
+      network dig google.com
+      network dig google.com MX
+      network dig google.com MX +short
+      network dig google.com ANY +noall +answer
+    """
+    _run_network(ctx, host, "dig", extra_args=" ".join(extra), timeout=timeout, output_json=output_json)
+
+
+@network_group.command("nslookup", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.argument("host")
+@click.argument("extra", nargs=-1, type=click.UNPROCESSED)
+@click.option("--timeout", default=15, type=int, help="Timeout en secondes (max 30)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def network_nslookup(ctx, host, extra, timeout, output_json):
+    """📋 Résolution DNS. Arguments passés directement à nslookup.
+
+    \b
+    Exemples :
+      network nslookup google.com
+      network nslookup -type=mx google.com
+      network nslookup -type=ns example.com
+    """
+    _run_network(ctx, host, "nslookup", extra_args=" ".join(extra), timeout=timeout, output_json=output_json)
 
 
 # =============================================================================

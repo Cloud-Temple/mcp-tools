@@ -43,7 +43,9 @@ python scripts/mcp_cli.py about
 python scripts/mcp_cli.py run-shell "hostname && uptime"
 
 # Network diagnostics
-python scripts/mcp_cli.py ping google.com --op dig
+python scripts/mcp_cli.py network ping google.com
+python scripts/mcp_cli.py network dig google.com MX +short
+python scripts/mcp_cli.py network nslookup google.com -type=mx
 
 # HTTP request
 python scripts/mcp_cli.py http https://httpbin.org/get
@@ -61,7 +63,7 @@ python scripts/mcp_cli.py shell
 # All tests (build + start + test + stop)
 python scripts/test_service.py
 
-# Specific test (shell, ping, http, perplexity, auth, connectivity)
+# Specific test (shell, network, http, perplexity, auth, connectivity)
 python scripts/test_service.py --test shell
 
 # Server already running
@@ -105,7 +107,7 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | Tool               | Description                                          |
 | ------------------ | ---------------------------------------------------- |
 | `shell`            | Isolated Docker sandbox (bash, sh, python3, node, openssl) — no network |
-| `ping`             | Network diagnostics (ping, traceroute, nslookup, dig)|
+| `network`          | Network diagnostics in Docker sandbox (ping, traceroute, nslookup, dig) — RFC 1918 private IPs blocked |
 | `http`             | HTTP/REST client (GET, POST, PUT, DELETE, PATCH)     |
 | `perplexity_search`| Internet search via Perplexity AI                    |
 | `system_health`    | Service health check                                 |
@@ -147,7 +149,7 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 
 ## Roadmap
 
-- **Phase 1** (current): shell, ping, http, perplexity_search — ✅
+- **Phase 1** (current): shell, network, http, perplexity_search — ✅
 - **Phase 1** (todo): ssh, docker, files, date, calc, generate, mcp_call, perplexity_doc/chat
 - **Phase 2**: git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf, doc_scraper
 - **Phase 3**: imap, perplexity_api, perplexity_deprecated

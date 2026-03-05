@@ -17,7 +17,7 @@ def check_tool_access(tool_name: str) -> None:
     ce qui sera retourné proprement par FastMCP.
 
     Args:
-        tool_name: Le nom de l'outil (ex: "ssh", "ping")
+        tool_name: Le nom de l'outil (ex: "ssh", "network")
     """
     token_info = current_token_info.get()
 

@@ -41,6 +41,13 @@ RUN apk add --no-cache \
     git \
     && rm -rf /var/cache/apk/*
 
+# Outils réseau (tool network : ping, traceroute, dig, nslookup)
+RUN apk add --no-cache \
+    iputils \
+    bind-tools \
+    traceroute \
+    && rm -rf /var/cache/apk/*
+
 # Crypto & sécurité (openssl, gpg — opérations locales sans réseau)
 # sha256sum, md5sum, sha512sum sont dans coreutils (déjà installé)
 RUN apk add --no-cache \

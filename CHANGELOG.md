@@ -4,6 +4,18 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] — 2026-03-05
+
+### Changed
+- **`ping` → `network`** — L'ancien tool `ping` est remplacé par `network`. Exécution dans un conteneur Docker sandbox éphémère avec réseau (`--network=bridge`, `--cap-add=NET_RAW`, `--read-only`). Opérations : ping, traceroute, nslookup, dig
+- **Blocage RFC 1918** — Les IPs privées (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), loopback, link-local sont interdites dans le tool `network` pour empêcher le scan interne
+- **Validation du host** — Regex stricte + `subprocess_exec` (pas de shell) pour bloquer les injections de commandes
+- **sandbox/Dockerfile** — Ajout des outils réseau (iputils, bind-tools, traceroute) à l'image Alpine
+- **CLI sous-commandes** — `network ping <host> [-c N]`, `network dig <host> [MX +short]`, `network nslookup <host> [-type=mx]`, `network traceroute <host> [-m N]`. Tous les arguments sont passés directement à la commande (via `extra_args`)
+- **Shell interactif** — Syntaxe `network <op> <host> [args...]` avec aide contextuelle et exemples
+- **Tool MCP `extra_args`** — Nouveau paramètre `extra_args` (string) passé tel quel à la commande réseau. Backward compat : `count` fonctionne toujours pour les anciens appelants
+- **Tests E2E** — 10 tests network (ping, nslookup, dig, traceroute, sandbox, RFC 1918 ×3, injection, opération invalide)
+
 ## [0.1.0] — 2026-03-05
 
 ### Fixed (5 mars 2026 — session CLI)

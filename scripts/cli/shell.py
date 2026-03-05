@@ -13,20 +13,20 @@ from .client import MCPClient
 from .display import (
     console, show_error, show_warning, show_json,
     show_health_result, show_about_result,
-    show_shell_result, show_ping_result,
+    show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
 )
 
 
 SHELL_COMMANDS = {
-    "help":      "Afficher l'aide",
-    "health":    "Vérifier l'état de santé",
-    "about":     "Informations sur le service",
-    "run":       "run <commande> — Exécuter une commande shell",
-    "ping":      "ping <host> [op] — Diagnostic réseau (ping/nslookup/dig/traceroute)",
-    "http":      "http <url> [method] — Requête HTTP",
-    "search":    "search <query> — Recherche Perplexity AI",
-    "quit":      "Quitter le shell",
+    "help":       "Afficher l'aide",
+    "health":     "Vérifier l'état de santé",
+    "about":      "Informations sur le service",
+    "run":        "run <commande> — Exécuter une commande shell en sandbox",
+    "network":    "network <op> <host> [args] — ping, dig, nslookup, traceroute",
+    "http":       "http <url> [GET|POST|PUT|DELETE] — Requête HTTP",
+    "search":     "search <query> — Recherche Perplexity AI",
+    "quit":       "Quitter le shell",
 }
 
 
@@ -62,18 +62,31 @@ async def cmd_run(client, state, args="", json_output=False):
         show_shell_result(result)
 
 
-async def cmd_ping(client, state, args="", json_output=False):
+NETWORK_OPS = ("ping", "dig", "nslookup", "traceroute")
+
+
+async def cmd_network(client, state, args="", json_output=False):
     parts = args.strip().split()
-    if not parts:
-        show_warning("Usage: ping <host> [ping|nslookup|dig|traceroute]")
+    if len(parts) < 2 or parts[0] not in NETWORK_OPS:
+        show_warning("Usage: network <op> <host> [args...]")
+        show_warning("")
+        show_warning("  network ping google.com           — ping avec 4 paquets")
+        show_warning("  network ping 8.8.8.8 -c 2        — ping 2 paquets")
+        show_warning("  network dig google.com MX +short  — requête DNS MX")
+        show_warning("  network nslookup google.com -type=mx")
+        show_warning("  network traceroute 8.8.8.8 -m 10")
         return
-    host = parts[0]
-    op = parts[1] if len(parts) > 1 else "ping"
-    result = await client.call_tool("ping", {"host": host, "operation": op})
+    op = parts[0]
+    host = parts[1]
+    extra = " ".join(parts[2:]) if len(parts) > 2 else ""
+    params = {"host": host, "operation": op}
+    if extra:
+        params["extra_args"] = extra
+    result = await client.call_tool("network", params)
     if json_output:
         show_json(result)
     else:
-        show_ping_result(result)
+        show_network_result(result)
 
 
 async def cmd_http(client, state, args="", json_output=False):
@@ -160,8 +173,8 @@ async def run_shell(url: str, token: str):
                 await cmd_about(client, state, args, json_output)
             elif command == "run":
                 await cmd_run(client, state, args, json_output)
-            elif command == "ping":
-                await cmd_ping(client, state, args, json_output)
+            elif command in ("network", "ping"):
+                await cmd_network(client, state, args, json_output)
             elif command == "http":
                 await cmd_http(client, state, args, json_output)
             elif command == "search":

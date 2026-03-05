@@ -43,7 +43,9 @@ python scripts/mcp_cli.py about
 python scripts/mcp_cli.py run-shell "hostname && uptime"
 
 # Diagnostic réseau
-python scripts/mcp_cli.py ping google.com --op dig
+python scripts/mcp_cli.py network ping google.com
+python scripts/mcp_cli.py network dig google.com MX +short
+python scripts/mcp_cli.py network nslookup google.com -type=mx
 
 # Requête HTTP
 python scripts/mcp_cli.py http https://httpbin.org/get
@@ -61,7 +63,7 @@ python scripts/mcp_cli.py shell
 # Tous les tests (build + start + test + stop)
 python scripts/test_service.py
 
-# Test spécifique (shell, ping, http, perplexity, auth, connectivity)
+# Test spécifique (shell, network, http, perplexity, auth, connectivity)
 python scripts/test_service.py --test shell
 
 # Serveur déjà lancé
@@ -105,7 +107,7 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | Outil              | Description                                          |
 | ------------------ | ---------------------------------------------------- |
 | `shell`            | Sandbox Docker isolée (bash, sh, python3, node, openssl) — sans réseau |
-| `ping`             | Diagnostic réseau (ping, traceroute, nslookup, dig)  |
+| `network`          | Diagnostic réseau en sandbox Docker (ping, traceroute, nslookup, dig) — IPs privées RFC 1918 interdites |
 | `http`             | Client HTTP/REST (GET, POST, PUT, DELETE, PATCH)     |
 | `perplexity_search`| Recherche internet via Perplexity AI                 |
 | `system_health`    | Santé du service                                     |
@@ -153,7 +155,7 @@ mcp-tools/
 │   ├── server.py              # Serveur MCP + HealthCheck + bannière
 │   ├── config.py              # Configuration pydantic-settings (sandbox, etc.)
 │   ├── auth/                  # Middleware auth + context
-│   └── tools/                 # Outils MCP (shell, ping, http, perplexity)
+│   └── tools/                 # Outils MCP (shell, network, http, perplexity)
 ├── sandbox/
 │   └── Dockerfile             # Image Alpine sandbox (python3, node, openssl…)
 ├── scripts/
@@ -169,7 +171,7 @@ mcp-tools/
 
 ## Roadmap
 
-- **Phase 1** (actuel) : shell, ping, http, perplexity_search — ✅
+- **Phase 1** (actuel) : shell, network, http, perplexity_search — ✅
 - **Phase 1** (à faire) : ssh, docker, files, date, calc, generate, mcp_call, perplexity_doc/chat
 - **Phase 2** : git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf, doc_scraper
 - **Phase 3** : imap, perplexity_api, perplexity_deprecated

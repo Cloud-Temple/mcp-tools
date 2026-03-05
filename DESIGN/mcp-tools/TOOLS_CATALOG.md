@@ -13,7 +13,7 @@
 | ---------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | **ssh**    | `exec`, `upload`, `download`, `status`                                                         | host, username, auth_type (password/key/agent), command, sudo, timeout (60s max), remote_path, local_path       | Dragonfly `ssh_client`             |
 | **shell**  | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL) | command, shell (bash/sh), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
-| **ping**   | `ping`, `traceroute`, `nslookup`, `dig`                                                        | host, operation, count (ping), timeout                                                                          | From scratch                       |
+| **network**| `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites. | From scratch (sandbox Docker)      |
 | **docker** | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                 | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
 
 ### Réseau (1 tool)
@@ -119,10 +119,10 @@
 
 | Persona                | Tools autorisés (via `tool_ids` du token)                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **sre-operator**       | ssh, shell, http, ping, docker, files, date, calc, git, s3, host_audit, ssh_diagnostics, perplexity_search, generate |
-| **security-auditor**   | http, ping, ssh_diagnostics, host_audit, pdf_search, doc_scraper, perplexity_search, perplexity_doc                  |
-| **dba**                | ssh, db, sqlite, files, calc, date, perplexity_search, generate                                                      |
-| **monitoring-analyst** | http, ping, calc, date, files, perplexity_search, generate                                                           |
+| **sre-operator**       | ssh, shell, http, network, docker, files, date, calc, git, s3, host_audit, ssh_diagnostics, perplexity_search, generate |
+| **security-auditor**   | http, network, ssh_diagnostics, host_audit, pdf_search, doc_scraper, perplexity_search, perplexity_doc                  |
+| **dba**                | ssh, db, sqlite, files, calc, date, perplexity_search, generate                                                         |
+| **monitoring-analyst** | http, network, calc, date, files, perplexity_search, generate                                                           |
 | **doc-writer**         | files, pdf2text, pdf_search, office_to_pdf, doc_scraper, generate, perplexity_doc, perplexity_chat                   |
 
 ---

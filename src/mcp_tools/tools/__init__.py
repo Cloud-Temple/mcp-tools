@@ -11,12 +11,12 @@ def register_all_tools(mcp: FastMCP) -> None:
     """
     # Import des sous-modules d'outils
     from . import shell
-    from . import ping
+    from . import network
     from . import http
     from . import perplexity
     
     # Enregistrement
     shell.register(mcp)
-    ping.register(mcp)
+    network.register(mcp)
     http.register(mcp)
     perplexity.register(mcp)
