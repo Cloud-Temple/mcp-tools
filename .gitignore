@@ -1,0 +1,31 @@
+# Secrets
+.env
+chantier/
+DESIGN/mcp-agent
+DESIGN/mcp-mission
+DESIGN/mcp-vault
+
+# Memory Bank (local)
+memory-bank/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Cline / IDE workspace
+.clinerules/
+workspace/
+
+# OS
+.DS_Store
+Thumbs.db

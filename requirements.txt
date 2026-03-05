@@ -1,0 +1,29 @@
+# === Framework MCP (Streamable HTTP) ===
+mcp[cli]>=1.8.0
+uvicorn>=0.32.0
+
+# === Configuration ===
+pydantic>=2.0
+pydantic-settings>=2.0
+
+# === CLI ===
+click>=8.1
+rich>=13.0
+prompt-toolkit>=3.0
+
+# === Client HTTP (outils http + perplexity) ===
+httpx>=0.27
+
+# === S3 (tokens, stockage) ===
+boto3>=1.34
+
+# === Génération (outil generate) ===
+jinja2>=3.1
+
+# === Phase 2 (décommenter quand nécessaire) ===
+# asyncpg>=0.29           # PostgreSQL
+# aiomysql>=0.2           # MySQL
+# aiosqlite>=0.19         # SQLite async
+# aiosmtplib>=3.0         # SMTP async
+# pypdf>=4.0              # PDF extraction
+# beautifulsoup4>=4.12    # HTML scraping

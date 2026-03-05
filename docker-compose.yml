@@ -1,0 +1,131 @@
+# =============================================================================
+# MCP Tools Service - Docker Compose
+# =============================================================================
+# Démarrage : docker compose up -d
+# Logs      : docker compose logs -f mcp-tools
+# Logs WAF  : docker compose logs -f waf
+# Arrêt     : docker compose down
+# =============================================================================
+#
+# Architecture réseau :
+#
+#   Internet/LAN
+#       │
+#       ▼ :8080 (seul port exposé)
+#   ┌──────────┐
+#   │ Coraza   │  WAF OWASP CRS + Reverse Proxy
+#   │ WAF      │
+#   └────┬─────┘
+#        │ réseau interne Docker (mcp-tools-network)
+#        ▼
+#   ┌──────────┐
+#   │ MCP      │  Service principal :8050 (interne uniquement)
+#   │ Tools    │
+#   └──────────┘
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Sandbox — Image Alpine éphémère pour exécution shell isolée
+  # ===========================================================================
+  # Ce service ne tourne PAS en continu. Il sert uniquement à builder l'image
+  # mcp-tools-sandbox que le tool `shell` lance via `docker run --rm`.
+  sandbox:
+    build: ./sandbox
+    image: mcp-tools-sandbox
+    container_name: mcp-tools-sandbox-build
+    entrypoint: ["true"]
+    restart: "no"
+    networks:
+      - mcp-tools-network
+
+  # ===========================================================================
+  # Coraza WAF - Web Application Firewall (reverse proxy sécurisé)
+  # ===========================================================================
+  waf:
+    build: ./waf
+    container_name: mcp-tools-waf
+    ports:
+      - "${WAF_PORT:-8080}:8080"
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-:8080}
+      - BACKEND=mcp-tools:8050
+      - BACKEND_PROTOCOL=http
+      - ANOMALY_INBOUND=5
+      - ANOMALY_OUTBOUND=4
+      - REPORTING_LEVEL=2
+      - ALLOWED_REQUEST_CONTENT_TYPE=|application/json|text/plain|multipart/form-data|application/x-www-form-urlencoded|
+      - MAX_REQUEST_BODY_SIZE=10000000
+      - MAX_REQUEST_BODY_NOFILES=10000000
+      - CRS_ENABLE_BODY_INSPECTION=1
+    volumes:
+      - ./waf/Caddyfile:/etc/caddy/Caddyfile:ro
+      - waf_data:/data
+      - waf_config:/config
+    depends_on:
+      mcp-tools:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - mcp-tools-network
+
+  # ===========================================================================
+  # MCP Tools Service - Serveur principal (interne uniquement)
+  # ===========================================================================
+  mcp-tools:
+    build: .
+    container_name: mcp-tools-service
+    # NOTE: Pas de section "ports:" — accessible uniquement via le WAF
+    # Pour le debug local, décommenter :
+    # ports:
+    #   - "127.0.0.1:8050:8050"
+    environment:
+      - MCP_SERVER_NAME=${MCP_SERVER_NAME:-mcp-tools}
+      - MCP_SERVER_HOST=0.0.0.0
+      - MCP_SERVER_PORT=8050
+      - ADMIN_BOOTSTRAP_KEY=${ADMIN_BOOTSTRAP_KEY}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_REGION_NAME=${S3_REGION_NAME:-fr1}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      - PERPLEXITY_MODEL=${PERPLEXITY_MODEL:-sonar-reasoning-pro}
+      - PERPLEXITY_API_URL=${PERPLEXITY_API_URL:-https://api.perplexity.ai}
+    volumes:
+      # Docker socket pour lancer les conteneurs sandbox éphémères (tool shell)
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Accès au docker.sock : GID 0 (root) sur macOS, GID docker sur Linux
+    # Sur Linux : DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+    group_add:
+      - "${DOCKER_GID:-0}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8050/health -o /dev/null 2>/dev/null"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      sandbox:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - mcp-tools-network
+
+# =============================================================================
+# Volumes persistants
+# =============================================================================
+volumes:
+  waf_data:
+    name: mcp-tools-waf-data
+  waf_config:
+    name: mcp-tools-waf-config
+
+# =============================================================================
+# Réseau
+# =============================================================================
+networks:
+  mcp-tools-network:
+    name: mcp-tools-network
+    driver: bridge
