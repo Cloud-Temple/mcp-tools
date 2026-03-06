@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.1.3 | **Date** : 2026-03-06
+> **Version** : 0.1.4 | **Date** : 2026-03-06
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -11,7 +11,7 @@
 
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                     | Source                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **ssh**     | `exec`, `upload`, `download`, `status`                                                                          | host, username, auth_type (password/key/agent), command, sudo, timeout (60s max), remote_path, local_path       | Dragonfly `ssh_client`             |
+| **ssh** ✅  | `exec`, `upload`, `download`, `status` — Sandbox Docker (--network=bridge, sshpass+key dans tmpfs)              | host, username, auth_type (password/key), command, sudo, timeout (60s max), remote_path, content — 10 tests     | Sandbox Docker (from scratch)      |
 | **shell**   | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL)                  | command, shell (bash/sh), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
 | **network** | `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites.                       | From scratch (sandbox Docker)      |
 | **docker**  | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                                  | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
@@ -26,7 +26,7 @@
 
 | Tool      | Opérations                                        | Params clés                                                              | Source                  |
 | --------- | ------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------- |
-| **files** | `read`, `write`, `edit`, `list`, `delete`, `diff` | path, content, edits (search_replace/regex/insert/delete_lines), dry_run | Dragonfly `file_editor` |
+| **files** ✅ | `list`, `read`, `write`, `delete`, `info`, `diff`, `versions`, `enable_versioning` — Sandbox Docker (--network=bridge, python3+boto3, S3 Dell ECS hybride SigV2/SigV4) | path, content, prefix, version_id, endpoint, access_key, secret_key, bucket, region — 11 tests + 9 tests versioning | Sandbox boto3 (from scratch) |
 
 ### Utilitaires (2 tools)
 

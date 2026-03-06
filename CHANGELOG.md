@@ -4,6 +4,16 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.4] — 2026-03-06
+
+### Added
+- **Nouveau tool `ssh`** — Exécution de commandes et transfert de fichiers via SSH dans un **conteneur sandbox Docker** éphémère (`--network=bridge`, `--read-only`, `--cap-drop=ALL`). 4 opérations : `exec`, `status`, `upload`, `download`. Auth : `password` (via sshpass) ou `key` (clé privée écrite dans tmpfs). Pas de blocage RFC 1918 (SSH vers infra interne est légitime). Timeout max 60s. Sudo supporté. **10 tests E2E** (validation params + host inaccessible en sandbox)
+- **Nouveau tool `files`** — Opérations fichiers sur **S3 Dell ECS** (Cloud Temple) dans un **conteneur sandbox Docker** éphémère (`--network=bridge`, `--read-only`, `--cap-drop=ALL`). 8 opérations : `list`, `read`, `write`, `delete`, `info`, `diff`, `versions`, `enable_versioning`. Configuration hybride **SigV2/SigV4** requise par Dell ECS : SigV2 pour données (PUT/GET/DELETE), SigV4 pour métadonnées (HEAD/LIST/versioning). **Versioning S3** : lister toutes les versions d'un objet, lire une version spécifique par `version_id`, soft delete avec delete markers, activer le versioning sur un bucket. Params S3 optionnels avec fallback config. **11 tests E2E** (validation + cycle complet S3) + **9 tests versioning** (write v1/v2, list versions, read par version_id, soft delete, delete markers, lecture après suppression)
+- **sandbox/Dockerfile** — Ajout `openssh-client` + `sshpass` (tool ssh), `boto3` via pip (tool files)
+- **CLI Click** — Nouvelles commandes `ssh` et `files` avec options complètes
+- **Shell interactif** — Commandes `ssh` et `files` avec aide contextuelle et parsing d'options
+- **Affichage Rich** — `show_ssh_result()` et `show_files_result()` avec panels, tables S3, diff syntax
+
 ## [0.1.3] — 2026-03-06
 
 ### Added

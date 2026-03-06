@@ -825,6 +825,353 @@ async def test_08_calc():
         record("calc erreur syntaxe", False, str(e))
 
 
+async def test_09_ssh():
+    """Test 9: Outil ssh (sandbox Docker avec réseau)"""
+    print("\n🔑 TEST 9 — Outil ssh (sandbox)")
+    print("=" * 50)
+
+    # 9a. Opération invalide
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "operation": "invalid_op"})
+        ok = data.get("status") == "error" and "non supportée" in data.get("message", "")
+        record("ssh opération invalide", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh opération invalide", False, str(e))
+
+    # 9b. Host invalide (injection)
+    try:
+        data = await call_tool("ssh", {"host": "host; rm -rf /", "username": "test", "operation": "status", "password": "test"})
+        ok = data.get("status") == "error" and "invalide" in data.get("message", "").lower()
+        record("ssh injection host bloquée", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh injection host bloquée", False, str(e))
+
+    # 9c. Username invalide
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "user;hack", "operation": "status", "password": "test"})
+        ok = data.get("status") == "error" and "invalide" in data.get("message", "").lower()
+        record("ssh username invalide", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh username invalide", False, str(e))
+
+    # 9d. Auth type invalide
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "auth_type": "invalid"})
+        ok = data.get("status") == "error" and "non supporté" in data.get("message", "")
+        record("ssh auth_type invalide", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh auth_type invalide", False, str(e))
+
+    # 9e. Password manquant pour auth password
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "auth_type": "password"})
+        ok = data.get("status") == "error" and "password" in data.get("message", "").lower()
+        record("ssh password requis", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh password requis", False, str(e))
+
+    # 9f. Private key manquante pour auth key
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "auth_type": "key"})
+        ok = data.get("status") == "error" and "private_key" in data.get("message", "").lower()
+        record("ssh private_key requis", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh private_key requis", False, str(e))
+
+    # 9g. Exec sans commande
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "operation": "exec", "password": "test"})
+        ok = data.get("status") == "error" and "command" in data.get("message", "").lower()
+        record("ssh exec sans commande", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh exec sans commande", False, str(e))
+
+    # 9h. Download sans remote_path
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "operation": "download", "password": "test"})
+        ok = data.get("status") == "error" and "remote_path" in data.get("message", "").lower()
+        record("ssh download sans remote_path", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh download sans remote_path", False, str(e))
+
+    # 9i. Upload sans contenu
+    try:
+        data = await call_tool("ssh", {"host": "example.com", "username": "test", "operation": "upload", "password": "test", "remote_path": "/tmp/test"})
+        ok = data.get("status") == "error" and "content" in data.get("message", "").lower()
+        record("ssh upload sans contenu", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("ssh upload sans contenu", False, str(e))
+
+    # 9j. Status vers host inaccessible (sandbox, timeout court)
+    try:
+        data = await call_tool("ssh", {
+            "host": "192.0.2.1",
+            "username": "test",
+            "operation": "status",
+            "password": "test",
+            "timeout": 5,
+        })
+        # Doit échouer (host RFC 5737 non routable) mais prouver que la sandbox fonctionne
+        ok = data.get("status") == "error"
+        is_sandbox = data.get("sandbox", None)
+        record("ssh status host inaccessible", ok, f"sandbox={is_sandbox}, exit={data.get('exit_code', '?')}")
+    except Exception as e:
+        record("ssh status host inaccessible", False, str(e))
+
+
+async def test_10_files():
+    """Test 10: Outil files (S3 Dell ECS, sandbox Docker)"""
+    print("\n📁 TEST 10 — Outil files (S3 sandbox)")
+    print("=" * 50)
+
+    # --- Tests de validation (pas besoin de S3) ---
+
+    # 10a. Opération invalide
+    try:
+        data = await call_tool("files", {"operation": "invalid_op"})
+        ok = data.get("status") == "error" and "non supportée" in data.get("message", "")
+        record("files opération invalide", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files opération invalide", False, str(e))
+
+    # 10b. Read sans path
+    try:
+        data = await call_tool("files", {"operation": "read"})
+        ok = data.get("status") == "error" and "path" in data.get("message", "").lower()
+        record("files read sans path", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files read sans path", False, str(e))
+
+    # 10c. Write sans content
+    try:
+        data = await call_tool("files", {"operation": "write", "path": "test.txt"})
+        ok = data.get("status") == "error" and "content" in data.get("message", "").lower()
+        record("files write sans content", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files write sans content", False, str(e))
+
+    # 10d. Diff sans path2
+    try:
+        data = await call_tool("files", {"operation": "diff", "path": "a.txt"})
+        ok = data.get("status") == "error" and "path2" in data.get("message", "").lower()
+        record("files diff sans path2", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files diff sans path2", False, str(e))
+
+    # --- Tests S3 réels (nécessitent credentials) ---
+    test_key = "mcp-tools-test/e2e-test.txt"
+    test_key2 = "mcp-tools-test/e2e-test2.txt"
+    test_content_v1 = "Hello from MCP Tools E2E test!"
+    test_content_v2 = "Hello from MCP Tools E2E test v2 - MODIFIED!"
+
+    # 10e. Write v1
+    try:
+        data = await call_tool("files", {
+            "operation": "write",
+            "path": test_key,
+            "content": test_content_v1,
+        })
+        if data.get("status") == "error" and ("non configuré" in data.get("message", "") or "endpoint" in data.get("message", "").lower()):
+            record("files S3 write", False, "S3 non configuré", skipped=True)
+            return  # Skip les tests S3 suivants
+        ok = data.get("status") == "success"
+        record("files S3 write v1", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files S3 write v1", False, str(e))
+        return
+
+    # 10f. Sandbox active
+    try:
+        is_sandbox = data.get("sandbox", None)
+        record("files sandbox active", is_sandbox is True, f"sandbox={is_sandbox}")
+    except Exception as e:
+        record("files sandbox active", False, str(e))
+
+    # 10g. Read v1
+    try:
+        data = await call_tool("files", {
+            "operation": "read",
+            "path": test_key,
+        })
+        ok = data.get("status") == "success" and data.get("content", "").strip() == test_content_v1
+        record("files S3 read v1", ok, f"content={data.get('content', '?')[:40]}")
+    except Exception as e:
+        record("files S3 read v1", False, str(e))
+
+    # 10h. Info (HEAD)
+    try:
+        data = await call_tool("files", {
+            "operation": "info",
+            "path": test_key,
+        })
+        ok = data.get("status") == "success" and data.get("size", 0) > 0
+        record("files S3 info", ok, f"size={data.get('size', '?')}, etag={data.get('etag', '?')[:20]}")
+    except Exception as e:
+        record("files S3 info", False, str(e))
+
+    # 10i. List (au moins 1 objet)
+    try:
+        data = await call_tool("files", {
+            "operation": "list",
+            "prefix": "mcp-tools-test/",
+        })
+        ok = data.get("status") == "success" and data.get("count", 0) >= 1
+        record("files S3 list", ok, f"count={data.get('count', '?')}")
+    except Exception as e:
+        record("files S3 list", False, str(e))
+
+    # 10j. Overwrite — Write v2 (même clé, contenu modifié)
+    try:
+        data = await call_tool("files", {
+            "operation": "write",
+            "path": test_key,
+            "content": test_content_v2,
+        })
+        ok = data.get("status") == "success"
+        record("files S3 write v2 (overwrite)", ok, data.get("message", "?")[:60])
+    except Exception as e:
+        record("files S3 write v2 (overwrite)", False, str(e))
+
+    # 10k. Read v2 — vérifier la modification
+    try:
+        data = await call_tool("files", {
+            "operation": "read",
+            "path": test_key,
+        })
+        ok = data.get("status") == "success" and "MODIFIED" in data.get("content", "")
+        record("files S3 read v2 (modified)", ok, f"contient MODIFIED={ok}")
+    except Exception as e:
+        record("files S3 read v2 (modified)", False, str(e))
+
+    # 10l. Write 2ème fichier + Diff
+    try:
+        await call_tool("files", {
+            "operation": "write",
+            "path": test_key2,
+            "content": test_content_v1,
+        })
+        data = await call_tool("files", {
+            "operation": "diff",
+            "path": test_key,
+            "path2": test_key2,
+        })
+        ok = data.get("status") == "success" and not data.get("identical", True)
+        record("files S3 diff", ok, f"identical={data.get('identical', '?')}")
+    except Exception as e:
+        record("files S3 diff", False, str(e))
+
+    # --- Tests versioning S3 (skip si non supporté) ---
+
+    # 10m. Versions — lister les versions de test_key
+    versioning_supported = False
+    vid_v1 = ""
+    try:
+        data = await call_tool("files", {
+            "operation": "versions",
+            "path": test_key,
+        })
+        versions = data.get("versions", [])
+        # Si on a au moins 2 versions, le versioning est actif
+        if data.get("status") == "success" and len(versions) >= 2:
+            versioning_supported = True
+            ok = True
+            record("files S3 versions", ok, f"count={data.get('count', '?')}")
+            # Identifier v1 (pas latest) et v2 (latest)
+            v_latest = [v for v in versions if v.get("is_latest")]
+            v_old = [v for v in versions if not v.get("is_latest")]
+            vid_v1 = v_old[0]["version_id"] if v_old else ""
+            vid_v2 = v_latest[0]["version_id"] if v_latest else ""
+            if VERBOSE and versions:
+                for v in versions:
+                    latest = " ⭐" if v.get("is_latest") else ""
+                    log(f"  {v['version_id'][:20]}... size={v['size']}{latest}", "info")
+        elif data.get("status") == "success" and len(versions) < 2:
+            record("files S3 versions", False, "Versioning non actif sur le bucket", skipped=True)
+        else:
+            record("files S3 versions", False, data.get("message", "?")[:60], skipped=True)
+    except Exception as e:
+        record("files S3 versions", False, str(e), skipped=True)
+
+    if versioning_supported and vid_v1:
+        # 10n. Read v1 par version_id
+        try:
+            data = await call_tool("files", {
+                "operation": "read",
+                "path": test_key,
+                "version_id": vid_v1,
+            })
+            ok = data.get("status") == "success" and test_content_v1 in data.get("content", "")
+            record("files S3 read v1 (version_id)", ok, f"content={data.get('content', '?')[:40]}")
+        except Exception as e:
+            record("files S3 read v1 (version_id)", False, str(e))
+
+        # 10o. Read latest = v2
+        try:
+            data = await call_tool("files", {
+                "operation": "read",
+                "path": test_key,
+            })
+            ok = data.get("status") == "success" and "MODIFIED" in data.get("content", "")
+            record("files S3 read latest = v2", ok, f"contient MODIFIED={ok}")
+        except Exception as e:
+            record("files S3 read latest = v2", False, str(e))
+
+    # --- Cleanup ---
+
+    # 10p. Delete fichier 1
+    try:
+        data = await call_tool("files", {"operation": "delete", "path": test_key})
+        ok = data.get("status") == "success"
+        record("files S3 delete file 1", ok, data.get("message", "?")[:40])
+    except Exception as e:
+        record("files S3 delete file 1", False, str(e))
+
+    if versioning_supported:
+        # 10q. Delete markers présents après soft delete
+        try:
+            data = await call_tool("files", {
+                "operation": "versions",
+                "path": test_key,
+            })
+            markers = data.get("delete_markers", [])
+            ok = len(markers) > 0
+            record("files S3 delete markers", ok, f"markers={len(markers)}, versions={data.get('count', '?')}")
+        except Exception as e:
+            record("files S3 delete markers", False, str(e))
+
+        # 10r. Read v1 toujours accessible par version_id après soft delete
+        if vid_v1:
+            try:
+                data = await call_tool("files", {
+                    "operation": "read",
+                    "path": test_key,
+                    "version_id": vid_v1,
+                })
+                ok = data.get("status") == "success" and test_content_v1 in data.get("content", "")
+                record("files S3 v1 accessible après delete", ok, f"content={data.get('content', '?')[:40]}")
+            except Exception as e:
+                record("files S3 v1 accessible après delete", False, str(e))
+
+    # 10s. Delete fichier 2
+    try:
+        data = await call_tool("files", {"operation": "delete", "path": test_key2})
+        ok = data.get("status") == "success"
+        record("files S3 delete file 2", ok, data.get("message", "?")[:40])
+    except Exception as e:
+        record("files S3 delete file 2", False, str(e))
+
+    # 10t. List vide après cleanup
+    try:
+        data = await call_tool("files", {
+            "operation": "list",
+            "prefix": "mcp-tools-test/",
+        })
+        ok = data.get("status") == "success" and data.get("count", -1) == 0
+        record("files S3 list vide (cleanup)", ok, f"count={data.get('count', '?')}")
+    except Exception as e:
+        record("files S3 list vide (cleanup)", False, str(e))
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -840,6 +1187,8 @@ TEST_REGISTRY = {
     "perplexity_doc":  test_06b_perplexity_doc,
     "date":            test_07_date,
     "calc":            test_08_calc,
+    "ssh":             test_09_ssh,
+    "files":           test_10_files,
 }
 
 
@@ -883,6 +1232,8 @@ async def run_all_tests(only: str = None):
         await test_06b_perplexity_doc()
         await test_07_date()
         await test_08_calc()
+        await test_09_ssh()
+        await test_10_files()
 
     # Résumé
     elapsed = round(time.monotonic() - t0, 1)

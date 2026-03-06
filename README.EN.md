@@ -116,13 +116,15 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | Interactive Shell| `scripts/cli/shell.py`       | Interactive interface      |
 | Display          | `scripts/cli/display.py`     | Shared Rich output (2+3)  |
 
-### Available Tools (9/27 — Phase 1)
+### Available Tools (11/27 — Phase 1)
 
 | Tool               | Description                                          |
 | ------------------ | ---------------------------------------------------- |
 | `shell`            | Isolated Docker sandbox (bash, sh, python3, node, openssl) — no network |
 | `network`          | Network diagnostics in Docker sandbox (ping, traceroute, nslookup, dig) — RFC 1918 private IPs blocked |
 | `http`             | HTTP/REST client in Docker sandbox (anti-SSRF, auth basic/bearer/api_key) — private IPs blocked |
+| `ssh`              | SSH command execution and file transfer in Docker sandbox (exec, status, upload, download) — password/key auth |
+| `files`            | File operations on S3 Dell ECS in Docker sandbox (list, read, write, delete, info, diff, versions, enable_versioning) — hybrid SigV2/SigV4 config, S3 versioning |
 | `perplexity_search`| Internet search via Perplexity AI                    |
 | `perplexity_doc`   | Technical documentation for a technology/library/API via Perplexity AI |
 | `date`             | Date/time manipulation (now, today, diff, add, format, parse, week_number, day_of_week) — timezone support |
@@ -167,8 +169,8 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 
 ## Roadmap
 
-- **Phase 1** (current): shell, network, http, perplexity_search, perplexity_doc, date, calc — ✅
-- **Phase 1** (todo): ssh, docker, files, generate, mcp_call
+- **Phase 1** (current): shell, network, http, ssh, files, perplexity_search, perplexity_doc, date, calc — ✅
+- **Phase 1** (todo): docker, generate, mcp_call
 - **Phase 2**: git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf, doc_scraper
 - **Phase 3**: imap, perplexity_api, perplexity_deprecated
 

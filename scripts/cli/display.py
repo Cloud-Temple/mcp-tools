@@ -234,6 +234,119 @@ def show_http_result(result: dict):
 
 
 # =============================================================================
+# Affichage outil ssh
+# =============================================================================
+
+def show_ssh_result(result: dict):
+    status = result.get("status", "?")
+    operation = result.get("operation", "?")
+    host = result.get("host", "?")
+    port = result.get("port", 22)
+    username = result.get("username", "?")
+
+    icon = "✅" if status == "success" else "❌"
+    sandbox_tag = " [dim](sandbox)[/dim]" if result.get("sandbox") else ""
+    console.print(f"\n{icon} [bold]ssh {operation}[/bold] → {username}@{host}:{port}{sandbox_tag}")
+
+    if status == "error":
+        console.print(f"[red]{result.get('message', 'Erreur')}[/red]")
+        if result.get("stderr"):
+            console.print(Panel(result["stderr"].rstrip(), title="stderr", border_style="red"))
+        return
+
+    if operation == "status":
+        console.print(f"  [green]{result.get('message', 'Connexion réussie')}[/green]")
+    elif operation == "exec":
+        stdout = result.get("stdout", "")
+        if stdout.strip():
+            console.print(Panel(stdout.rstrip(), title="stdout", border_style="green"))
+    elif operation == "upload":
+        console.print(f"  [green]{result.get('message', 'Upload réussi')}[/green]")
+        if result.get("remote_path"):
+            console.print(f"  📁 Remote : [cyan]{result['remote_path']}[/cyan]")
+    elif operation == "download":
+        content = result.get("content", "")
+        if content.strip():
+            console.print(Panel(content.rstrip(), title="contenu téléchargé", border_style="green"))
+
+    if result.get("stderr"):
+        console.print(Panel(result["stderr"].rstrip(), title="stderr", border_style="yellow"))
+
+
+# =============================================================================
+# Affichage outil files (S3)
+# =============================================================================
+
+def show_files_result(result: dict):
+    status = result.get("status", "?")
+    operation = result.get("operation", "?")
+    bucket = result.get("bucket", "?")
+
+    icon = "✅" if status == "success" else "❌"
+    sandbox_tag = " [dim](sandbox)[/dim]" if result.get("sandbox") else ""
+    console.print(f"\n{icon} [bold]files {operation}[/bold] — bucket:{bucket}{sandbox_tag}")
+
+    if status == "error":
+        console.print(f"[red]{result.get('message', 'Erreur')}[/red]")
+        return
+
+    if operation == "list":
+        count = result.get("count", 0)
+        console.print(f"  📋 {count} objet(s)")
+        if result.get("prefix"):
+            console.print(f"  🔍 Préfixe : [cyan]{result['prefix']}[/cyan]")
+        objects = result.get("objects", [])
+        if objects:
+            table = Table(show_header=True)
+            table.add_column("Clé", style="cyan")
+            table.add_column("Taille", style="green", justify="right")
+            table.add_column("Modifié", style="dim")
+            for obj in objects[:50]:
+                size = obj.get("size", 0)
+                size_str = f"{size:,}" if size < 1_000_000 else f"{size/1_000_000:.1f} MB"
+                table.add_row(obj.get("key", "?"), size_str, obj.get("last_modified", "?")[:19])
+            if len(objects) > 50:
+                table.add_row(f"... +{len(objects)-50} objets", "", "")
+            console.print(table)
+
+    elif operation == "read":
+        path = result.get("path", "?")
+        size = result.get("size", 0)
+        console.print(f"  📄 [cyan]{path}[/cyan] ({size} octets)")
+        content = result.get("content", "")
+        if content.strip():
+            if len(content) > 2000:
+                content = content[:2000] + "\n... [TRONQUÉ]"
+            console.print(Panel(content.rstrip(), title=path, border_style="cyan"))
+
+    elif operation == "write":
+        console.print(f"  [green]{result.get('message', 'Fichier écrit')}[/green]")
+
+    elif operation == "delete":
+        console.print(f"  [green]{result.get('message', 'Fichier supprimé')}[/green]")
+
+    elif operation == "info":
+        path = result.get("path", "?")
+        console.print(f"  📄 [cyan]{path}[/cyan]")
+        console.print(f"  Taille       : [green]{result.get('size', '?')}[/green] octets")
+        console.print(f"  Content-Type : [dim]{result.get('content_type', '?')}[/dim]")
+        console.print(f"  Modifié      : [dim]{result.get('last_modified', '?')[:19]}[/dim]")
+        console.print(f"  ETag         : [dim]{result.get('etag', '?')}[/dim]")
+
+    elif operation == "diff":
+        path1 = result.get("path", "?")
+        path2 = result.get("path2", "?")
+        identical = result.get("identical", False)
+        console.print(f"  📄 [cyan]{path1}[/cyan] vs [cyan]{path2}[/cyan]")
+        if identical:
+            console.print(f"  [green]Fichiers identiques[/green]")
+        else:
+            diff_text = result.get("diff", "")
+            if diff_text:
+                console.print(Syntax(diff_text, "diff"))
+
+
+# =============================================================================
 # Affichage outil perplexity
 # =============================================================================
 

@@ -16,6 +16,8 @@ def register_all_tools(mcp: FastMCP) -> None:
     from . import perplexity
     from . import date
     from . import calc
+    from . import ssh
+    from . import files
     
     # Enregistrement
     shell.register(mcp)
@@ -24,3 +26,5 @@ def register_all_tools(mcp: FastMCP) -> None:
     perplexity.register(mcp)
     date.register(mcp)
     calc.register(mcp)
+    ssh.register(mcp)
+    files.register(mcp)

@@ -116,13 +116,15 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | Shell interactif | `scripts/cli/shell.py`       | Interface interactive      |
 | Affichage        | `scripts/cli/display.py`     | Rich partagé (couches 2+3) |
 
-### Outils disponibles (9/27 — Phase 1)
+### Outils disponibles (11/27 — Phase 1)
 
 | Outil              | Description                                          |
 | ------------------ | ---------------------------------------------------- |
 | `shell`            | Sandbox Docker isolée (bash, sh, python3, node, openssl) — sans réseau |
 | `network`          | Diagnostic réseau en sandbox Docker (ping, traceroute, nslookup, dig) — IPs privées RFC 1918 interdites |
 | `http`             | Client HTTP/REST en sandbox Docker (anti-SSRF, auth basic/bearer/api_key) — IPs privées bloquées |
+| `ssh`              | Exécution de commandes et transfert de fichiers via SSH en sandbox Docker (exec, status, upload, download) — auth password/key |
+| `files`            | Opérations fichiers sur S3 Dell ECS en sandbox Docker (list, read, write, delete, info, diff, versions, enable_versioning) — config hybride SigV2/SigV4, versioning S3 |
 | `perplexity_search`| Recherche internet via Perplexity AI                 |
 | `perplexity_doc`   | Documentation technique d'une technologie/librairie/API via Perplexity AI |
 | `date`             | Manipulation de dates/heures (now, today, diff, add, format, parse, week_number, day_of_week) — fuseaux horaires |
@@ -189,8 +191,8 @@ mcp-tools/
 
 ## Roadmap
 
-- **Phase 1** (actuel) : shell, network, http, perplexity_search, perplexity_doc, date, calc — ✅
-- **Phase 1** (à faire) : ssh, docker, files, generate, mcp_call
+- **Phase 1** (actuel) : shell, network, http, ssh, files, perplexity_search, perplexity_doc, date, calc — ✅
+- **Phase 1** (à faire) : docker, generate, mcp_call
 - **Phase 2** : git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf, doc_scraper
 - **Phase 3** : imap, perplexity_api, perplexity_deprecated
 

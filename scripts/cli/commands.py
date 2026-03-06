@@ -22,6 +22,7 @@ from .display import (
     show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
     show_date_result, show_calc_result, show_doc_result,
+    show_ssh_result, show_files_result,
 )
 
 
@@ -387,6 +388,124 @@ def doc_cmd(ctx, query, ctx_str, output_json):
             show_doc_result(result)
         else:
             show_error(result.get("message", "Erreur"))
+    asyncio.run(_run())
+
+
+# =============================================================================
+# Outil ssh
+# =============================================================================
+
+@cli.command("ssh")
+@click.argument("host")
+@click.argument("username")
+@click.option("--operation", "-o", default="exec", type=click.Choice(["exec", "status", "upload", "download"]), help="Opération SSH")
+@click.option("--command", "-c", "cmd", default=None, help="Commande à exécuter (pour exec)")
+@click.option("--password", "-p", default=None, help="Mot de passe SSH")
+@click.option("--key", "-k", "private_key", default=None, help="Chemin vers la clé privée (le contenu sera lu)")
+@click.option("--port", default=22, type=int, help="Port SSH")
+@click.option("--remote-path", "-r", default=None, help="Chemin distant (upload/download)")
+@click.option("--content", default=None, help="Contenu à uploader (pour upload)")
+@click.option("--sudo", is_flag=True, help="Exécuter avec sudo")
+@click.option("--timeout", default=30, type=int, help="Timeout en secondes (max 60)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, remote_path, content, sudo, timeout, output_json):
+    """🔑 Exécuter des commandes ou transférer des fichiers via SSH (sandbox Docker).
+
+    \b
+    Exemples :
+      ssh myserver.com root -c "uptime" -p "password"
+      ssh myserver.com admin -o status -p "password"
+      ssh myserver.com deploy -o exec -c "ls -la /app" -k ~/.ssh/id_rsa
+      ssh myserver.com deploy -o upload -r /tmp/config.txt --content "key=value" -p "pass"
+      ssh myserver.com deploy -o download -r /var/log/app.log -p "pass"
+    """
+    async def _run():
+        client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+        params = {
+            "host": host, "username": username,
+            "operation": operation, "port": port,
+            "timeout": timeout, "sudo": sudo,
+        }
+        # Auth
+        if private_key:
+            import os
+            key_path = os.path.expanduser(private_key)
+            if os.path.isfile(key_path):
+                with open(key_path, "r") as f:
+                    params["private_key"] = f.read()
+                params["auth_type"] = "key"
+            else:
+                show_error(f"Fichier clé non trouvé : {key_path}")
+                return
+        elif password:
+            params["password"] = password
+            params["auth_type"] = "password"
+        else:
+            show_error("Spécifiez --password ou --key pour l'authentification SSH.")
+            return
+        if cmd:
+            params["command"] = cmd
+        if remote_path:
+            params["remote_path"] = remote_path
+        if content:
+            params["content"] = content
+        result = await client.call_tool("ssh", params)
+        if output_json:
+            show_json(result)
+        else:
+            show_ssh_result(result)
+    asyncio.run(_run())
+
+
+# =============================================================================
+# Outil files (S3)
+# =============================================================================
+
+@cli.command("files")
+@click.argument("operation", type=click.Choice(["list", "read", "write", "delete", "info", "diff"]))
+@click.option("--path", "-p", "s3_path", default=None, help="Clé S3 de l'objet")
+@click.option("--path2", default=None, help="2ème clé S3 (pour diff)")
+@click.option("--content", "-c", default=None, help="Contenu à écrire (pour write)")
+@click.option("--prefix", default=None, help="Préfixe pour lister (pour list)")
+@click.option("--max-keys", default=100, type=int, help="Nombre max d'objets (pour list)")
+@click.option("--endpoint", default=None, help="Endpoint S3 (override config)")
+@click.option("--bucket", "-b", default=None, help="Bucket S3 (override config)")
+@click.option("--timeout", default=30, type=int, help="Timeout en secondes (max 60)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def files_cmd(ctx, operation, s3_path, path2, content, prefix, max_keys, endpoint, bucket, timeout, output_json):
+    """📁 Opérations fichiers sur S3 Dell ECS (sandbox Docker).
+
+    \b
+    Exemples :
+      files list --prefix "data/"
+      files read -p "config/app.json"
+      files write -p "config/app.json" -c '{"key": "value"}'
+      files info -p "config/app.json"
+      files diff -p "config/v1.json" --path2 "config/v2.json"
+      files delete -p "config/old.json"
+    """
+    async def _run():
+        client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+        params = {"operation": operation, "timeout": timeout, "max_keys": max_keys}
+        if s3_path:
+            params["path"] = s3_path
+        if path2:
+            params["path2"] = path2
+        if content:
+            params["content"] = content
+        if prefix:
+            params["prefix"] = prefix
+        if endpoint:
+            params["endpoint"] = endpoint
+        if bucket:
+            params["bucket"] = bucket
+        result = await client.call_tool("files", params)
+        if output_json:
+            show_json(result)
+        else:
+            show_files_result(result)
     asyncio.run(_run())
 
 

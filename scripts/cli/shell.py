@@ -16,6 +16,7 @@ from .display import (
     show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
     show_date_result, show_calc_result, show_doc_result,
+    show_ssh_result, show_files_result,
 )
 
 
@@ -30,6 +31,8 @@ SHELL_COMMANDS = {
     "date":       "date <op> [date] [--tz X] — now, today, parse, add, diff, format...",
     "calc":       "calc <expression> — Calcul math (math.sqrt, statistics.mean...)",
     "doc":        "doc <query> [context] — Documentation technique via Perplexity",
+    "ssh":        "ssh <op> <host> <user> [options] — exec, status, upload, download",
+    "files":      "files <op> [options] — list, read, write, delete, info, diff (S3)",
     "quit":       "Quitter le shell",
 }
 
@@ -201,6 +204,91 @@ async def cmd_doc(client, state, args="", json_output=False):
         show_error(result.get("message", "Erreur"))
 
 
+SSH_OPS = ("exec", "status", "upload", "download")
+
+
+async def cmd_ssh(client, state, args="", json_output=False):
+    parts = args.strip().split()
+    if len(parts) < 3 or parts[0] not in SSH_OPS:
+        show_warning("Usage: ssh <op> <host> <user> [options...]")
+        show_warning("")
+        show_warning("  ssh exec myserver.com root --password pass --command 'uptime'")
+        show_warning("  ssh status myserver.com admin --password pass")
+        show_warning("  ssh download myserver.com deploy --password pass --remote-path /var/log/app.log")
+        show_warning("  ssh upload myserver.com deploy --password pass --remote-path /tmp/cfg --content 'key=val'")
+        return
+    op = parts[0]
+    host = parts[1]
+    username = parts[2]
+    params = {"operation": op, "host": host, "username": username}
+    # Parser les options --key value
+    i = 3
+    while i < len(parts):
+        if parts[i].startswith("--") and i + 1 < len(parts):
+            key = parts[i][2:].replace("-", "_")
+            val = parts[i + 1]
+            if key == "port":
+                params[key] = int(val)
+            elif key == "timeout":
+                params[key] = int(val)
+            elif key == "sudo":
+                params[key] = val.lower() in ("true", "1", "yes")
+            elif key == "auth_type":
+                params[key] = val
+            else:
+                params[key] = val
+            i += 2
+        else:
+            i += 1
+    # Déduire auth_type si non spécifié
+    if "auth_type" not in params:
+        if "private_key" in params:
+            params["auth_type"] = "key"
+        elif "password" in params:
+            params["auth_type"] = "password"
+    result = await client.call_tool("ssh", params)
+    if json_output:
+        show_json(result)
+    else:
+        show_ssh_result(result)
+
+
+FILES_OPS = ("list", "read", "write", "delete", "info", "diff")
+
+
+async def cmd_files(client, state, args="", json_output=False):
+    parts = args.strip().split()
+    if not parts or parts[0] not in FILES_OPS:
+        show_warning("Usage: files <op> [options...]")
+        show_warning("")
+        show_warning("  files list --prefix data/")
+        show_warning("  files read --path config/app.json")
+        show_warning("  files write --path test.txt --content 'hello'")
+        show_warning("  files info --path config/app.json")
+        show_warning("  files diff --path v1.json --path2 v2.json")
+        show_warning("  files delete --path old.json")
+        return
+    op = parts[0]
+    params = {"operation": op}
+    i = 1
+    while i < len(parts):
+        if parts[i].startswith("--") and i + 1 < len(parts):
+            key = parts[i][2:].replace("-", "_")
+            val = parts[i + 1]
+            if key in ("max_keys", "timeout"):
+                params[key] = int(val)
+            else:
+                params[key] = val
+            i += 2
+        else:
+            i += 1
+    result = await client.call_tool("files", params)
+    if json_output:
+        show_json(result)
+    else:
+        show_files_result(result)
+
+
 def cmd_help():
     from rich.table import Table
     table = Table(title="🐚 Commandes disponibles", show_header=True)
@@ -268,6 +356,10 @@ async def run_shell(url: str, token: str):
                 await cmd_calc(client, state, args, json_output)
             elif command == "doc":
                 await cmd_doc(client, state, args, json_output)
+            elif command == "ssh":
+                await cmd_ssh(client, state, args, json_output)
+            elif command == "files":
+                await cmd_files(client, state, args, json_output)
             else:
                 show_warning(f"Commande inconnue: '{command}'. Tapez 'help'.")
 

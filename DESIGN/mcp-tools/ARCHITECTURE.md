@@ -1,8 +1,8 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.1.3 | **Date** : 2026-03-06 | **Auteur** : Cloud Temple
+> **Version** : 0.1.4 | **Date** : 2026-03-06 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
-> **Statut** : 🚧 Implémentation en cours — 9/27 tools validés (shell, network, http, perplexity_search, perplexity_doc, date, calc, system_health, system_about)
+> **Statut** : 🚧 Implémentation en cours — 11/27 tools validés (shell, network, http, ssh, files, perplexity_search, perplexity_doc, date, calc, system_health, system_about)
 
 ---
 
@@ -353,9 +353,9 @@ mcp-tools/
 │       ├── network.py         # ✅ Diagnostic réseau sandbox (--network=bridge, RFC 1918)
 │       ├── http.py            # ✅ Client HTTP/REST
 │       ├── perplexity.py      # ✅ Recherche + doc Perplexity AI (search + doc)
-│       ├── ssh.py             # 📐 SSH exec + SFTP
+│       ├── ssh.py             # ✅ SSH exec/upload/download sandbox (--network=bridge, sshpass+key)
 │       ├── docker.py          # 📐 Docker CLI
-│       ├── files.py           # 📐 Édition fichiers
+│       ├── files.py           # ✅ Fichiers S3 Dell ECS sandbox (--network=bridge, boto3 hybride SigV2/SigV4, versioning)
 │       ├── date.py            # ✅ Date/heure/timezone (pure Python, 12 tests)
 │       ├── calc.py            # ✅ Calculs math (sandbox Python Docker, 12 tests)
 │       ├── generate.py        # 📐 Génération fichiers (Jinja2)

@@ -48,6 +48,12 @@ RUN apk add --no-cache \
     traceroute \
     && rm -rf /var/cache/apk/*
 
+# SSH client (tool ssh : exec, upload, download, status)
+RUN apk add --no-cache \
+    openssh-client \
+    sshpass \
+    && rm -rf /var/cache/apk/*
+
 # Crypto & sécurité (openssl, gpg — opérations locales sans réseau)
 # sha256sum, md5sum, sha512sum sont dans coreutils (déjà installé)
 RUN apk add --no-cache \
@@ -59,6 +65,7 @@ RUN apk add --no-cache \
 RUN apk add --no-cache \
     python3 \
     py3-pip \
+    && pip3 install --no-cache-dir --break-system-packages boto3 \
     && rm -rf /var/cache/apk/*
 
 # Node.js (traitement JSON, scripts JS)
