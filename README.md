@@ -50,8 +50,22 @@ python scripts/mcp_cli.py network nslookup google.com -type=mx
 # Requête HTTP
 python scripts/mcp_cli.py http https://httpbin.org/get
 
+# Dates et heures
+python scripts/mcp_cli.py date now --tz Europe/Paris
+python scripts/mcp_cli.py date add 2026-03-06 --days 10
+python scripts/mcp_cli.py date diff 2026-01-01 --date2 2026-03-06
+python scripts/mcp_cli.py date day_of_week 2026-03-06
+
+# Calculs mathématiques
+python scripts/mcp_cli.py calc "2 + 3 * 4"
+python scripts/mcp_cli.py calc "math.sqrt(144) + statistics.mean([10,20,30])"
+
 # Recherche IA (Perplexity)
 python scripts/mcp_cli.py search "Qu'est-ce que le protocole MCP ?"
+
+# Documentation technique (Perplexity)
+python scripts/mcp_cli.py doc "Python asyncio"
+python scripts/mcp_cli.py doc "FastAPI" --context "middleware et dépendances"
 
 # Shell interactif
 python scripts/mcp_cli.py shell
