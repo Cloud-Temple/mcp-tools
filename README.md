@@ -67,6 +67,12 @@ python scripts/mcp_cli.py search "Qu'est-ce que le protocole MCP ?"
 python scripts/mcp_cli.py doc "Python asyncio"
 python scripts/mcp_cli.py doc "FastAPI" --context "middleware et dépendances"
 
+# Gestion des tokens (admin)
+python scripts/mcp_cli.py token create agent-prod --tools shell,date,calc --expires 90
+python scripts/mcp_cli.py token list
+python scripts/mcp_cli.py token info agent-prod
+python scripts/mcp_cli.py token revoke agent-prod
+
 # Shell interactif
 python scripts/mcp_cli.py shell
 ```
@@ -80,6 +86,7 @@ python scripts/test_service.py
 # Test spécifique
 python scripts/test_service.py --test shell
 python scripts/test_service.py --test files
+python scripts/test_service.py --test token
 
 # Serveur déjà lancé
 python scripts/test_service.py --no-docker
@@ -176,7 +183,7 @@ mcp-tools/
 ├── src/mcp_tools/
 │   ├── server.py              # Serveur MCP + HealthCheck + bannière
 │   ├── config.py              # Configuration pydantic-settings (sandbox, etc.)
-│   ├── auth/                  # Middleware auth + context
+│   ├── auth/                  # Middleware auth + Token Store S3
 │   └── tools/                 # Outils MCP (shell, network, http, perplexity)
 ├── sandbox/
 │   └── Dockerfile             # Image Alpine sandbox (python3, node, openssl…)

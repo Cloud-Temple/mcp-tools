@@ -4,6 +4,9 @@ chantier/
 DESIGN/mcp-agent
 DESIGN/mcp-mission
 DESIGN/mcp-vault
+DESIGN/EVALUATION.md
+DESIGN/SYNTHESE_TRANSVERSE.md
+DESIGN/live-mem
 
 # Memory Bank (local)
 memory-bank/

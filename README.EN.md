@@ -67,6 +67,12 @@ python scripts/mcp_cli.py search "What is the MCP protocol?"
 python scripts/mcp_cli.py doc "Python asyncio"
 python scripts/mcp_cli.py doc "FastAPI" --context "middleware and dependencies"
 
+# Token management (admin)
+python scripts/mcp_cli.py token create agent-prod --tools shell,date,calc --expires 90
+python scripts/mcp_cli.py token list
+python scripts/mcp_cli.py token info agent-prod
+python scripts/mcp_cli.py token revoke agent-prod
+
 # Interactive shell
 python scripts/mcp_cli.py shell
 ```
@@ -80,6 +86,7 @@ python scripts/test_service.py
 # Specific test
 python scripts/test_service.py --test shell
 python scripts/test_service.py --test files
+python scripts/test_service.py --test token
 
 # Server already running
 python scripts/test_service.py --no-docker
