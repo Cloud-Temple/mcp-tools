@@ -1326,6 +1326,202 @@ async def test_11_token():
 # Main
 # =============================================================================
 
+async def test_12_admin():
+    """Test 12: Console admin (/admin) — sécurité et API"""
+    print("\n🛠️ TEST 12 — Console Admin (/admin)")
+    print("=" * 50)
+
+    # ── Accès public (sans auth) ──
+
+    # 12a. GET /admin → 200 (HTML servi sans auth, login géré côté JS)
+    try:
+        data = await call_rest("GET", "/admin")
+        ok = data["status_code"] == 200
+        body = data.get("body", "")
+        has_html = "MCP Tools" in str(body)
+        record("admin GET /admin (HTML)", ok and has_html, f"HTTP {data['status_code']}, contient HTML={has_html}")
+    except Exception as e:
+        record("admin GET /admin (HTML)", False, str(e))
+
+    # 12b. GET /admin/static/css/admin.css → 200
+    try:
+        data = await call_rest("GET", "/admin/static/css/admin.css")
+        ok = data["status_code"] == 200
+        record("admin CSS accessible", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin CSS accessible", False, str(e))
+
+    # 12c. GET /admin/static/js/app.js → 200
+    try:
+        data = await call_rest("GET", "/admin/static/js/app.js")
+        ok = data["status_code"] == 200
+        record("admin JS accessible", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin JS accessible", False, str(e))
+
+    # ── Sécurité : path traversal ──
+
+    # 12d. Path traversal bloqué
+    try:
+        data = await call_rest("GET", "/admin/static/../../.env")
+        ok = data["status_code"] in (404, 403)
+        record("admin path traversal bloqué", ok, f"HTTP {data['status_code']} (attendu: 404)")
+    except Exception as e:
+        record("admin path traversal bloqué", False, str(e))
+
+    # 12e. Fichier inexistant → 404
+    try:
+        data = await call_rest("GET", "/admin/static/inexistant.xyz")
+        ok = data["status_code"] == 404
+        record("admin fichier inexistant → 404", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin fichier inexistant → 404", False, str(e))
+
+    # ── API sans token → 401 ──
+
+    # 12f. API health sans token → 401
+    try:
+        data = await call_rest("GET", "/admin/api/health")
+        ok = data["status_code"] == 401
+        record("admin API sans token → 401", ok, f"HTTP {data['status_code']} (attendu: 401)")
+    except Exception as e:
+        record("admin API sans token → 401", False, str(e))
+
+    # 12g. API tools sans token → 401
+    try:
+        data = await call_rest("GET", "/admin/api/tools")
+        ok = data["status_code"] == 401
+        record("admin API tools sans token → 401", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin API tools sans token → 401", False, str(e))
+
+    # 12h. API tokens sans token → 401
+    try:
+        data = await call_rest("GET", "/admin/api/tokens")
+        ok = data["status_code"] == 401
+        record("admin API tokens sans token → 401", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin API tokens sans token → 401", False, str(e))
+
+    # 12i. API tools/run sans token → 401
+    try:
+        data = await call_rest("POST", "/admin/api/tools/run",
+                                json_body={"tool_name": "date", "arguments": {"operation": "now"}})
+        ok = data["status_code"] == 401
+        record("admin API tools/run sans token → 401", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin API tools/run sans token → 401", False, str(e))
+
+    # ── API avec mauvais token → 401 ──
+
+    # 12j. API health mauvais token → 401
+    try:
+        data = await call_rest("GET", "/admin/api/health",
+                                headers={"Authorization": "Bearer bad_token_xyz"})
+        ok = data["status_code"] == 401
+        record("admin API mauvais token → 401", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin API mauvais token → 401", False, str(e))
+
+    # ── API avec token non-admin → 401 ──
+    # (Créer un token read-only via MCP, puis tenter l'admin API)
+
+    non_admin_token = None
+    try:
+        create_data = await call_tool("token", {
+            "operation": "create",
+            "client_name": "e2e-admin-test-readonly",
+            "permissions": ["read"],
+            "tool_ids": ["date"],
+            "expires_days": 1,
+        })
+        if create_data.get("status") == "success":
+            non_admin_token = create_data.get("token")
+    except Exception:
+        pass
+
+    if non_admin_token:
+        # 12k. Token read-only → admin API refusé
+        try:
+            data = await call_rest("GET", "/admin/api/health",
+                                    headers={"Authorization": f"Bearer {non_admin_token}"})
+            ok = data["status_code"] == 401
+            record("admin API token non-admin → 401", ok, f"HTTP {data['status_code']} (attendu: 401)")
+        except Exception as e:
+            record("admin API token non-admin → 401", False, str(e))
+
+        # Cleanup
+        try:
+            await call_tool("token", {"operation": "revoke", "client_name": "e2e-admin-test-readonly"})
+        except Exception:
+            pass
+    else:
+        record("admin API token non-admin → 401", False, "S3 non dispo pour créer token test", skipped=True)
+
+    # ── API avec token admin → succès ──
+
+    admin_headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    # 12l. API health avec admin token
+    try:
+        data = await call_rest("GET", "/admin/api/health", headers=admin_headers)
+        ok = data["status_code"] == 200
+        body = data.get("body", {})
+        has_tools_count = isinstance(body, dict) and body.get("tools_count", 0) > 0
+        record("admin API health (admin)", ok and has_tools_count,
+               f"HTTP {data['status_code']}, tools_count={body.get('tools_count', '?')}")
+    except Exception as e:
+        record("admin API health (admin)", False, str(e))
+
+    # 12m. API tools — params peuplés avec enums
+    try:
+        data = await call_rest("GET", "/admin/api/tools", headers=admin_headers)
+        ok = data["status_code"] == 200
+        body = data.get("body", {})
+        tools = body.get("tools", []) if isinstance(body, dict) else []
+        # Vérifier que network a des params avec enum
+        net = next((t for t in tools if t.get("name") == "network"), {})
+        net_params = net.get("parameters", [])
+        has_params = len(net_params) > 0
+        op_param = next((p for p in net_params if p.get("name") == "operation"), {})
+        has_enum = isinstance(op_param.get("enum"), list) and len(op_param.get("enum", [])) > 0
+        record("admin API tools (params+enums)", ok and has_params and has_enum,
+               f"network params={len(net_params)}, operation enum={op_param.get('enum', [])}")
+    except Exception as e:
+        record("admin API tools (params+enums)", False, str(e))
+
+    # 12n. API tools/run — exécution via admin
+    try:
+        data = await call_rest("POST", "/admin/api/tools/run",
+                                headers={**admin_headers, "Content-Type": "application/json"},
+                                json_body={"tool_name": "date", "arguments": {"operation": "now"}})
+        ok = data["status_code"] == 200
+        body = data.get("body", {})
+        has_result = isinstance(body, dict) and "result" in body
+        record("admin API tools/run (date now)", ok and has_result,
+               f"HTTP {data['status_code']}, duration={body.get('duration_ms', '?')}ms")
+    except Exception as e:
+        record("admin API tools/run (date now)", False, str(e))
+
+    # 12o. API logs — contient des entrées
+    try:
+        data = await call_rest("GET", "/admin/api/logs", headers=admin_headers)
+        ok = data["status_code"] == 200
+        body = data.get("body", {})
+        count = body.get("count", 0) if isinstance(body, dict) else 0
+        record("admin API logs", ok and count > 0, f"count={count}")
+    except Exception as e:
+        record("admin API logs", False, str(e))
+
+    # 12p. Route inconnue → 404
+    try:
+        data = await call_rest("GET", "/admin/api/inexistant", headers=admin_headers)
+        ok = data["status_code"] == 404
+        record("admin API route inconnue → 404", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("admin API route inconnue → 404", False, str(e))
+
+
 # Registre des tests (nom → fonction)
 TEST_REGISTRY = {
     "connectivity":    test_01_connectivity,
@@ -1340,6 +1536,7 @@ TEST_REGISTRY = {
     "ssh":             test_09_ssh,
     "files":           test_10_files,
     "token":           test_11_token,
+    "admin":           test_12_admin,
 }
 
 
@@ -1386,6 +1583,7 @@ async def run_all_tests(only: str = None):
         await test_09_ssh()
         await test_10_files()
         await test_11_token()
+        await test_12_admin()
 
     # Résumé
     elapsed = round(time.monotonic() - t0, 1)

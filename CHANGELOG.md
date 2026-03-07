@@ -4,6 +4,23 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.6] — 2026-03-07
+
+### Added
+- **Console d'administration web** (`/admin`) — Interface SPA reprenant le design Cloud Temple (dark theme #0f0f23, accent #41a890). 4 vues : Dashboard (état serveur, stats tokens), Tools (exécution interactive avec formulaires dynamiques et listes déroulantes pour les enums), Tokens (CRUD avec checkboxes tool_ids), Activité (logs temps réel avec auto-refresh)
+- **AdminMiddleware ASGI** — Intercepte `/admin`, `/admin/static/*`, `/admin/api/*` en outermost de la pile ASGI. Sert les fichiers statiques et route vers l'API REST admin
+- **API REST admin** — 7 endpoints : `GET /admin/api/health`, `GET /admin/api/tools` (avec paramètres + enums enrichis), `POST /admin/api/tools/run` (exécution interactive), `GET/POST /admin/api/tokens` (CRUD), `DELETE /admin/api/tokens/{name}`, `GET /admin/api/logs` (ring buffer 200 entrées)
+- **Enum enrichment** — Mapping `_PARAM_ENUMS` dans l'API pour injecter les valeurs possibles des opérations (network: ping/traceroute/nslookup/dig, shell: bash/sh/python3/node, http: GET/POST/.../HEAD, etc.) non exposées par le schema FastMCP → listes déroulantes dans l'UI
+- **Tests E2E admin** — 16 tests dans `test_service.py` (`--test admin`) : accès HTML/CSS/JS, path traversal bloqué, API sans/mauvais/non-admin token → 401, API avec admin → health/tools/run/logs/404
+
+### Fixed
+- **CORS admin** — Suppression du wildcard `Access-Control-Allow-Origin: *` sur l'API admin. Same-origin uniquement (pas de CORS cross-origin)
+- **Status code logs** — `add_log` enregistre maintenant le vrai status HTTP (200/404/500) au lieu de toujours 200
+
+### Changed
+- **Pile ASGI** — `AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP` (AdminMiddleware ajouté en outermost)
+- **Bannière de démarrage** — Affiche l'URL admin (`http://host:port/admin`)
+
 ## [0.1.5] — 2026-03-06
 
 ### Added

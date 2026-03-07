@@ -101,11 +101,13 @@ async def system_about() -> dict:
 
 def create_app():
     from .auth.middleware import AuthMiddleware, LoggingMiddleware
+    from .admin.middleware import AdminMiddleware
 
     app = mcp.streamable_http_app()
     app = LoggingMiddleware(app)
     app = AuthMiddleware(app)
     app = HealthCheckMiddleware(app)
+    app = AdminMiddleware(app, mcp)  # /admin, /admin/static/*, /admin/api/*
 
     return app
 
@@ -191,6 +193,7 @@ def _build_banner() -> str:
     hp = f"{settings.mcp_server_host}:{settings.mcp_server_port}"
     lines.append(pad(f"  🌐 http://{hp}"))
     lines.append(pad(f"  🔗 http://{hp}/mcp"))
+    lines.append(pad(f"  🛠️  http://{hp}/admin"))
     lines.append(empty)
     lines.append(bottom)
 

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Temple — MCP Tools Admin</title>
+    <link rel="stylesheet" href="/admin/static/css/admin.css">
+</head>
+<body>
+
+<!-- ═══════════════ ÉCRAN DE LOGIN ═══════════════ -->
+<div class="login-overlay" id="loginOverlay">
+    <div class="login-card">
+        <img src="/admin/static/img/logo-cloudtemple.svg" alt="Cloud Temple" class="login-logo">
+        <h2>MCP Tools</h2>
+        <p class="login-subtitle">Console d'administration</p>
+        <div class="login-form">
+            <label for="loginToken">🔑 Token admin</label>
+            <input type="password" id="loginToken" placeholder="Collez votre token admin ici…" autocomplete="off" spellcheck="false">
+            <div class="login-error" id="loginError"></div>
+            <button id="loginBtn">Se connecter</button>
+        </div>
+        <p class="login-hint">Utilisez votre ADMIN_BOOTSTRAP_KEY ou un token avec permission admin.</p>
+    </div>
+</div>
+
+<!-- ═══════════════ HEADER ═══════════════ -->
+<div class="header">
+    <div class="header-brand">
+        <img src="/admin/static/img/logo-cloudtemple.svg" alt="Cloud Temple" class="header-logo">
+        <span class="header-separator">|</span>
+        <h1>MCP Tools <span class="header-badge">Admin</span></h1>
+    </div>
+    <div class="controls">
+        <span class="col-status" id="globalStatus">
+            <span class="dot paused"></span>
+            <span class="status-text">—</span>
+        </span>
+        <button class="btn-logout" id="logoutBtn" title="Déconnexion">🔓</button>
+    </div>
+</div>
+
+<!-- ═══════════════ LAYOUT PRINCIPAL ═══════════════ -->
+<div class="main">
+
+    <!-- Navigation latérale -->
+    <nav class="sidebar" id="sidebar">
+        <a class="nav-item active" data-view="dashboard" href="#">
+            <span class="nav-icon">📊</span>
+            <span class="nav-label">Dashboard</span>
+        </a>
+        <a class="nav-item" data-view="tools" href="#">
+            <span class="nav-icon">🔧</span>
+            <span class="nav-label">Tools</span>
+        </a>
+        <a class="nav-item" data-view="tokens" href="#">
+            <span class="nav-icon">🔑</span>
+            <span class="nav-label">Tokens</span>
+        </a>
+        <a class="nav-item" data-view="logs" href="#">
+            <span class="nav-icon">📋</span>
+            <span class="nav-label">Activité</span>
+        </a>
+    </nav>
+
+    <!-- Contenu principal -->
+    <div class="content" id="content">
+        <!-- Dashboard -->
+        <div class="view active" id="view-dashboard"></div>
+        <!-- Tools -->
+        <div class="view" id="view-tools"></div>
+        <!-- Tokens -->
+        <div class="view" id="view-tokens"></div>
+        <!-- Logs -->
+        <div class="view" id="view-logs"></div>
+    </div>
+</div>
+
+<!-- ═══════════════ MODAL ═══════════════ -->
+<div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+        <div class="modal-header">
+            <span class="modal-title" id="modalTitle"></span>
+            <button class="modal-close" id="modalClose">✕</button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+    </div>
+</div>
+
+<!-- ═══════════════ SCRIPTS ═══════════════ -->
+<script src="/admin/static/js/config.js"></script>
+<script src="/admin/static/js/api.js"></script>
+<script src="/admin/static/js/dashboard.js"></script>
+<script src="/admin/static/js/tools.js"></script>
+<script src="/admin/static/js/tokens.js"></script>
+<script src="/admin/static/js/logs.js"></script>
+<script src="/admin/static/js/app.js"></script>
+
+</body>
+</html>

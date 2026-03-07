@@ -112,7 +112,7 @@ Internet/LAN → :8082 (WAF Caddy+Coraza) → mcp-tools:8050 (internal)
 ### ASGI Stack
 
 ```
-HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
+AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
 ```
 
 ### 3-layer pattern (Cloud Temple standard)
@@ -140,6 +140,18 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | `token`            | MCP authentication token management (create, list, info, revoke) — admin only, tool_ids isolation |
 | `system_health`    | Service health check                                 |
 | `system_about`     | Metadata and tool listing                            |
+
+### Admin Console (`/admin`)
+
+A web administration interface is available at `/admin`:
+
+```
+http://localhost:8082/admin
+```
+
+**4 views**: Dashboard (server status), Tools (interactive execution with dynamic forms), Tokens (CRUD), Activity (real-time logs).
+
+Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permission). Cloud Temple design (dark theme). Same-origin only (no cross-origin CORS).
 
 ### Security
 

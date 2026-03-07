@@ -112,7 +112,7 @@ Internet/LAN → :8082 (WAF Caddy+Coraza) → mcp-tools:8050 (interne)
 ### Pile ASGI
 
 ```
-HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
+AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
 ```
 
 ### 3 couches (pattern Cloud Temple)
@@ -140,6 +140,18 @@ HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP strea
 | `token`            | Gestion des tokens d'authentification MCP (create, list, info, revoke) — admin uniquement, isolation par tool_ids |
 | `system_health`    | Santé du service                                     |
 | `system_about`     | Métadonnées et liste des outils                      |
+
+### Console d'administration (`/admin`)
+
+Une interface web d'administration est disponible sur `/admin` :
+
+```
+http://localhost:8082/admin
+```
+
+**4 vues** : Dashboard (état serveur), Tools (exécution interactive avec formulaires dynamiques), Tokens (CRUD), Activité (logs temps réel).
+
+Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission admin). Design Cloud Temple (dark theme). Same-origin uniquement (pas de CORS cross-origin).
 
 ### Sécurité
 
@@ -183,6 +195,8 @@ mcp-tools/
 ├── src/mcp_tools/
 │   ├── server.py              # Serveur MCP + HealthCheck + bannière
 │   ├── config.py              # Configuration pydantic-settings (sandbox, etc.)
+│   ├── admin/                 # Console d'administration web (/admin)
+│   ├── static/                # Fichiers statiques admin (HTML, CSS, JS)
 │   ├── auth/                  # Middleware auth + Token Store S3
 │   └── tools/                 # Outils MCP (shell, network, http, perplexity)
 ├── sandbox/

@@ -1,8 +1,8 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.1.5 | **Date** : 2026-03-06 | **Auteur** : Cloud Temple
+> **Version** : 0.1.6 | **Date** : 2026-03-07 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
-> **Statut** : 🚧 Implémentation en cours — 12/27 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3
+> **Statut** : 🚧 Implémentation en cours — 12/27 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 + Console Admin Web
 
 ---
 
@@ -216,6 +216,69 @@ MCP Tools est un **serveur passif** comme Live Memory, Graph Memory et Vault :
 
 ---
 
+## 2.6 Console d'administration Web (`/admin`)
+
+MCP Tools inclut une **interface web d'administration** accessible sur `/admin`,
+reprenant les codes graphiques de **Cloud Temple Live Memory** (dark theme, accent teal #41a890).
+
+### Architecture
+
+```
+AdminMiddleware (ASGI, outermost)
+    │
+    ├── GET /admin           → SPA HTML (admin.html)
+    ├── GET /admin/static/*  → fichiers statiques (CSS, JS, images)
+    └── */admin/api/*        → API REST admin (auth Bearer admin requise)
+            │
+            ├── GET  /admin/api/health         → état du serveur
+            ├── GET  /admin/api/tools          → liste des outils + paramètres
+            ├── POST /admin/api/tools/run      → exécuter un outil interactivement
+            ├── GET  /admin/api/tokens         → lister les tokens S3
+            ├── POST /admin/api/tokens         → créer un token
+            ├── GET  /admin/api/tokens/{name}  → info d'un token
+            ├── DELETE /admin/api/tokens/{name} → révoquer un token
+            └── GET  /admin/api/logs           → activité récente (ring buffer 200)
+```
+
+### Pile middleware ASGI (ordre d'exécution)
+
+```
+AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP
+```
+
+L'AdminMiddleware intercepte toutes les routes `/admin*` **avant** l'auth MCP.
+L'API admin gère sa propre authentification (Bearer token admin uniquement).
+
+### 4 vues
+
+| Vue          | Description                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| **Dashboard** | État du serveur (version, Python, sandbox, S3, Perplexity), stats tokens, actions rapides           |
+| **Tools**    | Grille des 12 outils avec recherche. Clic = formulaire dynamique (select pour enums, inputs typés). Exécution interactive avec résultat JSON formaté |
+| **Tokens**   | Table CRUD : créer (checkboxes tool_ids), info, révoquer. Token brut affiché une seule fois         |
+| **Activité** | Logs temps réel (ring buffer mémoire 200 entrées, auto-refresh 5s). Méthode, path, status, durée   |
+
+### Fichiers
+
+| Fichier                              | Rôle                                       |
+| ------------------------------------ | ------------------------------------------ |
+| `src/mcp_tools/admin/__init__.py`    | Module admin                               |
+| `src/mcp_tools/admin/middleware.py`  | AdminMiddleware ASGI (static + API routing) |
+| `src/mcp_tools/admin/api.py`        | REST API (7 endpoints + enum enrichment)   |
+| `src/mcp_tools/static/admin.html`   | SPA HTML                                   |
+| `src/mcp_tools/static/css/admin.css` | Styles (design Cloud Temple)               |
+| `src/mcp_tools/static/js/*.js`      | 7 modules JS (config, api, app, dashboard, tools, tokens, logs) |
+| `src/mcp_tools/static/img/`         | Logo Cloud Temple SVG                      |
+
+### Sécurité
+
+- **Authentification admin** : seul le `ADMIN_BOOTSTRAP_KEY` ou un token S3 avec permission `admin` donne accès
+- **HTML/CSS/JS publics** : la page de login est servie sans auth (l'auth se fait côté API)
+- **CORS preflight** : OPTIONS géré pour les appels AJAX cross-origin
+- **Path traversal** : protection contre les `../` dans les chemins statiques
+
+---
+
 ## 3. Auth : Token → subset de tools
 
 ### Concept `tool_ids`
@@ -345,6 +408,15 @@ mcp-tools/
 │   ├── __main__.py
 │   ├── server.py              # Outils système + create_app() + bannière
 │   ├── config.py              # Config (S3, Perplexity, sandbox, limites)
+│   ├── admin/                 # ✅ Console d'administration web (/admin)
+│   │   ├── __init__.py
+│   │   ├── middleware.py      # AdminMiddleware ASGI (static + API routing)
+│   │   └── api.py             # REST API admin (7 endpoints + enum enrichment)
+│   ├── static/                # ✅ Fichiers statiques admin (SPA)
+│   │   ├── admin.html         # SPA HTML (login + 4 vues)
+│   │   ├── css/admin.css      # Design Cloud Temple (dark theme #0f0f23)
+│   │   ├── js/                # 7 modules JS (config, api, app, dashboard, tools, tokens, logs)
+│   │   └── img/               # Logo Cloud Temple SVG
 │   ├── auth/                  # Auth + Token Manager
 │   │   ├── __init__.py
 │   │   ├── middleware.py      # Bootstrap key + Token Store S3 lookup
