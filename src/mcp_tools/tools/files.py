@@ -335,8 +335,7 @@ async def _run_in_sandbox(script: str, timeout: int, settings) -> dict:
         "--security-opt=no-new-privileges:true",
         f"--tmpfs=/tmp:nosuid,nodev,size={settings.sandbox_tmpfs_size}",
         "--user=sandbox:sandbox",
-        "--dns=8.8.8.8",
-        "--dns=8.8.4.4",
+        *[f"--dns={d.strip()}" for d in settings.sandbox_dns.split(",") if d.strip()],
         settings.sandbox_image,
         "python3", "-c", script,
     ]

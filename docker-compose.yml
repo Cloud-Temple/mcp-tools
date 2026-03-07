@@ -93,6 +93,7 @@ services:
       - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
       - PERPLEXITY_MODEL=${PERPLEXITY_MODEL:-sonar-reasoning-pro}
       - PERPLEXITY_API_URL=${PERPLEXITY_API_URL:-https://api.perplexity.ai}
+      - SANDBOX_DNS=${SANDBOX_DNS:-8.8.8.8,8.8.4.4}
     volumes:
       # Docker socket pour lancer les conteneurs sandbox éphémères (tool shell)
       - /var/run/docker.sock:/var/run/docker.sock

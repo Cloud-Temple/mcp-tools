@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     sandbox_pids_limit: int = 10
     sandbox_tmpfs_size: str = "32m"
     sandbox_max_timeout: int = 30
+    sandbox_dns: str = "8.8.8.8,8.8.4.4"  # DNS pour les sandbox réseau (séparés par virgule)
     sandbox_enabled: bool = True  # False = exécution locale (dev sans Docker)
 
     # --- Email (optionnel, Phase 2) ---
