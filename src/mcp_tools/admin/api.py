@@ -47,8 +47,8 @@ def _get_version() -> str:
     return "dev"
 
 
-def _validate_admin(scope) -> Optional[dict]:
-    """Valide le Bearer token et vérifie les droits admin."""
+def _validate_token(scope) -> Optional[dict]:
+    """Valide le Bearer token (admin ou non). Retourne les infos du token."""
     headers = dict(scope.get("headers", []))
     auth = headers.get(b"authorization", b"").decode()
 
@@ -60,16 +60,21 @@ def _validate_admin(scope) -> Optional[dict]:
 
     # Bootstrap key = admin
     if token == settings.admin_bootstrap_key:
-        return {"client_name": "admin", "permissions": ["admin"]}
+        return {"client_name": "admin", "permissions": ["admin"], "tool_ids": []}
 
-    # Token S3
+    # Token S3 (admin ou non)
     from ..auth.token_store import get_token_store
     store = get_token_store()
     info = store.validate_token(token)
-    if info and "admin" in info.get("permissions", []):
+    if info:
         return info
 
     return None
+
+
+def _is_admin(token_info: dict) -> bool:
+    """Vérifie si le token a la permission admin."""
+    return "admin" in token_info.get("permissions", [])
 
 
 async def _read_body(receive) -> bytes:
@@ -117,13 +122,14 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
         await send({"type": "http.response.body", "body": b""})
         return
 
-    # Auth admin obligatoire
-    admin_info = _validate_admin(scope)
-    if admin_info is None:
-        await _send_json(send, {"status": "error", "message": "Admin token requis"}, 401)
+    # Auth : tout token valide (admin ou non)
+    token_info = _validate_token(scope)
+    if token_info is None:
+        await _send_json(send, {"status": "error", "message": "Token requis"}, 401)
         return
 
-    client_name = admin_info.get("client_name", "?")
+    client_name = token_info.get("client_name", "?")
+    is_admin = _is_admin(token_info)
 
     # ── Routing ──────────────────────────────────────────────────────
 
@@ -131,31 +137,56 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
     response_status = 200
 
     try:
-        if path == "/admin/api/health" and method == "GET":
+        # Routes accessibles à tous les tokens authentifiés
+        if path == "/admin/api/me" and method == "GET":
+            await _handle_me(send, token_info)
+
+        elif path == "/admin/api/health" and method == "GET":
             await _handle_health(send, mcp_instance)
 
         elif path == "/admin/api/tools" and method == "GET":
-            await _handle_tools_list(send, mcp_instance)
+            await _handle_tools_list(send, mcp_instance, token_info)
 
         elif path == "/admin/api/tools/run" and method == "POST":
-            await _handle_tools_run(receive, send, mcp_instance, admin_info)
+            await _handle_tools_run(receive, send, mcp_instance, token_info)
 
+        # Routes admin uniquement
         elif path == "/admin/api/tokens" and method == "GET":
-            await _handle_tokens_list(send)
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                await _handle_tokens_list(send)
 
         elif path == "/admin/api/tokens" and method == "POST":
-            await _handle_tokens_create(receive, send)
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                await _handle_tokens_create(receive, send)
 
         elif path.startswith("/admin/api/tokens/") and method == "GET":
-            name = path.split("/admin/api/tokens/", 1)[1]
-            await _handle_tokens_info(send, name)
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                name = path.split("/admin/api/tokens/", 1)[1]
+                await _handle_tokens_info(send, name)
 
         elif path.startswith("/admin/api/tokens/") and method == "DELETE":
-            name = path.split("/admin/api/tokens/", 1)[1]
-            await _handle_tokens_revoke(send, name)
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                name = path.split("/admin/api/tokens/", 1)[1]
+                await _handle_tokens_revoke(send, name)
 
         elif path == "/admin/api/logs" and method == "GET":
-            await _handle_logs(send)
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                await _handle_logs(send)
 
         else:
             response_status = 404
@@ -170,6 +201,17 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
 
 
 # ═══════════════ HANDLERS ═══════════════
+
+
+async def _handle_me(send, token_info: dict):
+    """GET /admin/api/me — Infos du token courant (permissions, tool_ids)."""
+    await _send_json(send, {
+        "status": "ok",
+        "client_name": token_info.get("client_name", "?"),
+        "permissions": token_info.get("permissions", []),
+        "tool_ids": token_info.get("tool_ids", []),
+        "is_admin": _is_admin(token_info),
+    })
 
 
 async def _handle_health(send, mcp_instance):
@@ -207,10 +249,15 @@ _PARAM_ENUMS = {
 }
 
 
-async def _handle_tools_list(send, mcp_instance):
-    """GET /admin/api/tools — Liste des outils."""
+async def _handle_tools_list(send, mcp_instance, token_info: dict = None):
+    """GET /admin/api/tools — Liste des outils (filtrée par tool_ids si non-admin)."""
+    allowed_ids = token_info.get("tool_ids", []) if token_info else []
+
     tools = []
     for tool in mcp_instance._tool_manager.list_tools():
+        # Filtrer par tool_ids si le token n'est pas admin
+        if allowed_ids and tool.name not in allowed_ids:
+            continue
         raw_desc = (tool.description or "").strip()
         first_line = raw_desc.split("\n")[0].strip()
 
@@ -252,8 +299,8 @@ async def _handle_tools_list(send, mcp_instance):
     await _send_json(send, {"status": "ok", "tools": tools, "count": len(tools)})
 
 
-async def _handle_tools_run(receive, send, mcp_instance, admin_info):
-    """POST /admin/api/tools/run — Exécuter un outil."""
+async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None):
+    """POST /admin/api/tools/run — Exécuter un outil (respecte tool_ids)."""
     from ..auth.context import current_token_info
 
     body = await _read_body(receive)
@@ -270,8 +317,8 @@ async def _handle_tools_run(receive, send, mcp_instance, admin_info):
         await _send_json(send, {"status": "error", "message": "tool_name requis"}, 400)
         return
 
-    # Injecter le contexte admin pour check_tool_access
-    tok = current_token_info.set(admin_info)
+    # Injecter le contexte token pour check_tool_access (respecte tool_ids)
+    tok = current_token_info.set(token_info)
     try:
         t0 = time.monotonic()
         result = await mcp_instance._tool_manager.call_tool(tool_name, arguments)

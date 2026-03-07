@@ -1441,14 +1441,45 @@ async def test_12_admin():
         pass
 
     if non_admin_token:
-        # 12k. Token read-only → admin API refusé
+        non_admin_headers = {"Authorization": f"Bearer {non_admin_token}"}
+
+        # 12k. Token non-admin → health OK (200)
         try:
-            data = await call_rest("GET", "/admin/api/health",
-                                    headers={"Authorization": f"Bearer {non_admin_token}"})
-            ok = data["status_code"] == 401
-            record("admin API token non-admin → 401", ok, f"HTTP {data['status_code']} (attendu: 401)")
+            data = await call_rest("GET", "/admin/api/health", headers=non_admin_headers)
+            ok = data["status_code"] == 200
+            record("admin non-admin → health OK", ok, f"HTTP {data['status_code']} (attendu: 200)")
         except Exception as e:
-            record("admin API token non-admin → 401", False, str(e))
+            record("admin non-admin → health OK", False, str(e))
+
+        # 12k2. Token non-admin → tokens REFUSÉ (403)
+        try:
+            data = await call_rest("GET", "/admin/api/tokens", headers=non_admin_headers)
+            ok = data["status_code"] == 403
+            record("admin non-admin → tokens 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+        except Exception as e:
+            record("admin non-admin → tokens 403", False, str(e))
+
+        # 12k3. Token non-admin → logs REFUSÉ (403)
+        try:
+            data = await call_rest("GET", "/admin/api/logs", headers=non_admin_headers)
+            ok = data["status_code"] == 403
+            record("admin non-admin → logs 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+        except Exception as e:
+            record("admin non-admin → logs 403", False, str(e))
+
+        # 12k4. Token non-admin → tools filtrés par tool_ids
+        try:
+            data = await call_rest("GET", "/admin/api/tools", headers=non_admin_headers)
+            ok = data["status_code"] == 200
+            body = data.get("body", {})
+            tool_names = [t["name"] for t in body.get("tools", [])] if isinstance(body, dict) else []
+            # Le token a tool_ids=["date"] → ne devrait voir que date
+            has_date = "date" in tool_names
+            no_shell = "shell" not in tool_names
+            record("admin non-admin → tools filtrés", ok and has_date and no_shell,
+                   f"tools={tool_names}")
+        except Exception as e:
+            record("admin non-admin → tools filtrés", False, str(e))
 
         # Cleanup
         try:
@@ -1456,7 +1487,7 @@ async def test_12_admin():
         except Exception:
             pass
     else:
-        record("admin API token non-admin → 401", False, "S3 non dispo pour créer token test", skipped=True)
+        record("admin non-admin → health OK", False, "S3 non dispo pour créer token test", skipped=True)
 
     # ── API avec token admin → succès ──
 

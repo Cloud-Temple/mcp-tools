@@ -13,6 +13,7 @@ const app = {
     selectedTool: null,
     refreshTimer: null,
     refreshInterval: 10,  // secondes
+    me: null,  // infos du token courant (permissions, tool_ids, is_admin)
 };
 
 // ═══════════════ HELPERS ═══════════════

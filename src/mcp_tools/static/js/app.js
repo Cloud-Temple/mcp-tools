@@ -29,15 +29,14 @@ async function doLogin() {
 
     try {
         setAuthToken(token);
-        const r = await apiHealth();
-        if (r.status === 'ok') {
+        const me = await apiMe();
+        if (me.status === 'ok') {
+            app.me = me;
             hideLogin();
             input.value = '';
-            showToast('Connecté en tant qu\'admin', 'success');
+            updateNavVisibility();
+            showToast(`Connecté : ${me.client_name}${me.is_admin ? ' (admin)' : ''}`, 'success');
             await initialLoad();
-        } else if (r.status === 'error' && r.message?.includes('Admin')) {
-            clearAuthToken();
-            err.textContent = '❌ Ce token n\'a pas les droits admin.';
         } else {
             clearAuthToken();
             err.textContent = '❌ Token invalide.';
@@ -45,7 +44,7 @@ async function doLogin() {
     } catch (e) {
         clearAuthToken();
         if (e.message === 'Unauthorized') {
-            err.textContent = '❌ Token invalide ou non-admin.';
+            err.textContent = '❌ Token invalide.';
         } else {
             err.textContent = '❌ Serveur injoignable.';
         }
@@ -70,9 +69,11 @@ async function checkToken() {
     if (!token) { showLogin(); return; }
 
     try {
-        const r = await apiHealth();
-        if (r.status === 'ok') {
+        const me = await apiMe();
+        if (me.status === 'ok') {
+            app.me = me;
             hideLogin();
+            updateNavVisibility();
             await initialLoad();
         } else {
             showLogin('Token expiré.');
@@ -83,6 +84,23 @@ async function checkToken() {
         } else {
             showLogin('Serveur injoignable.');
         }
+    }
+}
+
+function updateNavVisibility() {
+    const isAdmin = app.me && app.me.is_admin;
+    // Cacher les onglets Tokens et Logs pour les non-admin
+    document.querySelectorAll('.nav-item').forEach(item => {
+        const view = item.dataset.view;
+        if (view === 'tokens' || view === 'logs') {
+            item.style.display = isAdmin ? '' : 'none';
+        }
+    });
+    // Mettre à jour le titre du header
+    const badge = document.querySelector('.header-badge');
+    if (badge) {
+        badge.textContent = isAdmin ? 'Admin' : app.me?.client_name || 'User';
+        badge.style.background = isAdmin ? '#41a890' : '#3498db';
     }
 }
 

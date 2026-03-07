@@ -43,6 +43,10 @@ async function adminFetch(url, options = {}) {
 
 // ═══════════════ ENDPOINTS ═══════════════
 
+async function apiMe() {
+    return await adminFetch('/admin/api/me');
+}
+
 async function apiHealth() {
     return await adminFetch('/admin/api/health');
 }
