@@ -129,17 +129,29 @@ async def system_about() -> dict:
 # =============================================================================
 # Ajouter vos outils ici. Chaque outil suit le pattern :
 #
+# from typing import Annotated
+# from pydantic import Field
+#
 # @mcp.tool()
-# async def mon_outil(param: str, ctx: Optional[Context] = None) -> dict:
-#     """Docstring visible par les agents IA."""
+# async def mon_outil(
+#     resource_id: Annotated[str, Field(description="ID de la ressource à traiter")],
+#     action: Annotated[str, Field(default="read", description="Action : read, write, delete")] = "read",
+#     timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max 60)")] = 30,
+#     ctx: Optional[Context] = None,
+# ) -> dict:
+#     """Description courte visible par les agents IA et dans Cline."""
 #     try:
 #         access_err = check_access(resource_id)
 #         if access_err:
 #             return access_err
-#         result = await get_my_service().do_something(param)
+#         result = await get_my_service().do_something(resource_id)
 #         return {"status": "ok", "data": result}
 #     except Exception as e:
 #         return {"status": "error", "message": str(e)}
+#
+# ⚠️ IMPORTANT : chaque paramètre DOIT utiliser Annotated[type, Field(description="...")]
+#   pour que les clients MCP (Cline, Claude Desktop) affichent les descriptions.
+#   Seul ctx: Optional[Context] est exempt (interne FastMCP).
 
 
 # =============================================================================

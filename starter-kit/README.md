@@ -179,7 +179,37 @@ mon-mcp-server/
 
 ## 5. Conventions et patterns
 
-### 5.1 Format de retour standardisé
+### 5.1 Descriptions des paramètres MCP (obligatoire)
+
+**Chaque paramètre** d'un outil MCP **doit** avoir une description via `Annotated[type, Field(description="...")]`.
+Sans cela, les clients MCP (Cline, Claude Desktop…) affichent **"No description"** — inutile pour le LLM et l'utilisateur.
+
+```python
+from typing import Annotated, Optional
+from pydantic import Field
+from mcp.server.fastmcp import FastMCP, Context
+
+@mcp.tool()
+async def mon_outil(
+    # ✅ Chaque paramètre utilisateur a une description
+    resource_id: Annotated[str, Field(description="ID de la ressource à traiter")],
+    action: Annotated[str, Field(default="read", description="Action : read, write, delete")] = "read",
+    timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max 60)")] = 30,
+    tags: Annotated[Optional[list[str]], Field(default=None, description="Tags optionnels pour filtrer")] = None,
+    # ⚠️ ctx est le seul paramètre SANS description (interne FastMCP)
+    ctx: Optional[Context] = None,
+) -> dict:
+    """Description courte de l'outil (visible dans la liste des tools)."""
+```
+
+**Règles** :
+- `Annotated[type, Field(description="...")]` pour **chaque** paramètre utilisateur
+- Descriptions **concises** (1 ligne) avec valeurs possibles, exemples, contraintes
+- `ctx: Optional[Context] = None` en dernier, **sans** description (injecté par FastMCP)
+- Les optionnels : `Field(default=..., description="...")` + `= ...` (les deux !)
+- Imports requis : `from typing import Annotated` et `from pydantic import Field`
+
+### 5.2 Format de retour standardisé
 
 ```python
 # Succès
@@ -326,22 +356,17 @@ Pour **chaque** outil métier, suivre le processus 4 fichiers :
 ### Étape 1 : L'outil MCP dans `server.py`
 
 ```python
+from typing import Annotated, Optional
+from pydantic import Field
+
 @mcp.tool()
 async def mon_nouvel_outil(
-    resource_id: str,
-    param1: str,
-    param2: Optional[int] = None
+    resource_id: Annotated[str, Field(description="ID de la ressource concernée")],
+    param1: Annotated[str, Field(description="Paramètre principal (ex: nom, chemin, requête)")],
+    param2: Annotated[Optional[int], Field(default=None, description="Paramètre optionnel (ex: limite, timeout)")] = None,
+    ctx: Optional[Context] = None,
 ) -> dict:
-    """
-    Description courte (1 ligne).
-
-    Description longue visible dans la doc MCP auto-générée.
-
-    Args:
-        resource_id: ID de la ressource concernée
-        param1: Description du paramètre
-        param2: Description optionnelle (défaut: None)
-    """
+    """Description courte (1 ligne) — visible dans la liste des tools MCP."""
     try:
         access_err = check_access(resource_id)
         if access_err:
@@ -353,6 +378,9 @@ async def mon_nouvel_outil(
     except Exception as e:
         return {"status": "error", "message": str(e)}
 ```
+
+> **⚠️ Important** : Chaque paramètre utilise `Annotated[type, Field(description="...")]`
+> pour que Cline et les autres clients MCP affichent les descriptions (voir §5.1).
 
 ### Étape 2 : L'affichage Rich dans `display.py`
 
@@ -423,6 +451,7 @@ async def cmd_mon_outil(client, state, args="", json_output=False):
 | Shell sans autocomplétion    | L'utilisateur ne découvre pas la commande             | Ajouter dans `SHELL_COMMANDS`            |
 | Exception non catchée        | Le client MCP reçoit une stacktrace au lieu d'un dict | `try/except` → `{"status": "error"}`     |
 | Utiliser `mcp.sse_app()`    | Transport obsolète (SSE)                              | Utiliser `mcp.streamable_http_app()`     |
+| Params sans description      | Cline affiche "No description" pour chaque paramètre | `Annotated[type, Field(description=...)]` (§5.1) |
 
 ---
 
