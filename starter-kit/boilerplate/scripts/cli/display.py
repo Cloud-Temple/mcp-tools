@@ -92,3 +92,62 @@ def show_about_result(result: dict):
         for t in tools:
             table.add_row(t.get("name", "?"), t.get("description", ""))
         console.print(table)
+
+
+# =============================================================================
+# Affichage des tokens
+# =============================================================================
+
+def show_token_create_result(result: dict):
+    """Affiche le résultat de token create (token brut affiché une seule fois)."""
+    raw = result.get("raw_token", "?")
+    name = result.get("client_name", "?")
+    perms = ", ".join(result.get("permissions", []))
+    email = result.get("email", "")
+    expires = result.get("expires_at", "jamais")
+
+    console.print(Panel.fit(
+        f"[bold]Client  :[/bold] [cyan]{name}[/cyan]\n"
+        f"[bold]Email   :[/bold] {email or '[dim]—[/dim]'}\n"
+        f"[bold]Perms   :[/bold] {perms}\n"
+        f"[bold]Expire  :[/bold] {expires or 'jamais'}\n"
+        f"\n[bold yellow]⚠️  Token (affiché UNE SEULE FOIS) :[/bold yellow]\n"
+        f"[green bold]{raw}[/green bold]",
+        title="🔑 Token créé",
+        border_style="green",
+    ))
+
+
+def show_token_list_result(result: dict):
+    """Affiche la liste des tokens."""
+    tokens = result.get("tokens", [])
+
+    table = Table(title=f"🔑 Tokens ({len(tokens)})", show_header=True)
+    table.add_column("Client", style="cyan bold")
+    table.add_column("Email", style="dim")
+    table.add_column("Permissions", style="green")
+    table.add_column("Hash", style="dim")
+    table.add_column("Expire", style="dim")
+    table.add_column("Statut", style="white")
+
+    for t in tokens:
+        status = "[red]révoqué[/red]" if t.get("revoked") else "[green]actif[/green]"
+        perms = ", ".join(t.get("permissions", []))
+        email = t.get("email", "")
+        expires = t.get("expires_at", "—") or "—"
+        table.add_row(
+            t.get("client_name", "?"),
+            email or "—",
+            perms,
+            t.get("hash_prefix", "?") + "…",
+            expires[:10] if expires != "—" else "—",
+            status,
+        )
+
+    console.print(table)
+
+
+def show_token_revoke_result(result: dict):
+    """Affiche le résultat de token revoke."""
+    msg = result.get("message", "Token révoqué")
+    show_success(msg)

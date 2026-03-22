@@ -117,23 +117,41 @@ class TokenStore:
             self.load()
 
     def get_by_hash(self, token_hash: str) -> Optional[dict]:
-        """Cherche un token par son hash SHA-256."""
+        """Cherche un token par son hash SHA-256. Vérifie l'expiration."""
         self._maybe_refresh()
-        return self._tokens.get(token_hash)
+        token = self._tokens.get(token_hash)
+        if token and token.get("expires_at"):
+            from datetime import datetime, timezone
+            try:
+                expires = datetime.fromisoformat(token["expires_at"])
+                if datetime.now(timezone.utc) > expires:
+                    return None  # Token expiré
+            except (ValueError, TypeError):
+                pass
+        return token
 
     def create(self, client_name: str, permissions: list, allowed_resources: list = None,
-               expires_in_days: int = 90) -> dict:
+               expires_in_days: int = 90, email: str = "") -> dict:
         """Crée un nouveau token et le sauvegarde sur S3."""
         import secrets
+        from datetime import datetime, timezone, timedelta
+
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        now = datetime.now(timezone.utc)
+        expires_at = None
+        if expires_in_days and expires_in_days > 0:
+            expires_at = (now + timedelta(days=expires_in_days)).isoformat()
 
         token_info = {
             "hash": token_hash,
             "client_name": client_name,
             "permissions": permissions,
             "allowed_resources": allowed_resources or [],
-            "created_at": time.time(),
+            "email": email,
+            "created_at": now.isoformat(),
+            "expires_at": expires_at,
             "revoked": False,
         }
 
@@ -149,7 +167,9 @@ class TokenStore:
             {
                 "client_name": t["client_name"],
                 "permissions": t["permissions"],
+                "email": t.get("email", ""),
                 "hash_prefix": t["hash"][:12],
+                "expires_at": t.get("expires_at"),
                 "revoked": t.get("revoked", False),
             }
             for t in self._tokens.values()

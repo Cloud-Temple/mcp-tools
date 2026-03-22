@@ -1,8 +1,8 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.1.7 | **Date** : 2026-03-08 | **Auteur** : Cloud Temple
+> **Version** : 0.1.8 | **Date** : 2026-03-12 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
-> **Statut** : 🚧 Implémentation en cours — 12/27 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 + Console Admin Web
+> **Statut** : 🚧 Implémentation en cours — 12/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 + Console Admin Web + 64 paramètres MCP
 
 ---
 
@@ -290,6 +290,7 @@ Le token d'accès contient un champ `tool_ids` qui liste les tools autorisés :
   "client_name": "agent-sre",
   "permissions": "write",
   "tool_ids": ["ssh", "shell", "http", "network", "docker", "files", "date", "calc", "perplexity_search"],
+  "email": "sre-team@cloudtemple.fr",
   "expires_at": "2026-06-01T00:00:00Z"
 }
 ```
@@ -469,10 +470,10 @@ mcp-tools/
 
 | Phase       | Tools                                                                                                                           | Nombre | Effort  |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------- | ------ | ------- |
-| **Phase 1** | ssh, shell, http, network, docker, files, date, calc, generate, mcp_call, perplexity (×2)                                       | 12     | 2-3 sem |
+| **Phase 1** | ssh, shell, http, network, docker, files, date, calc, token, generate, mcp_call, perplexity (×2)                                 | 13     | 2-3 sem |
 | **Phase 2** | git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf2text, pdf_search, office_to_pdf, doc_scraper | 12     | 2-3 sem |
 | **Phase 3** | imap, perplexity_api, perplexity_deprecated                                                                                     | 3      | 1 sem   |
 
 ---
 
-*Document créé le 5 mars 2026 — MCP Tools v0.1.0-draft*
+*Document créé le 5 mars 2026 — Mis à jour le 17 mars 2026 — MCP Tools v0.1.8*

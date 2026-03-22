@@ -18,6 +18,7 @@ from .client import MCPClient
 from .display import (
     console, show_error, show_success,
     show_health_result, show_about_result, show_json,
+    show_token_create_result, show_token_list_result, show_token_revoke_result,
 )
 
 
@@ -92,6 +93,90 @@ def shell_cmd(ctx):
     """🐚 Lancer le shell interactif."""
     from .shell import run_shell
     asyncio.run(run_shell(ctx.obj["url"], ctx.obj["token"]))
+
+
+# =============================================================================
+# Commandes token (gestion des tokens d'accès)
+# =============================================================================
+
+@cli.group("token")
+def token_group():
+    """🔑 Gestion des tokens d'accès (admin)."""
+    pass
+
+
+@token_group.command("create")
+@click.argument("client_name")
+@click.option("--permissions", "-p", default="read,write", help="Permissions (ex: read,write,admin)")
+@click.option("--email", "-e", default="", help="Email du propriétaire (traçabilité)")
+@click.option("--expires", "-d", default=90, type=int, help="Expiration en jours (0 = jamais)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def token_create_cmd(ctx, client_name, permissions, email, expires, output_json):
+    """Créer un nouveau token."""
+    async def _run():
+        try:
+            client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+            result = await client.call_tool("token", {
+                "operation": "create",
+                "client_name": client_name,
+                "permissions": permissions,
+                "email": email,
+                "expires_days": expires,
+            })
+            if output_json:
+                show_json(result)
+            elif result.get("status") in ("ok", "created"):
+                show_token_create_result(result)
+            else:
+                show_error(result.get("message", "Erreur"))
+        except Exception as e:
+            show_error(f"Erreur: {e}")
+    asyncio.run(_run())
+
+
+@token_group.command("list")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def token_list_cmd(ctx, output_json):
+    """Lister les tokens existants."""
+    async def _run():
+        try:
+            client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+            result = await client.call_tool("token", {"operation": "list"})
+            if output_json:
+                show_json(result)
+            elif result.get("status") == "ok":
+                show_token_list_result(result)
+            else:
+                show_error(result.get("message", "Erreur"))
+        except Exception as e:
+            show_error(f"Erreur: {e}")
+    asyncio.run(_run())
+
+
+@token_group.command("revoke")
+@click.argument("hash_prefix")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def token_revoke_cmd(ctx, hash_prefix, output_json):
+    """Révoquer un token par préfixe de hash."""
+    async def _run():
+        try:
+            client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+            result = await client.call_tool("token", {
+                "operation": "revoke",
+                "client_name": hash_prefix,
+            })
+            if output_json:
+                show_json(result)
+            elif result.get("status") == "ok":
+                show_token_revoke_result(result)
+            else:
+                show_error(result.get("message", "Erreur"))
+        except Exception as e:
+            show_error(f"Erreur: {e}")
+    asyncio.run(_run())
 
 
 # =============================================================================

@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.1.5 | **Date** : 2026-03-06
+> **Version** : 0.1.8 | **Date** : 2026-03-12
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -12,15 +12,15 @@
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                     | Source                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | **ssh** ✅  | `exec`, `upload`, `download`, `status` — Sandbox Docker (--network=bridge, sshpass+key dans tmpfs)              | host, username, auth_type (password/key), command, sudo, timeout (60s max), remote_path, content — 10 tests     | Sandbox Docker (from scratch)      |
-| **shell**   | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL)                  | command, shell (bash/sh), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
-| **network** | `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites.                       | From scratch (sandbox Docker)      |
+| **shell** ✅ | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL)                  | command, shell (bash/sh/python3/node), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
+| **network** ✅ | `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites.                       | From scratch (sandbox Docker)      |
 | **docker**  | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                                  | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
 
 ### Réseau (1 tool)
 
 | Tool     | Opérations                                                                                                    | Params clés                                                                                              | Source                      |
 | -------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------- |
-| **http** | GET, POST, PUT, DELETE, PATCH, HEAD — Sandbox Docker (--network=bridge, anti-SSRF, RFC 1918 + résolution DNS) | url, method, headers, body, json_body, auth_type (basic/bearer/api_key), auth_value, timeout, verify_ssl | Sandbox curl (from scratch) |
+| **http** ✅ | GET, POST, PUT, DELETE, PATCH, HEAD — Sandbox Docker (--network=bridge, anti-SSRF, RFC 1918 + résolution DNS) | url, method, headers, body, json_body, auth_type (basic/bearer/api_key), auth_value, timeout, verify_ssl | Sandbox curl (from scratch) |
 
 ### Données (1 tool)
 
@@ -46,13 +46,13 @@
 
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                      | Source                        |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| **token** ✅ | `create`, `list`, `info`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids` | client_name, permissions, tool_ids, expires_days. Token brut affiché une seule fois à la création — 12 tests E2E | Token Store S3 (from scratch) |
+| **token** ✅ | `create`, `list`, `info`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids` | client_name, permissions, tool_ids, email (optionnel, traçabilité), expires_days. Token brut affiché une seule fois à la création — 12 tests E2E | Token Store S3 (from scratch) |
 
 ### Recherche Perplexity (3 tools)
 
 | Tool                  | Description                              | Params clés                                                    | Source                             |
 | --------------------- | ---------------------------------------- | -------------------------------------------------------------- | ---------------------------------- |
-| **perplexity_search** | Recherche internet avec niveau de détail | query, detail_level (brief/normal/detailed), model (optionnel) | perplexity-mcp `search`            |
+| **perplexity_search** ✅ | Recherche internet avec niveau de détail | query, detail_level (brief/normal/detailed), model (optionnel) | perplexity-mcp `search`            |
 | **perplexity_doc** ✅ | Documentation d'une techno/lib/API       | query, context (optionnel), model (optionnel)                  | perplexity-mcp `get_documentation` — 3 tests |
 | ~~perplexity_chat~~   | ~~Conversation continue avec historique~~ | ~~message, chat_id~~ — **Abandonné**                          | —                                  |
 
@@ -162,4 +162,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — MCP Tools v0.1.0-draft*
+*Document créé le 5 mars 2026 — Mis à jour le 17 mars 2026 — MCP Tools v0.1.8*

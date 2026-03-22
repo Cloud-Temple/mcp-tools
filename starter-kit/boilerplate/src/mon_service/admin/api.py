@@ -89,11 +89,14 @@ async def _api_create_token(send, body):
     client_name = data.get("client_name", "")
     permissions = data.get("permissions", ["read"])
     allowed_resources = data.get("allowed_resources", [])
+    email = data.get("email", "")
+    expires_in_days = data.get("expires_in_days", 90)
 
     if not client_name:
         return await _json_response(send, 400, {"status": "error", "message": "client_name requis"})
 
-    result = store.create(client_name, permissions, allowed_resources)
+    result = store.create(client_name, permissions, allowed_resources,
+                          expires_in_days=expires_in_days, email=email)
     await _json_response(send, 201, {"status": "created", **result})
 
 

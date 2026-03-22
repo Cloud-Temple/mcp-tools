@@ -275,6 +275,17 @@ Requête   : AuthMiddleware → get_token_store() → lookup hash SHA-256 (cache
 Admin     : create/revoke → sauvegarde S3 + invalide cache
 ```
 
+Chaque token stocke :
+- `client_name` — Nom du client (obligatoire)
+- `permissions` — Liste de permissions (`["read"]`, `["read", "write"]`, `["admin"]`)
+- `allowed_resources` — Liste de ressources autorisées (vide = toutes)
+- `email` — Email du propriétaire (optionnel, traçabilité)
+- `expires_at` — Date d'expiration ISO 8601 (calculée depuis `expires_in_days`)
+- `created_at` — Date de création ISO 8601
+- `revoked` — Booléen (révocation logique)
+
+**Expiration** : `get_by_hash()` vérifie `expires_at` et retourne `None` si le token est expiré.
+
 Si S3 n'est pas configuré, seul le `ADMIN_BOOTSTRAP_KEY` fonctionne (mode dev).
 
 ### 5.5 Lazy-loading des services
@@ -341,6 +352,9 @@ Pour **chaque** outil métier, suivre le processus 4 fichiers :
 - [ ] Configurer S3 dans `.env` (endpoint, credentials, bucket)
 - [ ] Vérifier : `init_token_store()` au démarrage (logs)
 - [ ] Tester : créer un token via la console admin `/admin`
+- [ ] Tester : `python scripts/mcp_cli.py token create mon-agent --email user@domain.com`
+- [ ] Tester : `python scripts/mcp_cli.py token list`
+- [ ] Vérifier l'expiration : tokens créés avec `--expires 90` expirent après 90 jours
 
 ### Phase 4 : Production
 
@@ -515,9 +529,9 @@ boilerplate/
 │   └── cli/
 │       ├── __init__.py      # Config globale (MCP_URL, MCP_TOKEN)
 │       ├── client.py        # Client HTTP complet
-│       ├── commands.py      # CLI Click (health, about, shell)
-│       ├── shell.py         # Shell interactif (prompt_toolkit)
-│       └── display.py       # Affichage Rich partagé
+│       ├── commands.py      # CLI Click (health, about, shell, token create/list/revoke)
+│       ├── shell.py         # Shell interactif (prompt_toolkit) + token management
+│       └── display.py       # Affichage Rich partagé (system, tokens)
 ├── waf/
 │   ├── Dockerfile           # Caddy + Coraza WAF + Rate Limiting
 │   └── Caddyfile            # Config WAF : reverse proxy + OWASP CRS
