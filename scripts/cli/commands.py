@@ -528,7 +528,7 @@ def token_group(ctx):
 @token_group.command("create")
 @click.argument("name")
 @click.option("--tools", "-t", "tool_ids_str", default="", help="Outils autorisés (séparés par virgule). Vide = tous.")
-@click.option("--permissions", "-p", default="read,write", help="Permissions (séparées par virgule)")
+@click.option("--permissions", "-p", default="access", help="Permissions : access, admin (séparées par virgule)")
 @click.option("--expires", "-e", default=90, type=int, help="Expiration en jours (0 = jamais)")
 @click.option("--email", default="", help="Email du propriétaire (optionnel, traçabilité)")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
@@ -540,7 +540,7 @@ def token_create(ctx, name, tool_ids_str, permissions, expires, email, output_js
     Exemples :
       token create agent-prod --tools shell,date,calc --expires 90
       token create cline-dev --tools shell,http,network,date,calc --expires 365
-      token create readonly-agent --permissions read --tools date,calc
+      token create admin-user --permissions access,admin
       token create ct-user --email user@cloud-temple.com --expires 180
     """
     async def _run():

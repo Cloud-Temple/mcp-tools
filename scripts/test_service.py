@@ -360,6 +360,69 @@ async def test_03_shell():
     except Exception as e:
         record("shell timeout", False, str(e))
 
+    # --- Tests packages Python pré-installés (sans réseau) ---
+
+    # 3i. numpy disponible (pré-installé dans l'image sandbox)
+    try:
+        data = await call_tool("shell", {"command": "import numpy; print(numpy.__version__)", "shell": "python3"})
+        ok = data.get("status") == "success" and len(data.get("stdout", "").strip()) > 0
+        record("shell python3 numpy (pré-installé)", ok, f"version={data.get('stdout', '').strip()[:20]}")
+    except Exception as e:
+        record("shell python3 numpy (pré-installé)", False, str(e))
+
+    # 3j. pandas disponible (pré-installé)
+    try:
+        data = await call_tool("shell", {"command": "import pandas; print(pandas.__version__)", "shell": "python3"})
+        ok = data.get("status") == "success" and len(data.get("stdout", "").strip()) > 0
+        record("shell python3 pandas (pré-installé)", ok, f"version={data.get('stdout', '').strip()[:20]}")
+    except Exception as e:
+        record("shell python3 pandas (pré-installé)", False, str(e))
+
+    # 3k. requests disponible (pré-installé)
+    try:
+        data = await call_tool("shell", {"command": "import requests; print(requests.__version__)", "shell": "python3"})
+        ok = data.get("status") == "success" and len(data.get("stdout", "").strip()) > 0
+        record("shell python3 requests (pré-installé)", ok, f"version={data.get('stdout', '').strip()[:20]}")
+    except Exception as e:
+        record("shell python3 requests (pré-installé)", False, str(e))
+
+    # --- Tests paramètre network=true ---
+
+    # 3l. network=true → curl fonctionne (accès réseau activé)
+    try:
+        data = await call_tool("shell", {
+            "command": "curl -s --max-time 5 -o /dev/null -w '%{http_code}' https://httpbin.org/get",
+            "network": True,
+            "timeout": 15,
+        })
+        ok = data.get("status") == "success" and "200" in data.get("stdout", "")
+        record("shell network=true curl OK", ok, f"stdout={data.get('stdout', '').strip()[:30]}")
+    except Exception as e:
+        record("shell network=true curl OK", False, str(e))
+
+    # 3m. network=true → pip install --user fonctionne
+    try:
+        data = await call_tool("shell", {
+            "command": "pip install --user --quiet --no-warn-script-location cowsay 2>&1 && python3 -c 'import cowsay; print(\"PIP_OK\")'",
+            "network": True,
+            "timeout": 30,
+        })
+        ok = data.get("status") == "success" and "PIP_OK" in data.get("stdout", "")
+        record("shell network=true pip install", ok, f"stdout={data.get('stdout', '').strip()[-40:]}")
+    except Exception as e:
+        record("shell network=true pip install", False, str(e))
+
+    # 3n. network=false (défaut) → réseau toujours isolé (régression)
+    try:
+        data = await call_tool("shell", {
+            "command": "curl -s --max-time 3 https://google.com 2>&1 || echo STILL_BLOCKED",
+            "network": False,
+        })
+        ok = "STILL_BLOCKED" in data.get("stdout", "") or data.get("returncode", 0) != 0
+        record("shell network=false isolé (régression)", ok, f"stdout={data.get('stdout', '').strip()[:60]}")
+    except Exception as e:
+        record("shell network=false isolé (régression)", False, str(e))
+
 
 async def test_04_network():
     """Test 4: Outil network (sandbox Docker avec réseau)"""
@@ -1553,6 +1616,76 @@ async def test_12_admin():
         record("admin API route inconnue → 404", False, str(e))
 
 
+# =============================================================================
+# 13. WAF Coraza — OWASP CRS
+# =============================================================================
+
+async def test_13_waf():
+    """Tests du WAF Coraza (OWASP CRS) sur les routes protégées."""
+    print("\n🛡️  13. WAF Coraza — OWASP CRS")
+    print("-" * 40)
+
+    admin_headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    # 13a. Requête normale via WAF → passe (200)
+    try:
+        data = await call_rest("GET", "/health")
+        ok = data["status_code"] == 200
+        record("waf requête normale → 200", ok, f"HTTP {data['status_code']}")
+    except Exception as e:
+        record("waf requête normale → 200", False, str(e))
+
+    # 13b. XSS dans l'URL → WAF bloque (403)
+    try:
+        data = await call_rest("GET", "/health?q=<script>alert(1)</script>")
+        ok = data["status_code"] == 403
+        record("waf XSS dans URL → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+    except Exception as e:
+        record("waf XSS dans URL → 403", False, str(e))
+
+    # 13c. SQL injection dans l'URL → WAF bloque (403)
+    try:
+        data = await call_rest("GET", "/health?id=1%20OR%201=1--")
+        ok = data["status_code"] == 403
+        record("waf SQL injection URL → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+    except Exception as e:
+        record("waf SQL injection URL → 403", False, str(e))
+
+    # 13d. Path traversal → bloqué (403 WAF ou 401 auth — défense en profondeur)
+    # Note : Caddy normalise les ../ avant Coraza → le WAF ne voit pas le traversal.
+    # Mais le AuthMiddleware bloque la requête (401). Les deux sont acceptables.
+    try:
+        data = await call_rest("GET", "/admin/static/../../etc/passwd")
+        ok = data["status_code"] in (401, 403)
+        record("waf path traversal bloqué", ok, f"HTTP {data['status_code']} (attendu: 401 ou 403)")
+    except Exception as e:
+        record("waf path traversal bloqué", False, str(e))
+
+    # 13e. OS command injection via User-Agent → WAF bloque (403)
+    try:
+        malicious_headers = {
+            "User-Agent": "() { :; }; /bin/bash -c 'cat /etc/passwd'",
+            "Authorization": f"Bearer {TOKEN}",
+        }
+        data = await call_rest("GET", "/admin/api/health", headers=malicious_headers)
+        ok = data["status_code"] == 403
+        record("waf cmd injection User-Agent → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+    except Exception as e:
+        record("waf cmd injection User-Agent → 403", False, str(e))
+
+    # 13f. XSS via header Referer → WAF bloque (403)
+    try:
+        xss_headers = {
+            "Referer": "https://evil.com/<script>alert('xss')</script>",
+            "Authorization": f"Bearer {TOKEN}",
+        }
+        data = await call_rest("GET", "/admin/api/health", headers=xss_headers)
+        ok = data["status_code"] == 403
+        record("waf XSS via Referer → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+    except Exception as e:
+        record("waf XSS via Referer → 403", False, str(e))
+
+
 # Registre des tests (nom → fonction)
 TEST_REGISTRY = {
     "connectivity":    test_01_connectivity,
@@ -1568,6 +1701,7 @@ TEST_REGISTRY = {
     "files":           test_10_files,
     "token":           test_11_token,
     "admin":           test_12_admin,
+    "waf":             test_13_waf,
 }
 
 
@@ -1615,6 +1749,7 @@ async def run_all_tests(only: str = None):
         await test_10_files()
         await test_11_token()
         await test_12_admin()
+        await test_13_waf()
 
     # Résumé
     elapsed = round(time.monotonic() - t0, 1)

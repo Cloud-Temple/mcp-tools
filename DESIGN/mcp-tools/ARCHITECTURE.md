@@ -35,7 +35,7 @@ Les agents (via MCP Agent) appellent MCP Tools pour exécuter des actions concr�
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │  Auth Middleware (starter-kit standard)          │  │
-│  │  • Bearer Token + permissions (read/write/admin  │  │
+│  │  • Bearer Token + permissions (access/admin)     │  │
 │  │  • tool_ids dans le token (whitelist de tools)   │  │
 │  └──────────────────────────────────────────────────┘  │
 │                                                        │
@@ -288,7 +288,7 @@ Le token d'accès contient un champ `tool_ids` qui liste les tools autorisés :
 ```json
 {
   "client_name": "agent-sre",
-  "permissions": "write",
+  "permissions": ["access"],
   "tool_ids": ["ssh", "shell", "http", "network", "docker", "files", "date", "calc", "perplexity_search"],
   "email": "sre-team@cloudtemple.fr",
   "expires_at": "2026-06-01T00:00:00Z"

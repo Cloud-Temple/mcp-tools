@@ -299,7 +299,7 @@ async def cmd_token(client, state, args="", json_output=False):
         show_warning("Usage: token <op> [options...]")
         show_warning("")
         show_warning("  token create agent-prod --tools shell,date,calc --expires 90")
-        show_warning("  token create readonly --permissions read --tools date,calc")
+        show_warning("  token create admin-user --permissions access,admin")
         show_warning("  token create ct-user --email user@cloud-temple.com --expires 180")
         show_warning("  token list")
         show_warning("  token info agent-prod")

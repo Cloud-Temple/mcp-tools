@@ -60,7 +60,7 @@ def _validate_token(scope) -> Optional[dict]:
 
     # Bootstrap key = admin
     if token == settings.admin_bootstrap_key:
-        return {"client_name": "admin", "permissions": ["admin"], "tool_ids": []}
+        return {"client_name": "admin", "permissions": ["admin", "access"], "tool_ids": []}
 
     # Token S3 (admin ou non)
     from ..auth.token_store import get_token_store
@@ -378,7 +378,7 @@ async def _handle_tokens_create(receive, send):
         return
 
     client_name = data.get("client_name", "")
-    permissions = data.get("permissions", ["read"])
+    permissions = data.get("permissions", ["access"])
     tool_ids = data.get("tool_ids", [])
     expires_days = data.get("expires_days", 90)
     email = data.get("email", "")

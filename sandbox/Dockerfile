@@ -7,8 +7,12 @@
 # Langages : bash, sh, python3, node
 # Outils   : coreutils, grep, sed, awk, jq, bc, curl, git, openssl, gnupg
 #
+# Python  : numpy, pandas, requests, beautifulsoup4, lxml, pyyaml, scipy,
+#           matplotlib, pillow, boto3, tabulate, toml, chardet, dateutil
+#
 # Sécurité (flags docker run) :
-#   --network=none    → pas de réseau
+#   --network=none    → pas de réseau (défaut shell/calc)
+#   --network=bridge  → accès réseau (si network=true, ou tools http/ssh/files)
 #   --read-only       → filesystem immuable
 #   --cap-drop=ALL    → zéro capabilities Linux
 #   --memory=256m     → limite mémoire
@@ -61,12 +65,27 @@ RUN apk add --no-cache \
     gnupg \
     && rm -rf /var/cache/apk/*
 
-# Python 3 (calculs, traitement de données, scripts)
+# Python 3 + packages courants (calculs, traitement de données, scripts)
+# On utilise les py3-* Alpine (pré-compilés) quand disponibles pour limiter la taille
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    && pip3 install --no-cache-dir --break-system-packages boto3 \
-    && rm -rf /var/cache/apk/*
+    py3-numpy \
+    py3-pandas \
+    py3-requests \
+    py3-yaml \
+    py3-lxml \
+    py3-chardet \
+    py3-dateutil \
+    py3-pillow \
+    py3-scipy \
+    py3-matplotlib \
+    && pip3 install --no-cache-dir --break-system-packages \
+        boto3 \
+        beautifulsoup4 \
+        tabulate \
+        toml \
+    && rm -rf /var/cache/apk/* /root/.cache
 
 # Node.js (traitement JSON, scripts JS)
 RUN apk add --no-cache \

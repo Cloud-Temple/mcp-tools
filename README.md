@@ -23,7 +23,7 @@ docker compose up -d
 
 # Vérification
 curl http://localhost:8082/health
-# → {"status":"healthy","service":"mcp-tools","version":"0.1.8","transport":"streamable-http"}
+# → {"status":"healthy","service":"mcp-tools","version":"0.1.9","transport":"streamable-http"}
 
 # Console d'administration
 open http://localhost:8082/admin
@@ -96,7 +96,7 @@ python scripts/mcp_cli.py shell
 # Tous les tests (build + start + test + stop)
 python scripts/test_service.py
 
-# Test spécifique (13 catégories)
+# Test spécifique (14 catégories)
 python scripts/test_service.py --test shell
 python scripts/test_service.py --test network
 python scripts/test_service.py --test http
@@ -104,6 +104,7 @@ python scripts/test_service.py --test ssh
 python scripts/test_service.py --test files
 python scripts/test_service.py --test token
 python scripts/test_service.py --test admin
+python scripts/test_service.py --test waf
 python scripts/test_service.py --test date
 python scripts/test_service.py --test calc
 
@@ -149,7 +150,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 
 | Outil               | Description                                                                                                                                                            |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shell`             | Sandbox Docker isolée (bash, sh, python3, node, openssl) — sans réseau                                                                                                 |
+| `shell`             | Sandbox Docker isolée (bash, sh, python3, node) — sans réseau par défaut, `network=true` pour pip install. Python packages pré-installés : numpy, pandas, requests, beautifulsoup4, scipy, matplotlib… |
 | `network`           | Diagnostic réseau en sandbox Docker (ping, traceroute, nslookup, dig) — IPs privées RFC 1918 interdites                                                                |
 | `http`              | Client HTTP/REST en sandbox Docker (anti-SSRF, auth basic/bearer/api_key) — IPs privées bloquées                                                                       |
 | `ssh`               | Exécution de commandes et transfert de fichiers via SSH en sandbox Docker (exec, status, upload, download) — auth password/key                                         |
@@ -176,9 +177,9 @@ Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission 
 
 ### Sécurité
 
-- **WAF Caddy + Coraza** : OWASP CRS, headers de sécurité, rate limiting
-- **Auth Bearer token** : Chaque requête /mcp est authentifiée
-- **`tool_ids`** : Le token peut restreindre l'accès à un sous-ensemble d'outils
+- **WAF Caddy + Coraza** : OWASP CRS en mode blocage (`SecRuleEngine On`), headers de sécurité, rate limiting — 6 tests E2E (`--test waf`)
+- **Auth Bearer token** : Chaque requête /mcp est authentifiée. Permissions `access` (appel d'outils) ou `admin` (tout)
+- **`tool_ids`** : Le token peut restreindre l'accès à un sous-ensemble d'outils (whitelisting par outil)
 - **Sandbox Docker** : Chaque commande shell/network/http dans un conteneur éphémère isolé (--cap-drop=ALL, --read-only, non-root)
 - **Token Manager S3** : Tokens stockés en S3 Dell ECS (`_tokens/{sha256}.json`), cache mémoire TTL 5min, isolation par `tool_ids`
 - **Admin same-origin** : Console `/admin` sans CORS cross-origin, auth admin obligatoire sur l'API

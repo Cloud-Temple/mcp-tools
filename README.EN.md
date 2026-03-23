@@ -23,7 +23,7 @@ docker compose up -d
 
 # Verify
 curl http://localhost:8082/health
-# → {"status":"healthy","service":"mcp-tools","version":"0.1.8","transport":"streamable-http"}
+# → {"status":"healthy","service":"mcp-tools","version":"0.1.9","transport":"streamable-http"}
 
 # Admin console
 open http://localhost:8082/admin
@@ -96,7 +96,7 @@ python scripts/mcp_cli.py shell
 # All tests (build + start + test + stop)
 python scripts/test_service.py
 
-# Specific test (13 categories)
+# Specific test (14 categories)
 python scripts/test_service.py --test shell
 python scripts/test_service.py --test network
 python scripts/test_service.py --test http
@@ -104,6 +104,7 @@ python scripts/test_service.py --test ssh
 python scripts/test_service.py --test files
 python scripts/test_service.py --test token
 python scripts/test_service.py --test admin
+python scripts/test_service.py --test waf
 python scripts/test_service.py --test date
 python scripts/test_service.py --test calc
 
@@ -149,7 +150,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 
 | Tool               | Description                                                                                                                                                            |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shell`             | Isolated Docker sandbox (bash, sh, python3, node, openssl) — no network                                                                                                |
+| `shell`             | Isolated Docker sandbox (bash, sh, python3, node) — no network by default, `network=true` for pip install. Pre-installed Python packages: numpy, pandas, requests, beautifulsoup4, scipy, matplotlib… |
 | `network`           | Network diagnostics in Docker sandbox (ping, traceroute, nslookup, dig) — RFC 1918 private IPs blocked                                                                 |
 | `http`              | HTTP/REST client in Docker sandbox (anti-SSRF, auth basic/bearer/api_key) — private IPs blocked                                                                        |
 | `ssh`               | SSH command execution and file transfer in Docker sandbox (exec, status, upload, download) — password/key auth                                                          |
@@ -176,9 +177,9 @@ Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permis
 
 ### Security
 
-- **WAF Caddy + Coraza**: OWASP CRS, security headers, rate limiting
-- **Bearer token auth**: Every /mcp request is authenticated
-- **`tool_ids`**: Token can restrict access to a subset of tools
+- **WAF Caddy + Coraza**: OWASP CRS in blocking mode (`SecRuleEngine On`), security headers, rate limiting — 6 E2E tests (`--test waf`)
+- **Bearer token auth**: Every /mcp request is authenticated. Permissions: `access` (call tools) or `admin` (everything)
+- **`tool_ids`**: Token can restrict access to a subset of tools (per-tool whitelisting)
 - **Docker sandbox**: Each shell/network/http command runs in an ephemeral isolated container (--cap-drop=ALL, --read-only, non-root)
 - **S3 Token Manager**: Tokens stored in S3 Dell ECS (`_tokens/{sha256}.json`), in-memory cache TTL 5min, `tool_ids` isolation
 - **Admin same-origin**: `/admin` console with no cross-origin CORS, admin auth required on API

@@ -134,8 +134,57 @@ class TokenStore:
                 file=sys.stderr,
                 flush=True,
             )
+
+            # Migration : convertir les anciennes permissions read/write → access
+            self._migrate_permissions(client_v2)
+
         except Exception as e:
             print(f"  ⚠️  Token Store: Erreur S3 — {e}", file=sys.stderr, flush=True)
+
+    def _migrate_permissions(self, client_v2) -> None:
+        """
+        Migration forcée : remplace les permissions 'read'/'write' par 'access'.
+        Réécrit les tokens modifiés en S3.
+        """
+        migrated = 0
+        for token_hash, data in self._cache.items():
+            old_perms = data.get("permissions", [])
+            has_legacy = "read" in old_perms or "write" in old_perms
+
+            if not has_legacy:
+                continue
+
+            # Construire les nouvelles permissions
+            new_perms = []
+            if "admin" in old_perms:
+                new_perms.append("admin")
+            new_perms.append("access")
+
+            # Mettre à jour le cache
+            data["permissions"] = new_perms
+
+            # Réécrire en S3
+            try:
+                client_v2.put_object(
+                    Bucket=self.settings.s3_bucket_name,
+                    Key=self._s3_key(token_hash),
+                    Body=json.dumps(data, indent=2).encode(),
+                    ContentType="application/json",
+                )
+                migrated += 1
+            except Exception as e:
+                print(
+                    f"  ⚠️  Migration token {data.get('client_name', '?')}: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        if migrated:
+            print(
+                f"  🔄 Token Store: {migrated} token(s) migrés (read/write → access)",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _maybe_refresh_cache(self) -> None:
         """Rafraîchit le cache si le TTL est dépassé."""
@@ -173,7 +222,7 @@ class TokenStore:
 
         return {
             "client_name": info.get("client_name", "unknown"),
-            "permissions": info.get("permissions", ["read"]),
+            "permissions": info.get("permissions", ["access"]),
             "tool_ids": info.get("tool_ids", []),
         }
 

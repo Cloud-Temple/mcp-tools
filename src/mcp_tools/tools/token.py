@@ -34,7 +34,7 @@ def register(mcp: FastMCP) -> None:
     async def token(
         operation: Annotated[str, Field(description="Opération : create (nouveau token), list (tous les tokens), info (détails), revoke (supprimer)")],
         client_name: Annotated[Optional[str], Field(default=None, description="Nom du client associé au token (requis pour create, info, revoke)")] = None,
-        permissions: Annotated[Optional[List[str]], Field(default=None, description="Permissions du token (ex: ['read', 'write', 'admin']). Défaut: ['read', 'write']")] = None,
+        permissions: Annotated[Optional[List[str]], Field(default=None, description="Permissions du token (ex: ['access', 'admin']). Défaut: ['access']")] = None,
         tool_ids: Annotated[Optional[List[str]], Field(default=None, description="Liste des IDs d'outils autorisés (ex: ['shell', 'http', 'calc']). Vide = tous les outils")] = None,
         expires_days: Annotated[int, Field(default=90, description="Durée de validité en jours (0 = jamais d'expiration)")] = 90,
         email: Annotated[Optional[str], Field(default=None, description="Email du propriétaire du token (optionnel, pour traçabilité)")] = None,
@@ -68,7 +68,7 @@ def register(mcp: FastMCP) -> None:
                 if not client_name:
                     return {"status": "error", "message": "Le paramètre 'client_name' est requis pour create."}
 
-                perms = permissions or ["read", "write"]
+                perms = permissions or ["access"]
                 tools = tool_ids or []
 
                 if expires_days < 0:

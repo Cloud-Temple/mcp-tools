@@ -4,6 +4,33 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-03-23
+
+### Added
+- **Paramètre `network` sur le tool shell** — Nouveau paramètre `network: bool = false` (65ème paramètre MCP). Quand activé (`network=true`), le conteneur sandbox passe de `--network=none` à `--network=bridge` avec DNS, permettant `pip install`, `curl`, `wget`. Contraintes adaptées : tmpfs 256m (vs 32m), pids-limit 50 (vs 10), tmpfs supplémentaires sur `~/.local` (128m) et `~/.cache` (64m) pour pip
+- **14 packages Python pré-installés dans l'image sandbox** — numpy, pandas, requests, beautifulsoup4, lxml, pyyaml, scipy, matplotlib, pillow, boto3, tabulate, toml, chardet, dateutil. Utilisables sans réseau (`network=false`). Packages Alpine pré-compilés (`py3-*`) pour limiter la taille de l'image
+- **Variables d'environnement sandbox** — `OPENBLAS_NUM_THREADS=1` (évite conflit OpenBLAS vs pids-limit), `OPENBLAS_MAIN_FREE=1`, `PIP_BREAK_SYSTEM_PACKAGES=1` (fix PEP 668 Alpine Python, uniquement quand `network=true`)
+- **6 nouveaux tests E2E shell** — Packages pré-installés (numpy v1.25.2, pandas v2.0.3, requests v2.32.4), curl avec `network=true` (HTTP 200), pip install + import (`cowsay`), régression `network=false` (toujours isolé). Total recette : ~108 tests
+- **Documentation d'audit des tests** (`DESIGN/mcp-tools/TESTS_AUDIT.md`) — Référentiel exhaustif des ~108 tests E2E organisé par catégorie (14 catégories), avec explication de chaque test, critères de succès, matrice de sécurité sandbox, et classification par niveau de risque (critique/isolation/fonctionnel)
+
+### Changed
+- **Image sandbox enrichie** (`sandbox/Dockerfile`) — Passage de 1 package pip (boto3) à 14 packages Python. Utilisation des packages Alpine natifs (`py3-numpy`, `py3-pandas`, etc.) quand disponibles pour éviter la compilation C
+- **Sécurité tmpfs différenciée** — `noexec` conservé sur tmpfs `/tmp` quand `network=false` (isolation maximale), retiré quand `network=true` (pip en a besoin)
+- **65 paramètres MCP** — Ajout du paramètre `network` (total : 65 paramètres documentés avec `Annotated[type, Field(description="...")]`)
+
+## [0.1.9] — 2026-03-23
+
+### Changed
+- **Simplification des permissions : `access`/`admin`** — Les permissions `read`/`write` (jamais vérifiées, inadaptées aux tools mixtes http/ssh/files) sont remplacées par un modèle à 2 niveaux : `access` (peut appeler les outils via `tool_ids`) et `admin` (accès total + gestion tokens). `check_tool_access()` vérifie désormais la permission `access` avant d'autoriser l'appel
+- **Migration forcée des tokens** — Au démarrage, `_migrate_permissions()` détecte les tokens S3 avec anciennes permissions `read`/`write` et les réécrit automatiquement avec `access`. Log : `🔄 Token Store: N token(s) migrés (read/write → access)`
+- **CLI et doc alignés** — `--permissions` default `access` (CLI Click + shell), exemples mis à jour, ARCHITECTURE.md corrigé
+
+### Added
+- **Tests WAF Coraza (OWASP CRS)** — 6 tests E2E (`--test waf`) vérifiant le blocage actif du WAF : XSS dans URL, SQL injection dans URL, path traversal (défense en profondeur : 401 auth ou 403 WAF), OS command injection via User-Agent (Shellshock), XSS via header Referer. `SecRuleEngine On` avec seuil anomaly score 5. Total recette : ~102 tests
+
+### Fixed
+- **Permissions `read`/`write` non implémentées** (Known Issue v0.1.8) — Résolu par simplification du modèle. Le mécanisme `tool_ids` fournit un contrôle plus fin et plus adapté que read/write pour un serveur de tools
+
 ## [0.1.8] — 2026-03-12
 
 ### Added
@@ -13,9 +40,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - **64 paramètres MCP** — Le nouveau paramètre `email` porte le total à 64 paramètres documentés avec `Annotated[type, Field(description="...")]`
-
-### Known Issues
-- **Permissions `read`/`write` non implémentées** — Seule la permission `admin` est vérifiée dans `check_tool_access()`. Les permissions `read` et `write` sont stockées en S3 et affichées mais jamais contrôlées. Tout token authentifié a les mêmes droits (seul `tool_ids` filtre les outils). À implémenter dans une version future
 
 ## [0.1.7] — 2026-03-08
 

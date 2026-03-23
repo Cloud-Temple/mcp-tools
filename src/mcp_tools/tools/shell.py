@@ -3,8 +3,14 @@
 Outil: shell — Exécution de commandes dans un conteneur sandbox isolé.
 
 Sécurité : chaque commande est exécutée dans un conteneur Docker éphémère
-(Alpine) avec : --network=none, --read-only, --cap-drop=ALL, --memory,
---pids-limit, --no-new-privileges. Le conteneur est détruit après exécution.
+(Alpine) avec : --read-only, --cap-drop=ALL, --memory, --pids-limit,
+--no-new-privileges. Le conteneur est détruit après exécution.
+
+Réseau : par défaut --network=none (isolation totale). Si network=true,
+--network=bridge avec DNS configuré (permet pip install, curl, wget...).
+
+Packages Python pré-installés : numpy, pandas, requests, beautifulsoup4,
+lxml, pyyaml, scipy, matplotlib, pillow, boto3, tabulate, toml, chardet.
 
 Fallback : si SANDBOX_ENABLED=false (dev local), exécution locale via subprocess.
 """
@@ -57,26 +63,73 @@ async def _kill_container(name: str) -> None:
         pass
 
 
-async def _run_in_sandbox(command: str, shell: str, timeout: int, settings) -> dict:
-    """Exécute la commande dans un conteneur Docker éphémère isolé."""
+async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False) -> dict:
+    """Exécute la commande dans un conteneur Docker éphémère isolé.
+    
+    Si network=True, le conteneur a accès au réseau (--network=bridge + DNS).
+    Sinon, isolation totale (--network=none).
+    """
     exec_flag = SHELL_EXEC_FLAGS.get(shell, "-c")
     container_name = f"sandbox-{uuid.uuid4().hex[:12]}"
     docker_cmd = [
         "docker", "run", "--rm",
         f"--name={container_name}",
-        "--network=none",
+    ]
+
+    # Mode réseau : bridge (avec DNS) ou none (isolé)
+    if network:
+        docker_cmd.append("--network=bridge")
+        for dns in settings.sandbox_dns.split(","):
+            dns = dns.strip()
+            if dns:
+                docker_cmd.append(f"--dns={dns}")
+    else:
+        docker_cmd.append("--network=none")
+
+    # Quand le réseau est activé (pip install, curl...), on assouplit certaines contraintes :
+    # - tmpfs plus grand pour accueillir les téléchargements
+    # - tmpfs supplémentaire sur ~/.local pour pip install --user
+    # - pids-limit relevé (pip spawne des sous-processus)
+    if network:
+        tmpfs_size = "256m"
+        tmpfs_opts = f"nosuid,nodev,size={tmpfs_size}"  # pas de noexec (pip en a besoin)
+        pids_limit = 50
+    else:
+        tmpfs_size = settings.sandbox_tmpfs_size
+        tmpfs_opts = f"noexec,nosuid,nodev,size={tmpfs_size}"  # noexec pour isolation maximale
+        pids_limit = settings.sandbox_pids_limit
+
+    docker_cmd.extend([
         "--read-only",
         f"--memory={settings.sandbox_memory}",
         f"--memory-swap={settings.sandbox_memory}",
         f"--cpus={settings.sandbox_cpus}",
-        f"--pids-limit={settings.sandbox_pids_limit}",
+        f"--pids-limit={pids_limit}",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
-        f"--tmpfs=/tmp:noexec,nosuid,nodev,size={settings.sandbox_tmpfs_size}",
+        f"--tmpfs=/tmp:{tmpfs_opts}",
+    ])
+
+    # Variables d'environnement pour compatibilité packages Python
+    # OPENBLAS_NUM_THREADS=1 évite que numpy/scipy spawne trop de threads (pids-limit)
+    docker_cmd.extend([
+        "--env=OPENBLAS_NUM_THREADS=1",
+        "--env=OPENBLAS_MAIN_FREE=1",
+    ])
+
+    # Quand le réseau est activé : permettre pip install + monter tmpfs pour ~/.local et ~/.cache
+    if network:
+        docker_cmd.extend([
+            "--env=PIP_BREAK_SYSTEM_PACKAGES=1",
+            "--tmpfs=/home/sandbox/.local:nosuid,nodev,size=128m",
+            "--tmpfs=/home/sandbox/.cache:nosuid,nodev,size=64m",
+        ])
+
+    docker_cmd.extend([
         "--user=sandbox:sandbox",
         settings.sandbox_image,
         shell, exec_flag, command,
-    ]
+    ])
 
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
@@ -145,6 +198,7 @@ def register(mcp: FastMCP) -> None:
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
         cwd: Annotated[Optional[str], Field(default=None, description="Répertoire de travail (ignoré en mode sandbox)")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
+        network: Annotated[bool, Field(default=False, description="Activer l'accès réseau (pour pip install, curl, wget). Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Exécute une commande dans un conteneur sandbox isolé (sans réseau, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node."""
@@ -161,7 +215,7 @@ def register(mcp: FastMCP) -> None:
             if settings.sandbox_enabled:
                 if cwd:
                     print(f"[shell] WARN: cwd ignoré en mode sandbox (pas de montage volume)", file=sys.stderr)
-                result = await _run_in_sandbox(command, shell, timeout, settings)
+                result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
             else:
                 result = await _run_local(command, shell, cwd, timeout, settings)
 

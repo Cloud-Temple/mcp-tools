@@ -67,7 +67,7 @@ class AuthMiddleware:
         if token == settings.admin_bootstrap_key:
             return {
                 "client_name": "admin",
-                "permissions": ["admin", "read", "write"],
+                "permissions": ["admin", "access"],
                 "tool_ids": [],  # Admin = all tools
             }
 

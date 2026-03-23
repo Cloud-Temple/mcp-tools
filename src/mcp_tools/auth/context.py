@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Helpers d'authentification basés sur contextvars pour MCP Tools.
-Vérifie les accès aux outils via la liste `tool_ids`.
+Vérifie les accès aux outils via permissions (access/admin) et la liste `tool_ids`.
 """
 
 from contextvars import ContextVar
@@ -24,9 +24,17 @@ def check_tool_access(tool_name: str) -> None:
     if token_info is None:
         raise ValueError("Authentification requise pour appeler cet outil")
 
+    permissions = token_info.get("permissions", [])
+
     # Si admin, on autorise tout
-    if "admin" in token_info.get("permissions", []):
+    if "admin" in permissions:
         return
+
+    # Vérifie la permission "access" (requise pour appeler des outils)
+    if "access" not in permissions:
+        raise ValueError(
+            f"Accès refusé : permission 'access' requise pour appeler l'outil '{tool_name}'"
+        )
 
     # Vérifie si l'outil est dans la liste autorisée
     tool_ids = token_info.get("tool_ids", [])
