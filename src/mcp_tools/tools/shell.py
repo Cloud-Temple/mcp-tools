@@ -198,7 +198,7 @@ def register(mcp: FastMCP) -> None:
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
         cwd: Annotated[Optional[str], Field(default=None, description="Répertoire de travail (ignoré en mode sandbox)")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
-        network: Annotated[bool, Field(default=False, description="Activer l'accès réseau (pour pip install, curl, wget). Défaut: false (isolé, sans réseau)")] = False,
+        network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau et noexec de /tmp. Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Exécute une commande dans un conteneur sandbox isolé (sans réseau, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node."""

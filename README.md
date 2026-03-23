@@ -177,7 +177,8 @@ Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission 
 
 ### Sécurité
 
-- **WAF Caddy + Coraza** : OWASP CRS en mode blocage (`SecRuleEngine On`), headers de sécurité, rate limiting — 6 tests E2E (`--test waf`)
+- **Audit de sécurité** : Rapport complet dans `DESIGN/mcp-tools/SECURITY_AUDIT.md` — architecture qualifiée "niveau Entreprise"
+- **WAF Caddy + Coraza** : OWASP CRS en mode blocage (`SecRuleEngine On`), headers de sécurité, rate limiting (1000 req/min MCP) — 6 tests E2E (`--test waf`)
 - **Auth Bearer token** : Chaque requête /mcp est authentifiée. Permissions `access` (appel d'outils) ou `admin` (tout)
 - **`tool_ids`** : Le token peut restreindre l'accès à un sous-ensemble d'outils (whitelisting par outil)
 - **Sandbox Docker** : Chaque commande shell/network/http dans un conteneur éphémère isolé (--cap-drop=ALL, --read-only, non-root)

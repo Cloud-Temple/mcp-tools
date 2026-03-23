@@ -38,8 +38,15 @@ def check_tool_access(tool_name: str) -> None:
 
     # Vérifie si l'outil est dans la liste autorisée
     tool_ids = token_info.get("tool_ids", [])
-    
-    # Si tool_ids est vide ou absent → accès à TOUS les outils (convention Cloud Temple)
-    # Seuls les tokens avec une liste tool_ids explicite sont restreints.
-    if tool_ids and tool_name not in tool_ids:
+
+    # Sécurité "Fail-Closed" (audit §3.2) : pour les tokens non-admin,
+    # tool_ids DOIT être peuplé. Un token sans tool_ids = aucun accès.
+    # Seuls les tokens admin ont un accès universel implicite (géré ci-dessus).
+    if not tool_ids:
+        raise ValueError(
+            f"Accès refusé à l'outil '{tool_name}' : le token n'a aucun outil autorisé "
+            f"(tool_ids vide). Contactez un administrateur pour configurer les outils accessibles."
+        )
+
+    if tool_name not in tool_ids:
         raise ValueError(f"Accès refusé à l'outil '{tool_name}' (non présent dans tool_ids)")

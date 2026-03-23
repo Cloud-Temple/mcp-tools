@@ -70,9 +70,9 @@
 	# Rate Limiting par IP (appliqué AVANT le WAF)
 	# =========================================================================
 	# Limites calibrées pour des agents IA :
-	# - MCP : 60 appels/min (sessions + outils, burst d'un agent actif)
-	# - API REST : 30 requêtes/min (interface web)
-	# - Global : 200 requêtes/min (toutes routes confondues)
+	# - MCP : 1000 req/min (chaque appel MCP = ~4-5 requêtes HTTP)
+	# - API REST : 100 req/min (console admin web)
+	# - Global : 2000 req/min (toutes routes confondues)
 	#
 	# Adapter ces limites selon votre cas d'usage.
 	# =========================================================================
@@ -82,7 +82,7 @@
 				path /mcp*
 			}
 			key {remote_host}
-			events 300
+			events 1000
 			window 1m
 		}
 		zone api {
@@ -90,12 +90,12 @@
 				path /api/*
 			}
 			key {remote_host}
-			events 30
+			events 100
 			window 1m
 		}
 		zone global {
 			key {remote_host}
-			events 500
+			events 2000
 			window 1m
 		}
 	}

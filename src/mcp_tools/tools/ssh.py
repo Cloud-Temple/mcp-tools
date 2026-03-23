@@ -113,7 +113,9 @@ def _build_ssh_script(
     2. Exécute l'opération SSH/SCP
     3. Retourne un output structuré avec des marqueurs
     """
-    lines = ["#!/bin/sh", "set -e", ""]
+    # Pas de "set -e" : on capture explicitement les exit codes
+    # (set -e ferait sortir le script avant EXIT=$? en cas d'erreur SSH)
+    lines = ["#!/bin/sh", ""]
 
     # --- Setup clé SSH ---
     if auth_type == "key" and private_key:
@@ -133,10 +135,14 @@ def _build_ssh_script(
     scp_port_flag = f"-P {port}"
 
     # Préfixe sshpass si auth par mot de passe
+    # Sécurité (audit §3.3) : utilise la variable d'environnement SSHPASS
+    # au lieu de -p pour masquer le mot de passe de /proc/[pid]/cmdline
     ssh_prefix = ""
     if auth_type == "password" and password:
         escaped_pass = shlex.quote(password)
-        ssh_prefix = f"sshpass -p {escaped_pass} "
+        lines.append(f"export SSHPASS={escaped_pass}")
+        lines.append("")
+        ssh_prefix = "sshpass -e "
 
     # --- Opérations ---
     if operation == "status":

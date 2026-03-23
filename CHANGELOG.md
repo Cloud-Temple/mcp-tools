@@ -4,6 +4,23 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] — 2026-03-23
+
+### Security
+- **Audit de sécurité complet** — Rapport d'audit rédigé (`DESIGN/mcp-tools/SECURITY_AUDIT.md`). Architecture qualifiée "niveau Entreprise" par l'auditeur. 5 vulnérabilités identifiées, 3 corrigées dans cette version
+- **§3.2 Fail-Closed `tool_ids`** (`context.py`) — Un token non-admin avec `tool_ids=[]` (vide) est désormais **refusé** au lieu d'avoir accès à tous les outils. Seuls les tokens `admin` conservent l'accès universel implicite. Applique le principe de moindre privilège. ⚠️ **Breaking change** : les tokens `access` existants avec `tool_ids=[]` doivent être mis à jour avec une liste explicite d'outils, ou promus en `admin`
+- **§3.3 sshpass masqué** (`ssh.py`) — Le mot de passe SSH est passé via la variable d'environnement `SSHPASS` + flag `-e` au lieu de l'argument `-p` en ligne de commande. Masque le mot de passe de `/proc/[pid]/cmdline` dans le conteneur éphémère
+- **§3.4 Documentation `network=true`** (`shell.py`) — Description du paramètre `network` enrichie avec ⚠️ ÉLÉVATION DE PRIVILÈGE pour alerter les LLMs que cette option retire l'isolation réseau et `noexec` de `/tmp`
+
+### Fixed
+- **Script SSH `set -e` masquait les erreurs** (`ssh.py`) — Le `set -e` dans le script shell généré provoquait une sortie immédiate avant `EXIT=$?` en cas d'échec SSH. Le parser recevait un output vide et retournait `exit_code=0` par défaut. Suppression de `set -e` : les exit codes sont capturés explicitement
+- **Tests E2E permissions obsolètes** (`test_service.py`) — Les créations de tokens de test utilisaient `["read", "write"]` (modèle v0.1.8 obsolète). Corrigé en `["access"]` (modèle v0.1.9+)
+- **Test token cleanup** (`test_service.py`) — Ajout d'un nettoyage préventif des tokens résiduels de runs précédents. Assertion `count=0` remplacée par vérification ciblée du `client_name` (cohabitation avec tokens de production)
+
+### Changed
+- **Rate-limit WAF augmenté** (`waf/Caddyfile`) — MCP : 300→1000 req/min, API : 30→100 req/min, Global : 500→2000 req/min. L'ancien rate-limit bloquait les suites de tests E2E complètes (~138 tests × 4-5 req HTTP chacun). Commentaires dans le Caddyfile mis à jour
+- **138 tests E2E** — Total porté à 138 tests (vs ~108 en v0.2.0). Tous passent ✅
+
 ## [0.2.0] — 2026-03-23
 
 ### Added

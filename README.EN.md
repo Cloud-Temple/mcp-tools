@@ -177,8 +177,9 @@ Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permis
 
 ### Security
 
-- **WAF Caddy + Coraza**: OWASP CRS in blocking mode (`SecRuleEngine On`), security headers, rate limiting — 6 E2E tests (`--test waf`)
-- **Bearer token auth**: Every /mcp request is authenticated. Permissions: `access` (call tools) or `admin` (everything)
+- **Security audit**: Full report in `DESIGN/mcp-tools/SECURITY_AUDIT.md` — architecture rated "Enterprise-grade"
+- **WAF Caddy + Coraza**: OWASP CRS in blocking mode (`SecRuleEngine On`), security headers, rate limiting (1000 req/min MCP) — 6 E2E tests (`--test waf`)
+- **Bearer token auth**: Every /mcp request is authenticated. Permissions: `access` (call tools) or `admin` (everything). Fail-closed: non-admin tokens with empty `tool_ids` are denied
 - **`tool_ids`**: Token can restrict access to a subset of tools (per-tool whitelisting)
 - **Docker sandbox**: Each shell/network/http command runs in an ephemeral isolated container (--cap-drop=ALL, --read-only, non-root)
 - **S3 Token Manager**: Tokens stored in S3 Dell ECS (`_tokens/{sha256}.json`), in-memory cache TTL 5min, `tool_ids` isolation

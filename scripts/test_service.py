@@ -1243,6 +1243,13 @@ async def test_11_token():
     created_token = None
     test_client = "e2e-test-agent"
 
+    # Cleanup préventif — révoquer les résidus de runs précédents
+    for leftover in [test_client, "e2e-admin-test-readonly"]:
+        try:
+            await call_tool("token", {"operation": "revoke", "client_name": leftover})
+        except Exception:
+            pass
+
     # 11a. Opération invalide
     try:
         data = await call_tool("token", {"operation": "invalid_op"})
@@ -1265,7 +1272,7 @@ async def test_11_token():
             "operation": "create",
             "client_name": test_client,
             "tool_ids": ["date", "calc"],
-            "permissions": ["read", "write"],
+            "permissions": ["access"],
             "expires_days": 1,
         })
         if data.get("status") == "error" and "S3" in data.get("message", ""):
@@ -1368,13 +1375,14 @@ async def test_11_token():
         except Exception as e:
             record("token auth après revoke → 401", False, str(e))
 
-    # 11k. List vide après revoke
+    # 11k. Token test absent après revoke
     try:
         data = await call_tool("token", {"operation": "list"})
-        ok = data.get("status") == "success" and data.get("count", -1) == 0
-        record("token list vide après revoke", ok, f"count={data.get('count', '?')}")
+        ok = data.get("status") == "success"
+        found = any(t.get("client_name") == test_client for t in data.get("tokens", []))
+        record("token absent après revoke", ok and not found, f"count={data.get('count', '?')}, test_client_found={found}")
     except Exception as e:
-        record("token list vide après revoke", False, str(e))
+        record("token absent après revoke", False, str(e))
 
     # 11l. Info token non trouvé
     try:
@@ -1494,7 +1502,7 @@ async def test_12_admin():
         create_data = await call_tool("token", {
             "operation": "create",
             "client_name": "e2e-admin-test-readonly",
-            "permissions": ["read"],
+            "permissions": ["access"],
             "tool_ids": ["date"],
             "expires_days": 1,
         })
