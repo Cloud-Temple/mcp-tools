@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de recette end-to-end — MCP Tools
+Script de recette end-to-end — MCP Tools v0.3.0
 
 Teste toutes les fonctionnalités du service MCP Tools via le protocole
-MCP Streamable HTTP (endpoint /mcp). Vérifie la connectivité, l'auth,
-et chaque outil implémenté (shell, network, http, perplexity_search).
+MCP Streamable HTTP (endpoint /mcp) et la CLI Click (subprocess).
+Vérifie la connectivité, l'authentification, chaque outil, la console admin,
+le WAF Coraza, et les 13 commandes CLI.
 
 Usage:
-    # Serveur local (défaut : http://localhost:8050)
+    # Automatique : build + start + tests + stop
     python3 scripts/test_service.py
 
     # Serveur distant
@@ -17,20 +18,34 @@ Usage:
     # Mode verbose
     python3 scripts/test_service.py --verbose
 
-    # Ne pas build/start docker (serveur déjà lancé)
+    # Serveur déjà lancé (pas de build/start docker)
     python3 scripts/test_service.py --no-docker
 
+    # Test spécifique
+    python3 scripts/test_service.py --test cli
+    python3 scripts/test_service.py --test token
+    python3 scripts/test_service.py --test admin
+
 Prérequis:
-    - pip install mcp>=1.8.0 httpx
+    - pip install mcp>=1.8.0 httpx click rich prompt-toolkit
     - docker compose (si --no-docker n'est pas passé)
 
-Catégories de tests (5) :
-    1. Connectivité     — REST /health + MCP system_health + system_about
-    2. Authentification  — Sans token → 401, mauvais token → 401, admin → OK
-    3. Outil shell       — Exécution de commandes
-    4. Outil network     — ping, traceroute, nslookup, dig (sandbox + RFC 1918)
-    5. Outil http        — Requête GET externe
-    6. Outil perplexity  — Recherche IA (si clé API configurée)
+Catégories de tests (15) :
+     1. connectivity   — REST /health + MCP system_health + system_about
+     2. auth           — Sans token → 401, mauvais token → 401, admin → OK
+     3. shell          — Sandbox Docker, shells, packages, network=true/false
+     4. network        — ping, traceroute, nslookup, dig, RFC 1918, injection
+     5. http           — GET/POST, anti-SSRF, auth bearer
+     6. perplexity     — Recherche IA (si clé API configurée)
+     7. perplexity_doc — Documentation technique IA
+     8. date           — 12 opérations (now, parse, format, add, diff, etc.)
+     9. calc           — Sandbox Python, math, statistics
+    10. ssh            — Validation params, injection, auth types
+    11. files          — S3 Dell ECS (CRUD, versioning, diff)
+    12. token          — CRUD + auth client + tool_ids isolation
+    13. admin          — Console /admin (sécurité, API REST, permissions)
+    14. waf            — Coraza OWASP CRS (XSS, SQLi, path traversal)
+    15. cli            — 38 tests CLI Click via subprocess (toutes commandes)
 
 Exit code: 0 si tous les tests passent, 1 sinon.
 """
@@ -1694,6 +1709,264 @@ async def test_13_waf():
         record("waf XSS via Referer → 403", False, str(e))
 
 
+# =============================================================================
+# 14. CLI Click — Tests complets via CliRunner
+# =============================================================================
+
+async def test_14_cli():
+    """Test 14: CLI Click — Toutes les commandes via subprocess (E2E réel)"""
+    print("\n🐚 TEST 14 — CLI Click (subprocess)")
+    print("=" * 50)
+
+    # Helper : appelle la CLI en subprocess (contourne le problème de nested asyncio)
+    cli_script = os.path.join(os.path.dirname(__file__), "mcp_cli.py")
+    cli_env = {**os.environ, "MCP_URL": BASE_URL, "MCP_TOKEN": TOKEN}
+
+    def run_cli(*args, timeout=60):
+        """Lance la CLI et retourne (exit_code, stdout, stderr)."""
+        cmd = [sys.executable, cli_script] + list(args)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=cli_env)
+        return r.returncode, r.stdout, r.stderr
+
+    # ── 14a. --help ──
+    try:
+        rc, out, err = run_cli("--help")
+        ok = rc == 0 and "MCP Tools" in out
+        record("cli --help", ok, f"exit={rc}, contient 'MCP Tools'={ok}")
+    except Exception as e:
+        record("cli --help", False, str(e))
+
+    # ── 14b. health ──
+    try:
+        rc, out, err = run_cli("health")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli health", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli health", False, str(e))
+
+    # ── 14c. health --json ──
+    try:
+        rc, out, err = run_cli("health", "--json")
+        has_json = '"status"' in out
+        ok = rc == 0 and has_json
+        record("cli health --json", ok, f"exit={rc}, JSON={has_json}")
+    except Exception as e:
+        record("cli health --json", False, str(e))
+
+    # ── 14d. about ──
+    try:
+        rc, out, err = run_cli("about")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli about", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli about", False, str(e))
+
+    # ── 14e. run-shell "echo hello_cli_test" ──
+    try:
+        rc, out, err = run_cli("run-shell", "echo hello_cli_test")
+        ok = rc == 0 and "hello_cli_test" in out
+        record("cli run-shell echo", ok, f"exit={rc}, contient output={'hello_cli_test' in out}")
+    except Exception as e:
+        record("cli run-shell echo", False, str(e))
+
+    # ── 14f. run-shell --shell python3 ──
+    try:
+        rc, out, err = run_cli("run-shell", "print(2**10)", "--shell", "python3")
+        ok = rc == 0 and "1024" in out
+        record("cli run-shell python3", ok, f"exit={rc}, contient 1024={'1024' in out}")
+    except Exception as e:
+        record("cli run-shell python3", False, str(e))
+
+    # ── 14g. run-shell --json ──
+    try:
+        rc, out, err = run_cli("run-shell", "echo json_test", "--json")
+        has_json = '"status"' in out
+        ok = rc == 0 and has_json
+        record("cli run-shell --json", ok, f"exit={rc}, JSON={has_json}")
+    except Exception as e:
+        record("cli run-shell --json", False, str(e))
+
+    # ── 14h. network ping ──
+    try:
+        rc, out, err = run_cli("network", "ping", "8.8.8.8", "--count", "1")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli network ping", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli network ping", False, str(e))
+
+    # ── 14i. network dig ──
+    try:
+        rc, out, err = run_cli("network", "dig", "google.com")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli network dig", ok, f"exit={rc}, len={len(out)}")
+    except Exception as e:
+        record("cli network dig", False, str(e))
+
+    # ── 14j. http GET ──
+    try:
+        rc, out, err = run_cli("http", "https://httpbin.org/get")
+        ok = rc == 0 and "200" in out
+        record("cli http GET", ok, f"exit={rc}, contient 200={'200' in out}")
+    except Exception as e:
+        record("cli http GET", False, str(e))
+
+    # ── 14k. http POST --data ──
+    try:
+        rc, out, err = run_cli("http", "https://httpbin.org/post", "-m", "POST", "--data", '{"test": "cli"}')
+        ok = rc == 0 and "200" in out
+        record("cli http POST JSON", ok, f"exit={rc}")
+    except Exception as e:
+        record("cli http POST JSON", False, str(e))
+
+    # ── 14l. date now ──
+    try:
+        rc, out, err = run_cli("date", "now")
+        ok = rc == 0 and "2026" in out
+        record("cli date now", ok, f"exit={rc}, contient 2026={'2026' in out}")
+    except Exception as e:
+        record("cli date now", False, str(e))
+
+    # ── 14m. date now --tz Europe/Paris ──
+    try:
+        rc, out, err = run_cli("date", "now", "--tz", "Europe/Paris")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli date now --tz", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli date now --tz", False, str(e))
+
+    # ── 14n. date diff ──
+    try:
+        rc, out, err = run_cli("date", "diff", "2026-01-01", "--date2", "2026-03-06")
+        ok = rc == 0 and "64" in out
+        record("cli date diff", ok, f"exit={rc}, contient 64={'64' in out}")
+    except Exception as e:
+        record("cli date diff", False, str(e))
+
+    # ── 14o. calc ──
+    try:
+        rc, out, err = run_cli("calc", "math.sqrt(144)")
+        ok = rc == 0 and "12" in out
+        record("cli calc sqrt", ok, f"exit={rc}, contient 12={'12' in out}")
+    except Exception as e:
+        record("cli calc sqrt", False, str(e))
+
+    # ── 14p. calc statistiques ──
+    try:
+        rc, out, err = run_cli("calc", "statistics.mean([10,20,30])")
+        ok = rc == 0 and "20" in out
+        record("cli calc statistics", ok, f"exit={rc}, contient 20={'20' in out}")
+    except Exception as e:
+        record("cli calc statistics", False, str(e))
+
+    # ── 14q. token list ──
+    try:
+        rc, out, err = run_cli("token", "list")
+        ok = rc == 0 and len(out.strip()) > 0
+        record("cli token list", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli token list", False, str(e))
+
+    # ── 14r-14w. Cycle complet token : create → list → info → update → revoke ──
+    cli_test_client = "cli-e2e-test-agent"
+
+    # Cleanup préventif
+    try:
+        run_cli("token", "revoke", cli_test_client)
+    except Exception:
+        pass
+
+    # 14r. token create
+    try:
+        rc, out, err = run_cli("token", "create", cli_test_client,
+                                "--tools", "date,calc,shell", "--expires", "1", "--email", "test@e2e.com")
+        ok = rc == 0 and (cli_test_client in out or "créé" in out.lower() or "success" in out.lower())
+        record("cli token create", ok, f"exit={rc}, output={out[:100].strip()}")
+    except Exception as e:
+        record("cli token create", False, str(e))
+
+    # 14s. token info
+    try:
+        rc, out, err = run_cli("token", "info", cli_test_client)
+        ok = rc == 0 and cli_test_client in out
+        record("cli token info", ok, f"exit={rc}, contient name={cli_test_client in out}")
+    except Exception as e:
+        record("cli token info", False, str(e))
+
+    # 14t. token update --tools all
+    try:
+        rc, out, err = run_cli("token", "update", cli_test_client,
+                                "--tools", "all", "--email", "updated@e2e.com")
+        ok = rc == 0 and ("mis à jour" in out.lower() or "success" in out.lower() or "update" in out.lower())
+        record("cli token update --tools all", ok, f"exit={rc}, output={out[:100].strip()}")
+    except Exception as e:
+        record("cli token update --tools all", False, str(e))
+
+    # 14u. token info après update — vérifier les changements
+    try:
+        rc, out, err = run_cli("token", "info", cli_test_client, "--json")
+        ok = rc == 0
+        if ok:
+            try:
+                info_data = json.loads(out)
+                tools_count = len(info_data.get("tool_ids", []))
+                email = info_data.get("email", "")
+                ok = tools_count == 12 and email == "updated@e2e.com"
+                record("cli token info post-update", ok, f"tools={tools_count}/12, email={email}")
+            except Exception:
+                record("cli token info post-update", False, f"JSON parse failed, output={out[:80]}")
+        else:
+            record("cli token info post-update", False, f"exit={rc}")
+    except Exception as e:
+        record("cli token info post-update", False, str(e))
+
+    # 14v. token list contient le token créé
+    try:
+        rc, out, err = run_cli("token", "list", "--json")
+        ok = rc == 0 and cli_test_client in out
+        record("cli token list contient créé", ok, f"exit={rc}, found={cli_test_client in out}")
+    except Exception as e:
+        record("cli token list contient créé", False, str(e))
+
+    # 14w. token revoke
+    try:
+        rc, out, err = run_cli("token", "revoke", cli_test_client)
+        ok = rc == 0 and ("révoqué" in out.lower() or "✅" in out or cli_test_client in out)
+        record("cli token revoke", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli token revoke", False, str(e))
+
+    # ── 14x. files list ──
+    try:
+        rc, out, err = run_cli("files", "list", "--prefix", "mcp-tools-test/")
+        ok = rc == 0
+        record("cli files list", ok, f"exit={rc}, output={out[:80].strip()}")
+    except Exception as e:
+        record("cli files list", False, str(e))
+
+    # ── 14y. Sous-commandes --help ──
+    help_commands = [
+        ["run-shell", "--help"],
+        ["network", "--help"],
+        ["network", "ping", "--help"],
+        ["http", "--help"],
+        ["date", "--help"],
+        ["calc", "--help"],
+        ["ssh", "--help"],
+        ["files", "--help"],
+        ["token", "--help"],
+        ["token", "create", "--help"],
+        ["token", "update", "--help"],
+    ]
+    for cmd in help_commands:
+        cmd_name = " ".join(cmd[:-1])
+        try:
+            rc, out, err = run_cli(*cmd, timeout=10)
+            ok = rc == 0 and len(out) > 20
+            record(f"cli {cmd_name} --help", ok, f"exit={rc}, len={len(out)}")
+        except Exception as e:
+            record(f"cli {cmd_name} --help", False, str(e))
+
+
 # Registre des tests (nom → fonction)
 TEST_REGISTRY = {
     "connectivity":    test_01_connectivity,
@@ -1710,6 +1983,7 @@ TEST_REGISTRY = {
     "token":           test_11_token,
     "admin":           test_12_admin,
     "waf":             test_13_waf,
+    "cli":             test_14_cli,
 }
 
 

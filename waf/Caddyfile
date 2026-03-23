@@ -122,6 +122,23 @@
 	}
 
 	# =========================================================================
+	# Route 1b : Console Admin — SANS WAF
+	# =========================================================================
+	# L'API admin utilise PUT pour les modifications de tokens.
+	# Coraza/OWASP CRS peut bloquer les PUT ou filtrer les body JSON.
+	# L'authentification est gérée par AdminMiddleware (Bearer token).
+	# =========================================================================
+	handle /admin* {
+		reverse_proxy mcp-tools:8050 {
+			transport http {
+				read_timeout 300s
+				write_timeout 300s
+				response_header_timeout 300s
+			}
+		}
+	}
+
+	# =========================================================================
 	# Route 2 : Tout le reste — AVEC WAF Coraza
 	# =========================================================================
 	# Protégé par OWASP CRS contre : injections SQL/NoSQL, XSS, LFI/RFI,

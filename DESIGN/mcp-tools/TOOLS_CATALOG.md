@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.1.8 | **Date** : 2026-03-12
+> **Version** : 0.3.0 | **Date** : 2026-03-24
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -46,7 +46,7 @@
 
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                      | Source                        |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| **token** ✅ | `create`, `list`, `info`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids` | client_name, permissions, tool_ids, email (optionnel, traçabilité), expires_days. Token brut affiché une seule fois à la création — 12 tests E2E | Token Store S3 (from scratch) |
+| **token** ✅ | `create`, `list`, `info`, `update`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids`. `update` modifie permissions/tool_ids/email sans révoquer. `tool_ids=["all"]` résolu en 12 outils. Fail-closed §3.2 : non-admin + tool_ids vide = refusé | client_name, permissions, tool_ids (`["all"]` = tous), email (optionnel, traçabilité), expires_days. Token brut affiché une seule fois à la création — 12 tests E2E | Token Store S3 (from scratch) |
 
 ### Recherche Perplexity (3 tools)
 
@@ -162,4 +162,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 17 mars 2026 — MCP Tools v0.1.8*
+*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.0*

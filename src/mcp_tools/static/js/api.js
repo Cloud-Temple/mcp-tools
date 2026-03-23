@@ -1,5 +1,19 @@
 /**
  * MCP Tools Admin — API Client
+ *
+ * Endpoints supportés :
+ *   GET  /admin/api/me             → infos token courant
+ *   GET  /admin/api/health         → état serveur
+ *   GET  /admin/api/tools          → liste outils
+ *   POST /admin/api/tools/run      → exécuter un outil
+ *   GET  /admin/api/tokens         → lister tokens
+ *   POST /admin/api/tokens         → créer un token
+ *   GET  /admin/api/tokens/{name}  → info token
+ *   PUT  /admin/api/tokens/{name}  → modifier un token
+ *   DELETE /admin/api/tokens/{name}→ révoquer un token
+ *   POST /admin/api/tokens/purge   → purger les tokens expirés
+ *   GET  /admin/api/logs           → logs HTTP
+ *   GET  /admin/api/audit          → journal d'audit
  */
 
 function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY); }
@@ -79,12 +93,30 @@ async function apiTokensInfo(name) {
     return await adminFetch(`/admin/api/tokens/${encodeURIComponent(name)}`);
 }
 
+async function apiTokensUpdate(name, data) {
+    return await adminFetch(`/admin/api/tokens/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+}
+
 async function apiTokensRevoke(name) {
     return await adminFetch(`/admin/api/tokens/${encodeURIComponent(name)}`, {
         method: 'DELETE',
     });
 }
 
+async function apiTokensPurge() {
+    return await adminFetch('/admin/api/tokens/purge', {
+        method: 'POST',
+    });
+}
+
 async function apiLogs() {
     return await adminFetch('/admin/api/logs');
+}
+
+async function apiAudit() {
+    return await adminFetch('/admin/api/audit');
 }

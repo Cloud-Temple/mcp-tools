@@ -4,6 +4,53 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-03-24
+
+### Added
+- **Console Admin v2** — Refonte complète de l'interface `/admin` :
+  - **Token update** (PUT) — Modification des permissions, tool_ids et email via modal d'édition
+  - **Token purge** — Suppression en masse des tokens expirés (POST /admin/api/tokens/purge)
+  - **Journal d'audit** — Ring buffer 500 entrées traçant QUI fait QUOI (acteur, action, cible, détails)
+  - **Tool picker intelligent** — 6 catégories avec descriptions, boutons Tout/Rien, masquage auto de l'outil `token` pour les non-admin
+  - **Permissions access/admin** — Sélecteur radio avec aide contextuelle, picker désactivé pour admin
+  - **Info token formatée** — Modal structuré (plus de dump JSON brut)
+  - **Help banner** — Explication du modèle de permissions en haut de la page tokens
+  - **Onglets Activité** — Journal d'audit + Requêtes HTTP avec filtres et recherche
+- **Tests CLI E2E (test_14_cli)** — 38 tests via subprocess couvrant les 13 commandes Click : health, about, run-shell, network, http, date, calc, token (cycle create→info→update→revoke), files, et 11 --help
+- **Endpoint GET /admin/api/audit** — Journal d'audit détaillé (actions token_create/update/revoke/purge, tool_run, login_failed)
+- **TokenStore.purge_expired()** — Suppression en masse des tokens expirés de S3
+
+### Changed
+- **WAF Caddyfile** — Route `/admin*` bypassée du WAF Coraza (auth gérée par AdminMiddleware, Coraza bloquait les PUT)
+- **Permissions corrigées** — Interface admin utilise le modèle `access`/`admin` (plus de read/write obsolètes)
+- **Tool picker admin-only** — La catégorie "Administration" (outil `token`) est masquée pour les tokens non-admin
+- **Docstrings scripts** — `mcp_cli.py` et `test_service.py` enrichis avec liste des 13 commandes et 15 catégories de tests
+
+### Fixed
+- **"Réponse vide" sur PUT** — WAF Coraza bloquait les requêtes PUT vers `/admin/api/*`
+- **Outil `token` dans le picker non-admin** — La catégorie "Administration" n'apparaît plus quand la permission est "access"
+- **Picker actif pour admin** — Le tool picker se désactive correctement quand on choisit la permission "admin"
+
+## [0.2.2] — 2026-03-23
+
+### Added
+- **Opération `token update`** — Nouvelle opération pour modifier un token existant sans le révoquer. Permet de changer `tool_ids`, `permissions` et `email` tout en conservant le token brut. Implémenté dans `TokenStore.update()`, `token.py`, CLI Click (`token update`) et shell interactif
+- **Support `tool_ids=["all"]`** — Le mot-clé `all` dans `tool_ids` est résolu côté serveur en la liste complète des 12 outils (`ALL_TOOL_IDS` dans `token.py`). Fonctionne pour `create` et `update`. Simplifie la création de tokens avec accès total : `token create agent --tools all`
+- **Protection fail-closed explicite à la création** — `token create` refuse désormais de créer un token non-admin avec `tool_ids=[]` (vide) et retourne un message d'erreur clair expliquant le fail-closed (§3.2) avec suggestion d'utiliser `tool_ids=['all']`
+
+### Changed
+- **CLI Click : 15 paramètres MCP manquants ajoutés** — Audit complet paramètre par paramètre des 12 outils MCP (65 params). Corrections :
+  - `run-shell` : ajout `--shell` (bash/sh/python3/node), `--network` (flag ⚠️ ÉLÉVATION DE PRIVILÈGE)
+  - `http` : ajout `--header/-H` (répétable), `--body/-b` (texte brut), `--auth-type` (basic/bearer/api_key), `--auth-value`, `--method` étendu (PATCH/HEAD)
+  - `files` : ajout opérations `versions`/`enable_versioning` au Choice, `--version-id`, `--access-key`, `--secret-key`, `--region`
+  - `network ping` : ajout `--count` (1-10)
+  - `search` / `doc` : ajout `--model` (Perplexity)
+  - `date` : correction type `--days`/`--hours`/`--minutes` de int → float (aligné MCP)
+- **Shell interactif aligné** — Toutes les commandes du shell interactif acceptent désormais tous les paramètres MCP via `--key value`. Commande `run` enrichie (--shell, --cwd, --timeout, --network). Autocomplétion étendue avec toutes les options
+- **Token CLI** — 5 sous-commandes : `create`, `list`, `info`, `update`, `revoke`. Documentation enrichie avec liste des 12 outils disponibles et avertissement fail-closed
+- **Affichage Rich** — Ajout de l'affichage pour les opérations S3 `versions` (tableau) et `enable_versioning` (message)
+- **Documentation CLI** — Docstring `mcp_cli.py` enrichi avec exemples de toutes les commandes. Chaque commande Click documentée avec commentaire `# MCP params:` et exemples complets
+
 ## [0.2.1] — 2026-03-23
 
 ### Security

@@ -367,6 +367,76 @@ class TokenStore:
 
         return {"status": "error", "message": f"Token '{client_name}' non trouvé."}
 
+    def update(
+        self,
+        client_name: str,
+        permissions: Optional[List[str]] = None,
+        tool_ids: Optional[List[str]] = None,
+        email: Optional[str] = None,
+    ) -> dict:
+        """
+        Met à jour un token existant (permissions, tool_ids, email).
+        Seuls les champs fournis (non-None) sont modifiés.
+        """
+        self._maybe_refresh_cache()
+
+        target_hash = None
+        target_data = None
+        for h, data in self._cache.items():
+            if data.get("client_name") == client_name:
+                target_hash = h
+                target_data = data
+                break
+
+        if target_hash is None or target_data is None:
+            return {"status": "error", "message": f"Token '{client_name}' non trouvé."}
+
+        # Appliquer les modifications
+        changes = []
+        if permissions is not None:
+            old = target_data.get("permissions", [])
+            target_data["permissions"] = permissions
+            changes.append(f"permissions: {old} → {permissions}")
+        if tool_ids is not None:
+            old = target_data.get("tool_ids", [])
+            target_data["tool_ids"] = tool_ids
+            changes.append(f"tool_ids: {len(old)} → {len(tool_ids)} outils")
+        if email is not None:
+            old = target_data.get("email", "")
+            target_data["email"] = email
+            changes.append(f"email: '{old}' → '{email}'")
+
+        if not changes:
+            return {"status": "error", "message": "Aucun champ à modifier spécifié."}
+
+        # Réécrire en S3
+        if self._s3_available:
+            try:
+                client_v2, _ = self._get_s3_clients()
+                client_v2.put_object(
+                    Bucket=self.settings.s3_bucket_name,
+                    Key=self._s3_key(target_hash),
+                    Body=json.dumps(target_data, indent=2).encode(),
+                    ContentType="application/json",
+                )
+            except Exception as e:
+                return {"status": "error", "message": f"Erreur S3 lors de la mise à jour : {e}"}
+        else:
+            return {"status": "error", "message": "S3 non disponible — impossible de mettre à jour."}
+
+        # Mettre à jour le cache
+        self._cache[target_hash] = target_data
+
+        return {
+            "status": "success",
+            "client_name": client_name,
+            "permissions": target_data.get("permissions", []),
+            "tool_ids": target_data.get("tool_ids", []),
+            "email": target_data.get("email", ""),
+            "changes": changes,
+            "message": f"Token '{client_name}' mis à jour : {'; '.join(changes)}",
+        }
+
     def revoke(self, client_name: str) -> dict:
         """Révoque (supprime) un token par client_name."""
         self._maybe_refresh_cache()
@@ -398,6 +468,65 @@ class TokenStore:
             "status": "success",
             "client_name": client_name,
             "message": f"Token '{client_name}' révoqué.",
+        }
+
+    def purge_expired(self) -> dict:
+        """
+        Supprime tous les tokens expirés de S3 et du cache.
+        Retourne le nombre de tokens purgés.
+        """
+        self._maybe_refresh_cache()
+
+        now = datetime.now(timezone.utc)
+        to_purge = []
+
+        for token_hash, data in self._cache.items():
+            expires_at = data.get("expires_at")
+            if not expires_at:
+                continue
+            try:
+                exp = datetime.fromisoformat(expires_at)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if exp < now:
+                    to_purge.append((token_hash, data.get("client_name", "?")))
+            except Exception:
+                pass
+
+        if not to_purge:
+            return {
+                "status": "success",
+                "purged": 0,
+                "message": "Aucun token expiré à purger.",
+            }
+
+        purged = []
+        errors = []
+
+        if self._s3_available:
+            try:
+                client_v2, _ = self._get_s3_clients()
+                for token_hash, client_name in to_purge:
+                    try:
+                        client_v2.delete_object(
+                            Bucket=self.settings.s3_bucket_name,
+                            Key=self._s3_key(token_hash),
+                        )
+                        del self._cache[token_hash]
+                        purged.append(client_name)
+                    except Exception as e:
+                        errors.append(f"{client_name}: {e}")
+            except Exception as e:
+                return {"status": "error", "message": f"Erreur S3 : {e}"}
+        else:
+            return {"status": "error", "message": "S3 non disponible."}
+
+        return {
+            "status": "success",
+            "purged": len(purged),
+            "purged_clients": purged,
+            "errors": errors,
+            "message": f"{len(purged)} token(s) expiré(s) purgé(s).",
         }
 
 

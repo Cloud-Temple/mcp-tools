@@ -10,6 +10,7 @@ const app = {
     tools: [],
     tokens: [],
     logs: [],
+    audit: [],
     selectedTool: null,
     refreshTimer: null,
     refreshInterval: 10,  // secondes
@@ -39,6 +40,15 @@ function fmtDate(iso) {
             hour: '2-digit', minute: '2-digit'
         });
     } catch { return iso; }
+}
+
+function fmtDateShort(iso) {
+    if (!iso) return '';
+    try {
+        return new Date(iso).toLocaleDateString('fr-FR', {
+            day: '2-digit', month: '2-digit'
+        });
+    } catch { return ''; }
 }
 
 function fmtDuration(ms) {

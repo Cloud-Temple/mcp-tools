@@ -1,6 +1,6 @@
 /* ==========================================================================
-   MCP Tools Admin — Console d'administration
-   Design : reprend les codes graphiques de Cloud Temple Live Memory
+   MCP Tools Admin — Console d'administration (v2)
+   Design : Cloud Temple dark theme #0f0f23, accent #41a890
    ========================================================================== */
 
 /* ═══════════════ RESET ═══════════════ */
@@ -122,6 +122,16 @@ body {
     border-radius: 10px;
 }
 
+/* ═══════════════ HELP BANNER ═══════════════ */
+.help-banner {
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    background: rgba(65,168,144,0.06); border: 1px solid rgba(65,168,144,0.15);
+    border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 1rem;
+    font-size: 0.75rem; color: #aaa; line-height: 1.6;
+}
+.help-banner-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.05rem; }
+.help-banner-text strong { color: #ccc; }
+
 /* ═══════════════ CARDS GRID ═══════════════ */
 .cards-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -178,6 +188,8 @@ th {
 }
 td { color: #bbb; }
 tr:hover td { background: rgba(255,255,255,0.02); }
+tr.row-expired td { opacity: 0.5; }
+tr.row-expired:hover td { opacity: 0.75; }
 
 /* ═══════════════ BUTTONS ═══════════════ */
 .btn {
@@ -201,6 +213,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     margin-bottom: 0.3rem; font-weight: 500;
 }
 .form-label .required { color: #e74c3c; margin-left: 2px; }
+.form-label-info { color: #f39c12; font-weight: 400; font-size: 0.68rem; }
 .form-input, .form-select, .form-textarea {
     width: 100%; padding: 0.5rem 0.65rem; background: #0d1b2a;
     border: 1px solid #334455; border-radius: 6px; color: #e0e8f0;
@@ -214,6 +227,200 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .form-hint { font-size: 0.68rem; color: #556677; margin-top: 0.2rem; }
 .form-row { display: flex; gap: 0.8rem; }
 .form-row > .form-group { flex: 1; }
+
+/* ═══════════════ PERMISSION SELECTOR ═══════════════ */
+.perm-selector {
+    display: flex; gap: 0.6rem; padding: 0.3rem 0;
+}
+.perm-option {
+    display: flex; align-items: center; gap: 0.4rem; cursor: pointer;
+    padding: 0.4rem 0.7rem; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    transition: all 0.15s;
+}
+.perm-option:hover { background: rgba(255,255,255,0.04); }
+.perm-option input[type="radio"] { margin: 0; accent-color: #41a890; }
+.perm-label { display: flex; align-items: center; gap: 0.4rem; }
+.perm-desc { font-size: 0.7rem; color: #777; }
+
+/* ═══════════════ TOOL PICKER ═══════════════ */
+.tool-picker {
+    background: rgba(13, 27, 42, 0.5); border: 1px solid #334455;
+    border-radius: 8px; padding: 0.6rem; transition: opacity 0.2s;
+}
+.tool-picker.picker-disabled {
+    opacity: 0.35; pointer-events: none;
+}
+.tool-picker-actions {
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-bottom: 0.5rem; padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.tool-picker-count {
+    font-size: 0.7rem; color: #888; margin-left: auto;
+    font-weight: 600;
+}
+.tool-picker-category {
+    margin-bottom: 0.4rem;
+}
+.tool-picker-cat-header {
+    display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.2rem 0.3rem; margin-bottom: 0.2rem;
+}
+.tool-picker-cat-name {
+    font-size: 0.72rem; font-weight: 600; color: #aaa;
+}
+.tool-picker-cat-desc {
+    font-size: 0.65rem; color: #555; flex: 1;
+}
+.tool-picker-cat-count {
+    font-size: 0.62rem; color: #666; font-weight: 600;
+    background: rgba(255,255,255,0.05); padding: 1px 6px;
+    border-radius: 8px;
+}
+.tool-picker-cat-tools {
+    display: flex; flex-wrap: wrap; gap: 0.2rem;
+    padding: 0 0 0.3rem 0.3rem;
+}
+.tool-picker-tool {
+    display: flex; align-items: center; gap: 0.25rem; cursor: pointer;
+    padding: 0.2rem 0.5rem; border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: all 0.1s; font-size: 0.72rem; color: #aaa;
+    min-width: 130px;
+}
+.tool-picker-tool:hover {
+    background: rgba(65,168,144,0.08); border-color: rgba(65,168,144,0.2);
+}
+.tool-picker-tool input[type="checkbox"] {
+    margin: 0; accent-color: #41a890;
+}
+.tool-picker-tool-name {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.7rem;
+}
+
+/* ═══════════════ TOKEN FORM PANEL ═══════════════ */
+.token-form-panel {
+    background: rgba(30, 42, 58, 0.3); border: 1px solid rgba(65,168,144,0.2);
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem;
+}
+.token-form-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 0.8rem; padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(65,168,144,0.1);
+}
+.token-form-title {
+    font-size: 1rem; font-weight: 600; color: #41a890;
+}
+.token-form-actions { display: flex; gap: 0.4rem; }
+
+/* ═══════════════ TOKEN INFO GRID ═══════════════ */
+.token-info-grid {
+    display: flex; flex-direction: column; gap: 0.1rem;
+}
+.token-info-row {
+    display: flex; align-items: flex-start;
+    padding: 0.4rem 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.token-info-label {
+    font-size: 0.72rem; color: #888; font-weight: 600; min-width: 100px;
+    text-transform: uppercase; letter-spacing: 0.02em;
+    padding-top: 0.1rem;
+}
+.token-info-value {
+    font-size: 0.8rem; color: #ccc; flex: 1;
+}
+
+/* ═══════════════ TABS ═══════════════ */
+.tabs {
+    display: flex; gap: 0; margin-bottom: 0.8rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.tab {
+    padding: 0.5rem 1rem; background: none; border: none;
+    color: #777; font-size: 0.8rem; font-weight: 500; cursor: pointer;
+    border-bottom: 2px solid transparent; transition: all 0.15s;
+    display: flex; align-items: center; gap: 0.4rem;
+}
+.tab:hover { color: #aaa; }
+.tab.active {
+    color: #41a890; border-bottom-color: #41a890;
+}
+.tab .count {
+    font-size: 0.65rem; color: #666; font-weight: 400;
+    background: rgba(255,255,255,0.05); padding: 1px 6px;
+    border-radius: 8px;
+}
+.tab.active .count { color: #41a890; background: rgba(65,168,144,0.1); }
+
+/* ═══════════════ AUDIT FILTERS ═══════════════ */
+.audit-filters {
+    display: flex; gap: 0.6rem; align-items: flex-end;
+    margin-bottom: 0.8rem; flex-wrap: wrap;
+}
+.audit-filter-group {
+    display: flex; flex-direction: column; gap: 0.2rem;
+}
+.audit-filter-group label {
+    font-size: 0.65rem; color: #666; text-transform: uppercase;
+    font-weight: 600; letter-spacing: 0.03em;
+}
+.audit-filter-group select,
+.audit-filter-group input {
+    padding: 0.35rem 0.5rem; background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 5px;
+    color: #ccc; font-size: 0.75rem; outline: none;
+    min-width: 140px;
+}
+.audit-filter-group select:focus,
+.audit-filter-group input:focus {
+    border-color: rgba(65,168,144,0.3);
+}
+
+/* ═══════════════ AUDIT ENTRIES ═══════════════ */
+.audit-entry {
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    padding: 0.5rem 0.4rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    border-left: 3px solid rgba(76,175,80,0.3);
+    transition: background 0.1s;
+}
+.audit-entry:hover { background: rgba(255,255,255,0.02); }
+.audit-entry.audit-error { border-left-color: rgba(231,76,60,0.4); }
+
+.audit-entry-time {
+    display: flex; flex-direction: column; align-items: center;
+    min-width: 52px;
+}
+.audit-time {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.68rem; color: #666;
+}
+.audit-date {
+    font-size: 0.58rem; color: #444;
+}
+.audit-entry-icon { font-size: 0.95rem; flex-shrink: 0; }
+.audit-entry-body { flex: 1; min-width: 0; }
+.audit-entry-summary {
+    font-size: 0.78rem; color: #bbb;
+    display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap;
+}
+.audit-actor {
+    font-weight: 700; color: #41a890;
+}
+.audit-action-label { color: #888; }
+.audit-target {
+    font-weight: 600; color: #fff;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+}
+.audit-entry-details {
+    font-size: 0.7rem; color: #666; margin-top: 0.15rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    line-height: 1.4; word-break: break-all;
+}
+.audit-entry-status { flex-shrink: 0; }
 
 /* ═══════════════ TOOL CARDS ═══════════════ */
 .tool-grid {
@@ -296,6 +503,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 .log-method.GET { color: #3498db; }
 .log-method.POST { color: #2ecc71; }
+.log-method.PUT { color: #f39c12; }
 .log-method.DELETE { color: #e74c3c; }
 .log-path { color: #aaa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-status {
@@ -317,7 +525,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .modal-overlay.visible { display: flex; }
 .modal {
     background: #1e2a3a; border: 1px solid #41a890; border-radius: 12px;
-    width: 550px; max-width: 90vw; max-height: 80vh;
+    width: 650px; max-width: 90vw; max-height: 85vh;
     box-shadow: 0 20px 60px rgba(0,0,0,0.5);
     display: flex; flex-direction: column;
 }
@@ -343,12 +551,15 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 .token-created-alert h3 { color: #41a890; font-size: 0.85rem; margin-bottom: 0.5rem; }
 .token-created-alert .token-value {
-    background: #0d1b2a; padding: 0.5rem; border-radius: 4px;
-    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem;
+    background: #0d1b2a; padding: 0.6rem 0.8rem; border-radius: 6px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.78rem;
     color: #4CAF50; word-break: break-all; margin: 0.3rem 0;
-    cursor: pointer; position: relative;
+    cursor: pointer; position: relative; border: 1px solid rgba(76,175,80,0.2);
+    user-select: all;
 }
-.token-created-alert .token-value:hover { background: #0a1520; }
+.token-created-alert .token-value:hover {
+    background: #0a1520; border-color: rgba(76,175,80,0.4);
+}
 .token-created-alert .warning { color: #f39c12; font-size: 0.72rem; margin-top: 0.3rem; }
 
 /* ═══════════════ EMPTY STATE ═══════════════ */
@@ -373,7 +584,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .toast {
     padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.78rem;
     font-weight: 500; animation: slideIn 0.3s ease;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3); max-width: 400px;
 }
 .toast-success { background: rgba(76,175,80,0.9); color: #fff; }
 .toast-error { background: rgba(231,76,60,0.9); color: #fff; }
@@ -404,4 +615,8 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     .cards-grid { grid-template-columns: 1fr; }
     .tool-grid { grid-template-columns: 1fr; }
     .form-row { flex-direction: column; gap: 0; }
+    .perm-selector { flex-direction: column; }
+    .audit-filters { flex-direction: column; }
+    .tool-picker-cat-tools { gap: 0.1rem; }
+    .tool-picker-tool { min-width: 110px; }
 }

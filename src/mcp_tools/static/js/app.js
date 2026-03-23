@@ -60,7 +60,9 @@ function doLogout() {
     app.tools = [];
     app.tokens = [];
     app.logs = [];
+    app.audit = [];
     app.selectedTool = null;
+    app.me = null;
     showLogin();
 }
 

@@ -345,6 +345,34 @@ def show_files_result(result: dict):
             if diff_text:
                 console.print(Syntax(diff_text, "diff"))
 
+    elif operation == "versions":
+        path = result.get("path", "?")
+        versions = result.get("versions", [])
+        count = result.get("count", len(versions))
+        console.print(f"  📄 [cyan]{path}[/cyan] — {count} version(s)")
+        if versions:
+            table = Table(show_header=True)
+            table.add_column("Version ID", style="cyan")
+            table.add_column("Taille", style="green", justify="right")
+            table.add_column("Modifié", style="dim")
+            table.add_column("Latest", style="yellow")
+            for v in versions[:50]:
+                size = v.get("size", 0)
+                size_str = f"{size:,}" if size < 1_000_000 else f"{size/1_000_000:.1f} MB"
+                is_latest = "✅" if v.get("is_latest") else ""
+                table.add_row(
+                    v.get("version_id", "?")[:20],
+                    size_str,
+                    str(v.get("last_modified", "?"))[:19],
+                    is_latest,
+                )
+            if len(versions) > 50:
+                table.add_row(f"... +{len(versions)-50} versions", "", "", "")
+            console.print(table)
+
+    elif operation == "enable_versioning":
+        console.print(f"  [green]{result.get('message', 'Versioning activé')}[/green]")
+
 
 # =============================================================================
 # Affichage outil token
