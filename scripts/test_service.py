@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de recette end-to-end — MCP Tools v0.3.0
+Script de recette end-to-end — MCP Tools v0.3.1
 
 Teste toutes les fonctionnalités du service MCP Tools via le protocole
 MCP Streamable HTTP (endpoint /mcp) et la CLI Click (subprocess).
@@ -1685,24 +1685,24 @@ async def test_13_waf():
         record("waf path traversal bloqué", False, str(e))
 
     # 13e. OS command injection via User-Agent → WAF bloque (403)
+    # Note : on cible /health (route protégée par Coraza), pas /admin/* (exclue du WAF)
     try:
         malicious_headers = {
             "User-Agent": "() { :; }; /bin/bash -c 'cat /etc/passwd'",
-            "Authorization": f"Bearer {TOKEN}",
         }
-        data = await call_rest("GET", "/admin/api/health", headers=malicious_headers)
+        data = await call_rest("GET", "/health", headers=malicious_headers)
         ok = data["status_code"] == 403
         record("waf cmd injection User-Agent → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
     except Exception as e:
         record("waf cmd injection User-Agent → 403", False, str(e))
 
     # 13f. XSS via header Referer → WAF bloque (403)
+    # Note : on cible /health (route protégée par Coraza), pas /admin/* (exclue du WAF)
     try:
         xss_headers = {
             "Referer": "https://evil.com/<script>alert('xss')</script>",
-            "Authorization": f"Bearer {TOKEN}",
         }
-        data = await call_rest("GET", "/admin/api/health", headers=xss_headers)
+        data = await call_rest("GET", "/health", headers=xss_headers)
         ok = data["status_code"] == 403
         record("waf XSS via Referer → 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
     except Exception as e:

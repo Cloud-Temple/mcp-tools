@@ -200,10 +200,41 @@ def _build_banner() -> str:
     return "\n".join(lines)
 
 
+def _security_checks():
+    """Vérifications de sécurité au démarrage (§3.7, sandbox)."""
+
+    # §3.7 — Bootstrap key par défaut = risque critique
+    if settings.admin_bootstrap_key == "change_me_in_production":
+        print(
+            "\n"
+            "  ╔══════════════════════════════════════════════════╗\n"
+            "  ║  ⚠️  SÉCURITÉ CRITIQUE                          ║\n"
+            "  ║                                                  ║\n"
+            "  ║  ADMIN_BOOTSTRAP_KEY est la valeur par défaut !  ║\n"
+            "  ║  Toute personne ayant lu le code source peut     ║\n"
+            "  ║  obtenir un accès admin complet au serveur.      ║\n"
+            "  ║                                                  ║\n"
+            "  ║  → Définir ADMIN_BOOTSTRAP_KEY dans .env         ║\n"
+            "  ╚══════════════════════════════════════════════════╝\n",
+            file=sys.stderr, flush=True,
+        )
+
+    # Warning si sandbox désactivée (exécution locale = RCE)
+    if not settings.sandbox_enabled:
+        print(
+            "  ⚠️  SANDBOX DÉSACTIVÉE — les outils shell/calc/network s'exécutent "
+            "directement sur l'hôte. Ne pas utiliser en production !",
+            file=sys.stderr, flush=True,
+        )
+
+
 def main():
     import uvicorn
 
     print("\n" + _build_banner() + "\n", file=sys.stderr)
+
+    # Vérifications de sécurité (§3.7, sandbox)
+    _security_checks()
 
     # Initialiser le Token Store (charge les tokens depuis S3)
     from .auth.token_store import init_token_store

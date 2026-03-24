@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.3.0 | **Date** : 2026-03-24
+> **Version** : 0.3.1 | **Date** : 2026-03-24
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -162,4 +162,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.0*
+*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.1*

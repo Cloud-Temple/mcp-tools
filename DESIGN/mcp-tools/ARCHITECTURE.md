@@ -1,6 +1,6 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.3.0 | **Date** : 2026-03-24 | **Auteur** : Cloud Temple
+> **Version** : 0.3.1 | **Date** : 2026-03-24 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
 > **Statut** : 🚧 Implémentation en cours — 12/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 (CRUD + update) + Console Admin Web + 65 paramètres MCP + CLI alignée 100%
 
@@ -492,4 +492,4 @@ mcp-tools/
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.0*
+*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.1*

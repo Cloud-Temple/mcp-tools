@@ -1,9 +1,9 @@
 # Audit de Sécurité — MCP Tools
 
-> **Date** : 23 Mars 2026
+> **Date** : 24 Mars 2026 (mis à jour)
 > **Auditeur** : Agent Cline
-> **Projet** : mcp-tools (v0.1.9)
-> **Statut de l'audit** : Terminé ✅
+> **Projet** : mcp-tools (v0.3.1)
+> **Statut de l'audit** : Terminé ✅ — Revue complémentaire effectuée
 
 ## 1. Introduction et Périmètre de l'Audit
 
@@ -57,11 +57,13 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
   - Restreindre l'accès `default allow` aux tokens explicitement `admin`.
   - Pour les utilisateurs ayant seulement le droit `access`, imposer que la liste `tool_ids` soit peuplée avec au moins l'outil souhaité. 
   - (Ex: `if not "admin" in permissions and not tool_name in tool_ids: raise ValueError(...)`)
+- **Statut** : ✅ **Corrigé v0.2.1** — Implémentation "fail-closed" dans `context.py`. Les tokens non-admin avec `tool_ids` vide sont désormais refusés.
 
 ### 3.3. Visibilité du mot de passe SSH dans l'arborescence des processus
 - **Analyse** : Dans `ssh.py`, pour une authentification par mot de passe, l'option `sshpass -p {password}` est utilisée (exécutée par `shlex.quote`). 
 - **Risque (Faible)** : Sous Linux, passer un secret en argument CLI le rend lisible via `/proc/[pid]/cmdline`. Bien que le conteneur soit isolé (`--network=bridge`, `user sandbox`) et éphémère, cela reste une mauvaise pratique de sécurité générale.
 - **Recommandation** : Utiliser la variable d'environnement `SSHPASS` fournie par l'utilitaire `sshpass` (`export SSHPASS=mot_de_passe; sshpass -e ssh ...`) ou lire depuis un fichier temporaire monté en RAM, pour masquer ce mot de passe de l'historique et des processus.
+- **Statut** : ✅ **Corrigé v0.2.1** — Utilisation de `SSHPASS` + flag `-e` dans `ssh.py`. Le mot de passe n'apparaît plus dans `/proc/[pid]/cmdline`.
 
 ### 3.4. Paramètre `network=true` du Shell affaiblissant l'isolation
 - **Analyse** : Le tool `shell` inclut désormais `network=true`. Lorsque ce paramètre est activé pour télécharger des dépendances (ex: `pip install`), le flag `noexec` de `/tmp` est retiré et les limites de processus (PIDs) sont quintuplées. 
@@ -73,6 +75,55 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 - **Risque (Critique / Accepté)** : Toute compromission de l'applicatif Python expose directement les droits `root` de la machine hôte. Il suffit d'envoyer une requête forgée sur l'API Docker pour monter le répertoire `/` de l'hôte et prendre son contrôle.
 - **Recommandation** : Le composant `mcp-tools` lui-même (qui héberge le code Python avec le module FastAPI/FastMCP) ne doit comporter aucune faille d'injection (Remote Code Execution) dans son propre code, car il tourne avec les droits Docker de la VM hôte. C'est le design choisi, mais l'hébergeur (Cloud Temple) doit en être conscient. 
 
+### 3.6. Timing Attack sur la comparaison de la Bootstrap Key
+- **Analyse** : Dans `auth/middleware.py` (ligne 67) et `admin/api.py` (ligne 91), la bootstrap key admin est comparée avec l'opérateur `==` standard de Python :
+  ```python
+  if token == settings.admin_bootstrap_key:
+  ```
+  L'opérateur `==` sur les chaînes Python s'arrête au premier caractère différent, ce qui crée une différence de temps mesurable. Un attaquant peut exploiter cette différence pour deviner la clé caractère par caractère.
+- **Risque (Critique)** : Permet une attaque par canal auxiliaire (side-channel) pour extraire la clé admin. L'attaque nécessite un grand nombre de requêtes et une latence réseau faible, mais elle est théoriquement réalisable — surtout si l'attaquant est sur le même réseau ou co-hébergé.
+- **Recommandation** : Remplacer `==` par `hmac.compare_digest()` dans les deux fichiers :
+  ```python
+  import hmac
+  if hmac.compare_digest(token, settings.admin_bootstrap_key):
+  ```
+  `hmac.compare_digest()` effectue une comparaison en temps constant, éliminant le canal auxiliaire.
+- **Statut** : ✅ **Corrigé v0.3.1** — `hmac.compare_digest()` utilisé dans `middleware.py` et `api.py`.
+
+### 3.7. Clé Admin par Défaut sans Vérification au Démarrage
+- **Analyse** : Dans `config.py`, la clé admin a une valeur par défaut en dur :
+  ```python
+  admin_bootstrap_key: str = "change_me_in_production"
+  ```
+  Si le fichier `.env` n'est pas configuré ou si la variable `ADMIN_BOOTSTRAP_KEY` n'est pas définie, le serveur démarre avec une clé publiquement connue (visible dans le code source open-source). Cette clé donne un accès **admin complet** : gestion des tokens, exécution de tous les outils, accès à la console d'administration.
+- **Risque (Critique)** : Tout déploiement où la variable n'est pas explicitement modifiée est compromis dès l'instant où le serveur est accessible. Aucun avertissement n'est affiché.
+- **Recommandation** : Au démarrage du serveur (`server.py`), vérifier que `admin_bootstrap_key` n'est pas la valeur par défaut. Si c'est le cas, afficher un avertissement critique sur stderr et idéalement refuser de démarrer en mode production.
+- **Statut** : ✅ **Corrigé v0.3.1** — Le serveur affiche un avertissement ⚠️ CRITIQUE au démarrage si la bootstrap key n'a pas été changée.
+
+### 3.8. Token d'authentification accepté en Query String
+- **Analyse** : Dans `auth/middleware.py`, le token Bearer peut être passé en paramètre d'URL en plus du header Authorization :
+  ```python
+  for param in qs.split("&"):
+      if param.startswith("token="):
+          return param[6:]
+  ```
+- **Risque (Élevé)** : Les query strings sont enregistrées dans de multiples endroits :
+  - **Logs serveur** (accès HTTP, WAF, reverse proxy amont)
+  - **Historique du navigateur** (si utilisation depuis la console admin)
+  - **Header `Referer`** envoyé aux sites tiers
+  - **Proxies intermédiaires** et CDN qui loguent les URLs complètes
+  Un token exfiltré de cette manière donne un accès immédiat au serveur.
+- **Recommandation** : Supprimer le support du token en query string. Seul le header `Authorization: Bearer <token>` doit être accepté.
+- **Statut** : ✅ **Corrigé v0.3.1** — Support query string supprimé de `middleware.py`.
+
+### 3.9. Journal d'audit volatile (mémoire uniquement)
+- **Analyse** : Dans `admin/api.py`, le journal d'audit (`_audit`) et les logs HTTP (`_logs`) sont stockés dans des listes Python en mémoire (ring buffer de 500 et 200 entrées respectivement). Aucune persistance sur disque, S3, ou syslog.
+- **Risque (Moyen)** : En cas de redémarrage du conteneur (crash, mise à jour, OOM-kill), tout l'historique d'audit est perdu. Cela empêche toute investigation post-incident et rend les exigences de conformité (ISO 27001, SOC2, HDS) impossibles à satisfaire sur ce composant.
+- **Recommandation** : 
+  - **Court terme** : Écrire chaque entrée d'audit sur `stderr` au format JSON structuré (capturé par Docker logs → collecté par Loki/ELK/CloudWatch).
+  - **Moyen terme** : Persister le journal d'audit sur S3 avec rotation (un fichier JSON par jour, rétention configurable).
+- **Statut** : ✅ **Corrigé v0.3.1** — Chaque entrée d'audit est dupliquée sur `stderr` en JSON structuré pour collecte par Docker logs.
+
 ---
 
 ## 4. Conclusion Générale
@@ -83,6 +134,20 @@ L'architecture est de niveau "Entreprise". L'isolation est pensée depuis la bas
 - Utilisation des `tmpfs` non-exécutables.
 - Protection par WAF des routes statiques.
 
-Sous réserve de la prise en compte des recommandations mineures concernant l'utilisation du paramètre `sshpass`, de la protection "Fail-Closed" des tokens d'accès sans outil, la solution **MCP Tools** remplit ses objectifs de sécurité hautement exigeants pour des agents d'intelligence artificielle.
+### Historique des corrections
+
+| §   | Vulnérabilité               | Sévérité     | Corrigé             |
+| --- | --------------------------- | ------------ | ------------------- |
+| 3.1 | WAF bypass `/mcp`           | Faible/Moyen | Design choice (SSE) |
+| 3.2 | Default Allow tool_ids      | Moyen        | ✅ v0.2.1           |
+| 3.3 | sshpass /proc visible       | Faible       | ✅ v0.2.1           |
+| 3.4 | network=true isolation      | Moyen        | ✅ v0.2.1 (doc)     |
+| 3.5 | docker.sock monté           | Critique     | Design choice       |
+| 3.6 | Timing attack bootstrap key | Critique     | ✅ v0.3.1           |
+| 3.7 | Bootstrap key par défaut    | Critique     | ✅ v0.3.1           |
+| 3.8 | Token en query string       | Élevé        | ✅ v0.3.1           |
+| 3.9 | Audit volatile              | Moyen        | ✅ v0.3.1           |
+
+La solution **MCP Tools** remplit ses objectifs de sécurité hautement exigeants pour des agents d'intelligence artificielle. Les vulnérabilités identifiées lors de la revue complémentaire (timing attack, bootstrap key, query string, audit volatile) ont été corrigées dans la version 0.3.1.
 
 ***Fin du rapport d'audit***

@@ -4,6 +4,7 @@ Middlewares ASGI : authentification pour mcp-tools.
 Vérifie le Bearer token et injecte ses infos pour les outils.
 """
 
+import hmac
 import json
 import time
 import sys
@@ -49,22 +50,22 @@ class AuthMiddleware:
             current_token_info.reset(tok)
 
     def _extract_token(self, scope) -> Optional[str]:
+        """Extrait le Bearer token depuis le header Authorization uniquement.
+
+        Note sécurité (§3.8) : le support query string (?token=) a été supprimé
+        car les URLs sont loguées par les proxies, WAF, navigateurs et headers Referer.
+        """
         headers = dict(scope.get("headers", []))
         auth = headers.get(b"authorization", b"").decode()
         if auth.startswith("Bearer "):
             return auth[7:]
-
-        qs = scope.get("query_string", b"").decode()
-        for param in qs.split("&"):
-            if param.startswith("token="):
-                return param[6:]
         return None
 
     def _validate_token(self, token: str) -> Optional[dict]:
         settings = get_settings()
 
-        # 1. Bootstrap key admin (fast path)
-        if token == settings.admin_bootstrap_key:
+        # 1. Bootstrap key admin — comparaison temps constant (§3.6)
+        if hmac.compare_digest(token, settings.admin_bootstrap_key):
             return {
                 "client_name": "admin",
                 "permissions": ["admin", "access"],

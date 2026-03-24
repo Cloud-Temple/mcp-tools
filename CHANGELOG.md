@@ -4,6 +4,22 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] — 2026-03-24
+
+### Security
+- **§3.6 Timing attack bootstrap key** — Remplacement de `==` par `hmac.compare_digest()` pour la comparaison de la bootstrap key admin dans `middleware.py` et `admin/api.py`. Élimine le canal auxiliaire de timing permettant de deviner la clé caractère par caractère
+- **§3.7 Bootstrap key par défaut** — Ajout d'une vérification au démarrage (`server.py`) : affichage d'un avertissement ⚠️ CRITIQUE si `ADMIN_BOOTSTRAP_KEY` n'a pas été modifiée depuis la valeur par défaut `change_me_in_production`
+- **§3.8 Token en query string supprimé** — Le support `?token=` dans `middleware.py` a été retiré. Seul le header `Authorization: Bearer <token>` est désormais accepté. Les query strings sont loguées par les proxies, navigateurs et headers Referer, exposant les tokens
+- **§3.9 Audit persisté sur stderr** — Chaque entrée du journal d'audit est désormais dupliquée sur `stderr` en JSON structuré, permettant la collecte par Docker logs → Loki/ELK/CloudWatch. Le ring buffer mémoire (500 entrées) est conservé pour la console admin
+
+### Added
+- **`_security_checks()`** — Nouvelle fonction dans `server.py` vérifiant au démarrage la bootstrap key et l'état de la sandbox
+- **Warning sandbox désactivée** — Avertissement au démarrage si `SANDBOX_ENABLED=false` (exécution locale = RCE sur l'hôte)
+- **Rapport d'audit enrichi** — `DESIGN/mcp-tools/SECURITY_AUDIT.md` étendu avec §3.6-§3.9, statuts de correction pour §3.2/§3.3, et tableau historique des 9 vulnérabilités
+
+### Fixed
+- **Tests WAF corrigés** — Les tests 13e/13f ciblaient `/admin/api/health` (exclue du WAF) au lieu de `/health` (protégée par Coraza). Corrigé pour tester la bonne route → 138/138 PASS
+
 ## [0.3.0] — 2026-03-24
 
 ### Added

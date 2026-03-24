@@ -17,7 +17,9 @@ Routes :
   GET  /admin/api/audit               → journal d'audit détaillé
 """
 
+import hmac
 import json
+import sys
 import time
 import platform
 from pathlib import Path
@@ -63,16 +65,21 @@ def add_audit(actor: str, action: str, target: str = "", details: str = "", stat
         details: Détails supplémentaires (permissions, tool_ids, etc.)
         status: Résultat (success, error)
     """
-    _audit.append({
+    entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "actor": actor,
         "action": action,
         "target": target,
         "details": details,
         "status": status,
-    })
+    }
+    _audit.append(entry)
     if len(_audit) > _MAX_AUDIT:
         _audit.pop(0)
+
+    # §3.9 — Persistance : écrire chaque entrée d'audit sur stderr en JSON
+    # structuré pour collecte par Docker logs → Loki/ELK/CloudWatch
+    print(json.dumps({"audit": entry}, ensure_ascii=False), file=sys.stderr, flush=True)
 
 
 # ═══════════════ HELPERS ═══════════════
@@ -96,8 +103,8 @@ def _validate_token(scope) -> Optional[dict]:
     token = auth[7:]
     settings = get_settings()
 
-    # Bootstrap key = admin
-    if token == settings.admin_bootstrap_key:
+    # Bootstrap key = admin — comparaison temps constant (§3.6)
+    if hmac.compare_digest(token, settings.admin_bootstrap_key):
         return {"client_name": "admin", "permissions": ["admin", "access"], "tool_ids": []}
 
     # Token S3 (admin ou non)
