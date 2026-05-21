@@ -1,6 +1,6 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.3.1 | **Date** : 2026-03-24 | **Auteur** : Cloud Temple
+> **Version** : 0.4.0 | **Date** : 2026-05-21 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
 > **Statut** : 🚧 Implémentation en cours — 12/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 (CRUD + update) + Console Admin Web + 65 paramètres MCP + CLI alignée 100%
 
@@ -406,6 +406,13 @@ S3_REGION_NAME=fr1
 # --- Perplexity ---
 PERPLEXITY_API_KEY=pplx_xxx
 PERPLEXITY_MODEL=sonar-reasoning-pro
+PERPLEXITY_TIMEOUT=600          # Timeout dédié Perplexity (sonar-reasoning-pro: 60-120s en detailed)
+
+# --- Limites globales ---
+TOOL_DEFAULT_TIMEOUT=600        # Timeout par défaut des outils (secondes)
+TOOL_MAX_TIMEOUT=600            # Timeout maximum autorisé
+TOOL_MAX_OUTPUT_CHARS=50000     # Troncature des outputs
+TOOL_MAX_CONCURRENT=20          # Exécutions simultanées max
 
 # --- Email (optionnel) ---
 SMTP_HOST=smtp.gmail.com
@@ -492,4 +499,4 @@ mcp-tools/
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.1*
+*Document créé le 5 mars 2026 — Mis à jour le 21 mai 2026 — MCP Tools v0.4.0*

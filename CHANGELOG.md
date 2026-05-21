@@ -4,6 +4,21 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] — 2026-05-21
+
+### Added
+- **Timeout dédié Perplexity** (`PERPLEXITY_TIMEOUT`) — Nouveau paramètre de configuration isolant le timeout des appels Perplexity API du timeout global des outils. Défaut : 600s (10 min). Les modèles `sonar-reasoning-pro` en mode `detailed` prennent 60-120s, le timeout global de 60s causait des échecs systématiques
+- **Variables `TOOL_*` dans docker-compose.yml** — Les 5 variables de limites globales (`TOOL_MAX_OUTPUT_CHARS`, `TOOL_MAX_CONCURRENT`, `TOOL_DEFAULT_TIMEOUT`, `TOOL_MAX_TIMEOUT`, `PERPLEXITY_TIMEOUT`) sont désormais transmises au conteneur, permettant l'override par l'opérateur sans rebuild
+
+### Changed
+- **`tool_default_timeout`** — Défaut relevé de 60s à 600s (filet de sécurité global). Les outils sandbox conservent leur propre limite (`sandbox_max_timeout=30s`)
+- **`tool_max_timeout`** — Défaut relevé de 60s à 600s (cohérence avec `tool_default_timeout`)
+- **`perplexity.py`** — Utilise `settings.perplexity_timeout` au lieu de `settings.tool_default_timeout` pour les deux outils (`perplexity_search` et `perplexity_doc`)
+- **`.env.example`** — Documenté avec les nouvelles valeurs de timeout et le paramètre `PERPLEXITY_TIMEOUT`
+
+### Removed
+- **Starter-kit** — Le dossier `starter-kit/` (boilerplate, CLINE_SETUP.md, README.md) a été retiré du dépôt. Le boilerplate est désormais maintenu séparément
+
 ## [0.3.1] — 2026-03-24
 
 ### Security

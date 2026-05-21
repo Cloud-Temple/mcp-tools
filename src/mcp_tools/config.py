@@ -33,11 +33,12 @@ class Settings(BaseSettings):
     perplexity_api_key: str = ""
     perplexity_model: str = "sonar-reasoning-pro"
     perplexity_api_url: str = "https://api.perplexity.ai"
+    perplexity_timeout: int = 600  # Timeout dédié Perplexity (sonar-reasoning-pro prend 60-120s en detailed)
 
     # --- Limites globales ---
     tool_max_output_chars: int = 50_000
     tool_max_concurrent: int = 20
-    tool_default_timeout: int = 60
+    tool_default_timeout: int = 600
     tool_max_timeout: int = 600
 
     # --- Sandbox Docker (tool shell) ---

@@ -94,6 +94,13 @@ services:
       - PERPLEXITY_MODEL=${PERPLEXITY_MODEL:-sonar-reasoning-pro}
       - PERPLEXITY_API_URL=${PERPLEXITY_API_URL:-https://api.perplexity.ai}
       - SANDBOX_DNS=${SANDBOX_DNS:-8.8.8.8,8.8.4.4}
+      # --- Limites globales ---
+      - TOOL_MAX_OUTPUT_CHARS=${TOOL_MAX_OUTPUT_CHARS:-50000}
+      - TOOL_MAX_CONCURRENT=${TOOL_MAX_CONCURRENT:-20}
+      - TOOL_DEFAULT_TIMEOUT=${TOOL_DEFAULT_TIMEOUT:-600}
+      - TOOL_MAX_TIMEOUT=${TOOL_MAX_TIMEOUT:-600}
+      # --- Timeout dédié Perplexity ---
+      - PERPLEXITY_TIMEOUT=${PERPLEXITY_TIMEOUT:-600}
     volumes:
       # Docker socket pour lancer les conteneurs sandbox éphémères (tool shell)
       - /var/run/docker.sock:/var/run/docker.sock

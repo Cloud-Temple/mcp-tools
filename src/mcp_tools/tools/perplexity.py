@@ -52,7 +52,7 @@ def register(mcp: FastMCP) -> None:
             }
 
             url = f"{settings.perplexity_api_url.rstrip('/')}/chat/completions"
-            timeout = float(settings.tool_default_timeout)
+            timeout = float(settings.perplexity_timeout)
 
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
@@ -122,7 +122,7 @@ def register(mcp: FastMCP) -> None:
             }
 
             url = f"{settings.perplexity_api_url.rstrip('/')}/chat/completions"
-            timeout = float(settings.tool_default_timeout)
+            timeout = float(settings.perplexity_timeout)
 
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)

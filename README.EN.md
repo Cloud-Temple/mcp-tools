@@ -205,6 +205,9 @@ Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permis
 | `S3_BUCKET_NAME`       | S3 bucket                    | `mcp-tools`                |
 | `PERPLEXITY_API_KEY`   | Perplexity API key           |                            |
 | `PERPLEXITY_MODEL`     | Perplexity model             | `sonar-reasoning-pro`      |
+| `PERPLEXITY_TIMEOUT`   | Dedicated Perplexity timeout (s) | `600`                  |
+| `TOOL_DEFAULT_TIMEOUT` | Default tool timeout (s)     | `600`                      |
+| `TOOL_MAX_OUTPUT_CHARS`| Max output truncation        | `50000`                    |
 | `SANDBOX_DNS`          | DNS for network sandboxes    | `8.8.8.8,8.8.4.4`         |
 
 ### CLI Client

@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.3.1 | **Date** : 2026-03-24
+> **Version** : 0.4.0 | **Date** : 2026-05-21
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -52,8 +52,8 @@
 
 | Tool                  | Description                              | Params clés                                                    | Source                             |
 | --------------------- | ---------------------------------------- | -------------------------------------------------------------- | ---------------------------------- |
-| **perplexity_search** ✅ | Recherche internet avec niveau de détail | query, detail_level (brief/normal/detailed), model (optionnel) | perplexity-mcp `search`            |
-| **perplexity_doc** ✅ | Documentation d'une techno/lib/API       | query, context (optionnel), model (optionnel)                  | perplexity-mcp `get_documentation` — 3 tests |
+| **perplexity_search** ✅ | Recherche internet avec niveau de détail. Timeout dédié `PERPLEXITY_TIMEOUT` (défaut 600s) | query, detail_level (brief/normal/detailed), model (optionnel) | perplexity-mcp `search`            |
+| **perplexity_doc** ✅ | Documentation d'une techno/lib/API. Timeout dédié `PERPLEXITY_TIMEOUT` (défaut 600s)       | query, context (optionnel), model (optionnel)                  | perplexity-mcp `get_documentation` — 3 tests |
 | ~~perplexity_chat~~   | ~~Conversation continue avec historique~~ | ~~message, chat_id~~ — **Abandonné**                          | —                                  |
 
 ---
@@ -162,4 +162,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 24 mars 2026 — MCP Tools v0.3.1*
+*Document créé le 5 mars 2026 — Mis à jour le 21 mai 2026 — MCP Tools v0.4.0*
