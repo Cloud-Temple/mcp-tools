@@ -288,6 +288,32 @@ async def test_02_auth():
     except Exception as e:
         record("MCP avec token admin", False, str(e))
 
+    # 2d. OAuth well-known → 404, pas 401 (MCP SDK >= 2025-11-25)
+    # Le SDK sonde ces endpoints après un 401 sur /mcp.
+    # Un 401 = "serveur cassé" ; un 404 = "pas d'OAuth, utiliser Bearer token".
+    wellknown_paths = [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/openid-configuration",
+    ]
+    for wk_path in wellknown_paths:
+        try:
+            data = await call_rest("GET", wk_path)
+            ok = data["status_code"] == 404
+            record(f"well-known {wk_path} → 404", ok,
+                   f"HTTP {data['status_code']} (attendu: 404)")
+        except Exception as e:
+            record(f"well-known {wk_path} → 404", False, str(e))
+
+    # 2e. /register → 404, pas 401
+    try:
+        data = await call_rest("POST", "/register", json_body={"client_name": "test"})
+        ok = data["status_code"] == 404
+        record("/register → 404", ok, f"HTTP {data['status_code']} (attendu: 404)")
+    except Exception as e:
+        record("/register → 404", False, str(e))
+
 
 async def test_03_shell():
     """Test 3: Outil shell (sandbox Docker)"""

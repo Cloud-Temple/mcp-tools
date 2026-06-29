@@ -4,6 +4,14 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.1] — 2026-06-29
+
+### Fixed
+- **OAuth well-known endpoints bloqués** — Les endpoints `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration` et `/register` retournaient 401 au lieu de 404. Le SDK MCP >= 2025-11-25 interprète un 401 sur ces endpoints comme "serveur cassé" et abandonne la connexion. Fix : `AuthMiddleware` retourne désormais 404 pour tous les chemins `/.well-known/*` et `/register` (RFC 9728, MCP Authorization spec 2025-11-25)
+
+### Added
+- **Tests OAuth discovery** — 5 nouveaux cas de test dans `test_02_auth` vérifient que les endpoints well-known et `/register` retournent 404
+
 ## [0.4.0] — 2026-05-21
 
 ### Added

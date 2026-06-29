@@ -18,6 +18,13 @@ class AuthMiddleware:
     PUBLIC_PATHS = {"/health", "/healthz", "/ready", "/favicon.ico"}
     PUBLIC_PREFIXES = ("/static/",)
 
+    # MCP SDK >= 2025-11-25 sonde ces endpoints après un 401 sur /mcp.
+    # Un 401 ici = "serveur cassé" (le SDK abandonne).
+    # Un 404 = "pas d'OAuth, utiliser un Bearer token statique".
+    # Ref: RFC 9728, MCP Authorization spec 2025-11-25.
+    OAUTH_DENY_PREFIXES = ("/.well-known/",)
+    OAUTH_DENY_PATHS = {"/register"}
+
     def __init__(self, app):
         self.app = app
 
@@ -32,6 +39,11 @@ class AuthMiddleware:
 
         if any(path.startswith(p) for p in self.PUBLIC_PREFIXES):
             return await self.app(scope, receive, send)
+
+        # OAuth discovery — retourner 404, jamais 401 (voir OAUTH_DENY_*)
+        if path in self.OAUTH_DENY_PATHS or any(path.startswith(p) for p in self.OAUTH_DENY_PREFIXES):
+            await self._send_error(send, 404, "Not Found")
+            return
 
         token = self._extract_token(scope)
         token_info = None
