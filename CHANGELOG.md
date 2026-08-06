@@ -4,6 +4,17 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.2] — 2026-08-06
+
+Outillage de publication. Aucun changement fonctionnel ni de dépendance : `src/` et `requirements.lock` sont inchangés.
+
+### Added
+- **`scripts/check_release_coherence.py`** — garde branché en CI (job `coherence-version`, déclenché aussi sur les tags `v*`). Échoue si `main` porte un `VERSION` correspondant à un tag pointant un **autre** commit, si un tag `vX.Y.Z` désigne un commit dont `VERSION` ≠ X.Y.Z, ou si un tag est publié sans entrée CHANGELOG. Le 2026-08-06, du travail avait été fusionné après la publication de v0.5.0 sans bump ni tag : la plateforme s'est vu annoncer une cible de déploiement qui a changé sous elle. Le garde reproduit ce cas et échoue dessus
+- **`scripts/release.sh`** — rend la publication atomique : bump `VERSION` et `LABEL`, contrôles préalables (branche `main`, arbre propre, synchro `origin`, tag libre, CHANGELOG rédigé, aucun `.env` suivi par git), gardes de cohérence et de reproductibilité, puis commit + tag + release. `DRY_RUN=1` contrôle tout sans publier
+
+### Fixed
+- **Bits exécutables absents des scripts** — `core.fileMode=false` sur ce dépôt rend `chmod` invisible à git : `scripts/lock_requirements.sh` était livré en `100644`, donc `./scripts/lock_requirements.sh` — la commande documentée dans le README et le `Dockerfile` — échouait en « permission denied » depuis un clone neuf. Corrigé via `git update-index --chmod=+x`
+
 ## [0.5.1] — 2026-08-06
 
 Durcissement de la recette E2E. Aucun changement d'artefact : `src/` et `VERSION` sont inchangés, l'image `v0.5.0` reste bit-à-bit identique.
