@@ -57,8 +57,10 @@ import time
 import asyncio
 import argparse
 import subprocess
+import re
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 # =============================================================================
 # Configuration
@@ -1993,6 +1995,152 @@ async def test_14_cli():
             record(f"cli {cmd_name} --help", False, str(e))
 
 
+def _docker_exec(argv, timeout=60):
+    """Exécute une commande dans le conteneur applicatif.
+
+    Retourne (joignable, returncode, sortie). `joignable` est False quand le
+    conteneur est absent ou arrêté : le test doit alors être SKIP, pas FAIL —
+    l'indisponibilité de l'environnement n'est pas un défaut du dépôt.
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "mcp-tools-service", *argv],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, -1, str(e)
+
+    combined = (r.stderr or "") + (r.stdout or "")
+    if r.returncode != 0 and re.search(r"No such container|is not running|Cannot connect to the Docker daemon", combined):
+        return False, r.returncode, combined.strip()
+    return True, r.returncode, combined.strip()
+
+
+def _parse_direct_requirements(path):
+    """Retourne [(nom_brut, spec)] des dépendances directes déclarées."""
+    deps = []
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            m = re.match(r"^([A-Za-z0-9._-]+)(\[[^\]]+\])?\s*(.*)$", line)
+            if m:
+                deps.append((m.group(1), m.group(3).strip()))
+    return deps
+
+
+def _parse_lock(path):
+    """Retourne {nom_normalisé: version} depuis le lock."""
+    pins = {}
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.split("#", 1)[0].strip()
+            if not line or "==" not in line:
+                continue
+            name, _, version = line.partition("==")
+            pins[re.sub(r"[-_.]+", "-", name).strip().lower()] = version.strip()
+    return pins
+
+
+async def test_15_reproducibility():
+    """Reproductibilité du build : bornes de dépendances, lock, imports, CVE.
+
+    Garde de RÉGRESSION DE CLASSE, pas seulement de l'incident #2. Une contrainte
+    `>=` sans borne haute laisse une majeure amont rendre un tag publié
+    inexécutable — c'est ce qui a cassé la reconstruction de la v0.4.1 quand
+    mcp 2.0.0 a supprimé `mcp.server.fastmcp`.
+    """
+    print("\n📦 15. Reproductibilité du build")
+    print("-" * 40)
+
+    root = Path(__file__).resolve().parent.parent
+    req_path = root / "requirements.txt"
+    lock_path = root / "requirements.lock"
+
+    # 15a. Toute dépendance directe porte une borne haute — garde de classe.
+    try:
+        unbounded = [
+            name for name, spec in _parse_direct_requirements(req_path)
+            if "==" not in spec and "<" not in spec
+        ]
+        record(
+            "requirements.txt : toute dépendance bornée",
+            not unbounded,
+            "OK" if not unbounded else f"sans borne haute : {', '.join(unbounded)}",
+        )
+    except Exception as e:
+        record("requirements.txt : toute dépendance bornée", False, str(e))
+
+    # 15b. Le lock existe et est peuplé.
+    try:
+        pins = _parse_lock(lock_path)
+        record("requirements.lock présent et peuplé", len(pins) > 0, f"{len(pins)} paquets figés")
+    except Exception as e:
+        pins = {}
+        record("requirements.lock présent et peuplé", False, str(e))
+
+    # 15c. Le lock couvre toutes les dépendances directes.
+    #      Un lock désynchronisé est pire qu'aucun lock : il ment sur le contrat.
+    try:
+        direct = [re.sub(r"[-_.]+", "-", n).lower() for n, _ in _parse_direct_requirements(req_path)]
+        missing = [n for n in direct if n not in pins]
+        record(
+            "lock couvre toutes les dépendances directes",
+            not missing,
+            "OK" if not missing else f"absentes du lock : {', '.join(missing)}",
+        )
+    except Exception as e:
+        record("lock couvre toutes les dépendances directes", False, str(e))
+
+    # 15d. Le SDK MCP est figé sous la majeure qui casse l'API.
+    try:
+        mcp_pin = pins.get("mcp", "")
+        ok = bool(mcp_pin) and int(mcp_pin.split(".")[0]) < 2
+        record("lock : mcp figé en < 2.0", ok, f"mcp=={mcp_pin or 'absent'}")
+    except Exception as e:
+        record("lock : mcp figé en < 2.0", False, str(e))
+
+    # 15e. Surface d'import réellement utilisée par le code, DANS l'image.
+    #      L'issue #2 ne visait que l'import serveur ; le client casse aussi en
+    #      2.0.0 (`streamablehttp_client`), ce qui briserait CLI et suite E2E
+    #      sans qu'un healthcheck conteneur ne le voie.
+    probes = [
+        ("serveur", "from mcp.server.fastmcp import FastMCP, Context"),
+        ("client", "from mcp import ClientSession; from mcp.client.streamable_http import streamablehttp_client"),
+    ]
+    for label, stmt in probes:
+        reachable, rc, out = _docker_exec(["python", "-c", stmt], timeout=30)
+        if not reachable:
+            record(f"import {label} dans l'image", False, "conteneur indisponible", skipped=True)
+        else:
+            record(f"import {label} dans l'image", rc == 0,
+                   "OK" if rc == 0 else out.splitlines()[-1][:120])
+
+    # 15f. Cohérence de l'arbre installé dans l'image (conflits de versions).
+    reachable, rc, out = _docker_exec(["python", "-m", "pip", "check"])
+    if not reachable:
+        record("pip check dans l'image", False, "conteneur indisponible", skipped=True)
+    else:
+        record("pip check dans l'image", rc == 0, out[:120] or "OK")
+
+    # 15g. Aucune CVE connue sur les versions figées.
+    #      Épingler protège de la dérive mais gèle aussi les vulnérabilités :
+    #      sans ce contrôle, le lock devient une dette de sécurité silencieuse.
+    try:
+        r = subprocess.run(
+            ["pip-audit", "--requirement", str(lock_path), "--progress-spinner", "off", "--strict"],
+            capture_output=True, text=True, timeout=300,
+        )
+        record("pip-audit : aucune CVE sur les versions figées",
+               r.returncode == 0, (r.stdout or r.stderr).strip().splitlines()[-1][:160] if (r.stdout or r.stderr) else "OK")
+    except FileNotFoundError:
+        record("pip-audit : aucune CVE sur les versions figées", False,
+               "pip-audit non installé (pip install pip-audit)", skipped=True)
+    except Exception as e:
+        record("pip-audit : aucune CVE sur les versions figées", False, str(e), skipped=True)
+
+
 # Registre des tests (nom → fonction)
 TEST_REGISTRY = {
     "connectivity":    test_01_connectivity,
@@ -2010,7 +2158,11 @@ TEST_REGISTRY = {
     "admin":           test_12_admin,
     "waf":             test_13_waf,
     "cli":             test_14_cli,
+    "reproducibility": test_15_reproducibility,
 }
+
+# Tests exécutables sans serveur : ils inspectent le dépôt, pas un déploiement.
+OFFLINE_TESTS = {"reproducibility"}
 
 
 async def run_all_tests(only: str = None):
@@ -2026,12 +2178,15 @@ async def run_all_tests(only: str = None):
 
     t0 = time.monotonic()
 
-    # Toujours vérifier la connectivité d'abord
-    connected = await test_01_connectivity()
-    if not connected:
-        print("\n❌ ARRÊT — Impossible de se connecter au serveur")
-        print(f"   Vérifiez : docker compose up -d && docker compose logs -f mcp-tools")
-        return False
+    # Les gardes statiques portent sur les fichiers de dépendances, pas sur un
+    # serveur. La CI doit pouvoir les lancer sans déploiement — c'est tout
+    # l'intérêt d'attraper une dérive AVANT de tenter un build.
+    if only not in OFFLINE_TESTS:
+        connected = await test_01_connectivity()
+        if not connected:
+            print("\n❌ ARRÊT — Impossible de se connecter au serveur")
+            print(f"   Vérifiez : docker compose up -d && docker compose logs -f mcp-tools")
+            return False
 
     if only:
         # Lancer un test spécifique
@@ -2058,6 +2213,7 @@ async def run_all_tests(only: str = None):
         await test_11_token()
         await test_12_admin()
         await test_13_waf()
+        await test_15_reproducibility()
 
     # Résumé
     elapsed = round(time.monotonic() - t0, 1)

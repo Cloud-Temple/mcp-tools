@@ -119,8 +119,26 @@ python scripts/test_service.py --test shell -v
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 PYTHONPATH=src python -m mcp_tools
+```
+
+### 6. Build reproductible
+
+`requirements.txt` est un **contrat de compatibilité** (bornes hautes obligatoires), pas la source d'installation. Ce sont `requirements.lock` — clôture transitive figée, outillage `pip`/`setuptools`/`wheel` inclus — et les images de base épinglées par digest qui garantissent qu'un rebuild d'un tag publié produit le même arbre de dépendances.
+
+Après toute modification de `requirements.txt`, régénérer le lock **dans l'image cible** :
+
+```bash
+./scripts/lock_requirements.sh
+```
+
+Un `pip freeze` lancé depuis le poste de développement résoudrait d'autres versions que `python:3.11-slim` linux/amd64 et produirait un lock faux.
+
+Contrôler les gardes (bornes, cohérence du lock, plafond `mcp < 2.0`, imports serveur et client, CVE) :
+
+```bash
+python3 scripts/test_service.py --test reproducibility --no-docker
 ```
 
 ## Architecture

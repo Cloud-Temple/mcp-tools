@@ -1,29 +1,53 @@
+# =============================================================================
+# MCP Tools — Contrat de dépendances (lisible par l'humain)
+# =============================================================================
+#
+# ⚠️ CE FICHIER N'EST PAS CELUI QU'INSTALLE L'IMAGE.
+#
+# Le Dockerfile installe `requirements.lock`, qui fige la clôture transitive
+# complète et garantit qu'un rebuild d'un tag donné produit le même arbre de
+# dépendances. Ce fichier-ci exprime le CONTRAT de compatibilité : les versions
+# que le code sait supporter.
+#
+# Régénérer le lock après toute modification ici :
+#     ./scripts/lock_requirements.sh
+#
+# Toute dépendance DOIT porter une borne haute. Une contrainte `>=` seule laisse
+# une majeure amont casser un tag déjà publié : c'est ce qui a rendu la v0.4.1
+# non reconstructible le 2026-08-06 (mcp 2.0.0 a supprimé `mcp.server.fastmcp`).
+# Voir CHANGELOG [0.4.2] et l'issue #2.
+# =============================================================================
+
 # === Framework MCP (Streamable HTTP) ===
-mcp[cli]>=1.8.0
-uvicorn>=0.32.0
+# Plafond dur = <2.0 : la 2.0.0 supprime `mcp.server.fastmcp` (serveur) ET
+# `streamablehttp_client` (client). Ne PAS relever ce plafond sans réécrire les
+# 11 fichiers de `src/` qui importent FastMCP, plus la CLI et la suite E2E.
+mcp[cli]>=1.29.0,<2.0
+uvicorn>=0.32.0,<1.0
 
 # === Configuration ===
-pydantic>=2.0
-pydantic-settings>=2.0
+pydantic>=2.0,<3.0
+pydantic-settings>=2.0,<3.0
 
 # === CLI ===
-click>=8.1
-rich>=13.0
-prompt-toolkit>=3.0
+click>=8.1,<9.0
+rich>=13.0,<16.0
+prompt-toolkit>=3.0,<4.0
 
 # === Client HTTP (outils http + perplexity) ===
-httpx>=0.27
+httpx>=0.27,<1.0
 
 # === S3 (tokens, stockage) ===
-boto3>=1.34
+boto3>=1.34,<2.0
 
 # === Génération (outil generate) ===
-jinja2>=3.1
+jinja2>=3.1,<4.0
 
 # === Phase 2 (décommenter quand nécessaire) ===
-# asyncpg>=0.29           # PostgreSQL
-# aiomysql>=0.2           # MySQL
-# aiosqlite>=0.19         # SQLite async
-# aiosmtplib>=3.0         # SMTP async
-# pypdf>=4.0              # PDF extraction
-# beautifulsoup4>=4.12    # HTML scraping
+# Ajouter une borne haute à chaque ligne réactivée.
+# asyncpg>=0.29,<1.0        # PostgreSQL
+# aiomysql>=0.2,<1.0        # MySQL
+# aiosqlite>=0.19,<1.0      # SQLite async
+# aiosmtplib>=3.0,<4.0      # SMTP async
+# pypdf>=4.0,<7.0           # PDF extraction
+# beautifulsoup4>=4.12,<5.0 # HTML scraping

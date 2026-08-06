@@ -1,6 +1,6 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.4.0 | **Date** : 2026-05-21 | **Auteur** : Cloud Temple
+> **Version** : 0.5.0 | **Date** : 2026-08-06 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
 > **Statut** : 🚧 Implémentation en cours — 12/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 (CRUD + update) + Console Admin Web + 65 paramètres MCP + CLI alignée 100%
 
@@ -478,9 +478,12 @@ mcp-tools/
 ├── scripts/
 │   ├── test_service.py        # ✅ Recette E2E (--test NOM pour cibler)
 │   └── cli/                   # CLI standard (starter-kit)
-├── Dockerfile                 # ✅ Python 3.11 + docker CLI statique
+├── Dockerfile                 # ✅ Python 3.11 (digest épinglé) + docker CLI statique
 ├── docker-compose.yml         # ✅ sandbox + mcp-tools + waf + docker.sock
-├── requirements.txt
+├── requirements.txt           # ✅ contrat de compatibilité (bornes hautes)
+├── requirements.lock          # ✅ clôture transitive figée — c'est CE fichier qu'installe l'image
+├── scripts/lock_requirements.sh  # ✅ régénère le lock DANS l'image cible
+├── .github/workflows/build.yml   # ✅ build frais + healthcheck + scan CVE (hebdomadaire)
 ├── .env.example
 └── VERSION
 ```
@@ -499,4 +502,44 @@ mcp-tools/
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 21 mai 2026 — MCP Tools v0.4.0*
+## 8. Chaîne d'approvisionnement et reproductibilité (v0.5.0)
+
+### Le problème résolu
+
+Un tag applicatif immuable ne suffit pas : si le build résout ses dépendances au moment où il tourne, une majeure amont publiée après coup peut rendre ce tag **inexécutable**. C'est arrivé à la v0.4.1 — `mcp[cli]>=1.8.0` a résolu MCP SDK 2.0.0, qui supprime `mcp.server.fastmcp`, bloquant la recréation de l'unité Tools côté plateforme (issue #2).
+
+### Séparation contrat / verrou
+
+| Fichier | Rôle | Édité par |
+|---|---|---|
+| `requirements.txt` | **Contrat de compatibilité** : ce que le code sait supporter. Borne haute obligatoire sur chaque ligne | l'humain |
+| `requirements.lock` | **Verrou** : clôture transitive exacte, outillage `pip`/`setuptools`/`wheel` inclus. Installé par le `Dockerfile` | `scripts/lock_requirements.sh` |
+
+Le lock est généré **dans** `python:3.11-slim` linux/amd64. Un `pip freeze` lancé sur un poste de développement résout d'autres versions et produit un lock faux.
+
+### Les quatre sources de dérive, et leur verrou
+
+| Source | Verrou |
+|---|---|
+| Dépendances Python directes | bornes hautes dans `requirements.txt` |
+| Dépendances transitives | `requirements.lock` |
+| Outillage de build (`pip`, `setuptools`, `wheel`) | `pip freeze --all` dans le lock — exclu par défaut, d'où l'oubli initial |
+| Images de base | épinglage par **digest** (`python:3.11-slim`, `alpine:3.24`) |
+
+### Périmètre des scanners — aucun ne suffit seul
+
+- `pip-audit` n'audite **que** le Python déclaré. Il ne voit ni l'outillage exclu par `pip freeze`, ni la couche OS, ni les binaires non-Python
+- Le Docker CLI statique embarque sa **propre bibliothèque standard Go** : une surface entière invisible pour `pip-audit` (18 CVE dont 2 critiques y ont été trouvées en v0.5.0)
+- `docker scout` couvre l'image complète (OS + langages) et reste donc indispensable **en plus**
+
+La CI (`.github/workflows/build.yml`) exécute les deux, sur les deux images, avec un passage hebdomadaire : c'est ce déclencheur qui détecte une dérive amont **avant** qu'elle ne bloque un déploiement.
+
+### Risques résiduels assumés
+
+- `perl-base` dans l'image de service : `Essential: yes`, livré par `python:3.11-slim`, 2 CVE critiques « not fixed » côté Debian. Le retirer casserait dpkg. Exploitabilité nulle — le service n'exécute jamais perl
+- `msgpack` et `pkg_resources` vendorés dans `pip` : non upgradables séparément, jamais exécutés
+- `jq` et `wget` dans la sandbox : sans correctif publié dans Alpine 3.24
+
+---
+
+*Document créé le 5 mars 2026 — Mis à jour le 6 août 2026 — MCP Tools v0.5.0*

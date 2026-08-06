@@ -22,7 +22,12 @@
 #   --no-new-privileges → pas d'escalade
 # =============================================================================
 
-FROM alpine:3.20
+# Alpine 3.24 — la 3.20 (mai 2024) est sortie du support : elle portait
+# 47 CVE critiques/hautes sans correctif (curl, nodejs, openssl, expat, gnutls…).
+# Vérifier à chaque montée : docker scout cves mcp-tools-sandbox
+# Épinglée par digest : un tag mouvant annulerait la reproductibilité du build.
+# Relever délibérément (correctifs OS) via `docker buildx imagetools inspect alpine:3.24`.
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # Créer un utilisateur non-root
 RUN addgroup -S sandbox && adduser -S sandbox -G sandbox
@@ -85,7 +90,13 @@ RUN apk add --no-cache \
         beautifulsoup4 \
         tabulate \
         toml \
+        "pillow>=12.3.0" \
     && rm -rf /var/cache/apk/* /root/.cache
+
+# py3-pillow d'Alpine 3.24 est en 12.2.0, porteuse de 10 CVE hautes corrigées en
+# 12.3.0 (dont CVE-2026-54058, CVE-2026-59197, CVE-2026-59204). On l'écrase par
+# la roue musllinux officielle — aucune compilation, matplotlib continue de la
+# voir. À retirer quand Alpine livrera py3-pillow >= 12.3.0.
 
 # Node.js (traitement JSON, scripts JS)
 RUN apk add --no-cache \
