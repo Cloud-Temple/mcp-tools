@@ -4,6 +4,22 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Non publié]
+
+Durcissement de la recette E2E. Aucun changement d'artefact : `src/` et `VERSION` sont inchangés, l'image `v0.5.0` reste bit-à-bit identique.
+
+### Fixed
+- **`test_14_cli` ne s'exécutait jamais** — ses 52 assertions étaient enregistrées dans `TEST_REGISTRY` mais absentes de la séquence du run complet. Elles ne tournaient qu'avec `--test cli` explicite. La suite passe de 132 à 186 assertions
+- **Deux assertions ne pouvaient pas échouer** — `perplexity citations` et `perplexity_doc citations` étaient des `record(..., True)` enfermés dans un `if citations:`. Citations présentes ⇒ succès automatique ; citations absentes ⇒ rien d'enregistré, l'anomalie passait inaperçue. Remplacées par une vérification réelle du type et du caractère non vide
+- **Les tests Perplexity confondaient panne externe et défaut de code** — un `401 insufficient_quota` produisait un échec, donc un rouge permanent qu'on finit par ignorer. Discrimination ajoutée sur des signatures d'indisponibilité explicitement listées (quota, clé absente, 429, 502/503/504) ; toute autre erreur reste un échec
+
+### Security
+- **`.gitignore` ne couvrait pas les sauvegardes d'éditeur** — `.env` était ignoré mais pas `.env~`, qui contient exactement les mêmes secrets (identifiants S3, clé API). Un `git add -A` l'a mis en index le 2026-08-06 ; c'est la protection de secrets de GitHub qui a bloqué le push, pas nos règles. Aucune fuite. Motifs `*~`, `*.bak`, `*.orig` et `.env.*` ajoutés, avec exception explicite pour `.env.example`
+
+### Added
+- **`--test` accepte une liste** séparée par des virgules, pour que la CI lance un sous-ensemble en un passage
+- **Recette E2E en CI** — 132 assertions hermétiques sur 9 outils, sans secret externe. Restent manuels et documentés comme tels : `token` et `admin` (identifiants S3), les deux `perplexity` (clé facturée), les cas SSH positifs (cible réelle)
+
 ## [0.5.0] — 2026-08-06
 
 Build reproductible et remédiation de sécurité. Aucun changement fonctionnel : les 12 outils, leurs signatures et l'API sont inchangés.

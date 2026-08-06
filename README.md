@@ -92,11 +92,18 @@ python scripts/mcp_cli.py shell
 
 ### 4. Recette E2E
 
+**184 assertions** couvrant les 12 outils, dont **74 négatives** (anti-SSRF, blocage RFC 1918, isolation réseau de la sandbox, injections, timeouts, refus d'entrées invalides, gardes de régression). Les valeurs calculées sont comparées à l'exact, pas seulement l'absence d'erreur.
+
+Ce qui tourne **automatiquement en CI** : 132 assertions hermétiques sur 9 outils, plus les 8 gardes de reproductibilité. Ce qui reste **manuel faute de secrets en CI** : `token` et `admin` (identifiants S3), `perplexity_search` et `perplexity_doc` (clé API facturée), et les cas SSH positifs (cible réelle). À jouer avant chaque release.
+
 ```bash
 # Tous les tests (build + start + test + stop)
 python scripts/test_service.py
 
-# Test spécifique (14 catégories)
+# Sous-ensemble hermétique, celui de la CI
+python scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
+
+# Test spécifique (16 catégories)
 python scripts/test_service.py --test shell
 python scripts/test_service.py --test network
 python scripts/test_service.py --test http
