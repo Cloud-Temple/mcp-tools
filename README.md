@@ -23,7 +23,7 @@ docker compose up -d
 
 # Vérification
 curl http://localhost:8082/health
-# → {"status":"healthy","service":"mcp-tools","version":"0.1.9","transport":"streamable-http"}
+# → {"status":"healthy","service":"mcp-tools","version":"0.5.1","transport":"streamable-http"}
 
 # Console d'administration
 open http://localhost:8082/admin

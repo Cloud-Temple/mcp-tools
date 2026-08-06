@@ -4,7 +4,7 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Non publié]
+## [0.5.1] — 2026-08-06
 
 Durcissement de la recette E2E. Aucun changement d'artefact : `src/` et `VERSION` sont inchangés, l'image `v0.5.0` reste bit-à-bit identique.
 
