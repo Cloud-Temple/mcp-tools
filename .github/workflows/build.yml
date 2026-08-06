@@ -1,0 +1,81 @@
+name: Build reproductible & sécurité
+
+# Trois déclencheurs, trois rôles distincts :
+#  - push/PR      : empêcher d'introduire une dépendance non bornée ou un lock désynchronisé
+#  - schedule     : détecter une dérive AMONT (nouvelle majeure, nouvelle CVE) AVANT qu'elle ne
+#                   bloque un déploiement. C'est le déclencheur qui manquait : mcp 2.0.0 est sorti
+#                   et a rendu la v0.4.1 inreconstructible sans que rien ne le signale (issue #2).
+#  - dispatch     : rejeu manuel avant une release
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  gardes-statiques:
+    name: Gardes dépendances & CVE
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Installer pip-audit
+        run: pip install --quiet pip-audit
+      - name: Bornes, lock, cohérence, CVE
+        # Ne demande ni serveur ni conteneur : les sondes image sont SKIP ici,
+        # elles sont couvertes par le job build-image.
+        run: python3 scripts/test_service.py --test reproducibility --no-docker
+
+  build-image:
+    name: Build frais, démarrage, scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build de l'image de service
+        run: docker build -t mcp-tools:ci .
+
+      - name: Build de l'image sandbox
+        run: docker build -t mcp-tools-sandbox:ci ./sandbox
+
+      - name: Surface d'import réellement utilisée par le code
+        # L'issue #2 ne visait que l'import serveur ; le client casse aussi en
+        # mcp 2.0.0, ce qu'un simple healthcheck ne verrait pas.
+        run: |
+          docker run --rm mcp-tools:ci python -c "from mcp.server.fastmcp import FastMCP, Context"
+          docker run --rm mcp-tools:ci python -c "from mcp import ClientSession; from mcp.client.streamable_http import streamablehttp_client"
+          docker run --rm --entrypoint python mcp-tools:ci -m pip check
+
+      - name: Démarrage et healthcheck
+        run: |
+          docker run -d --name ci-svc -p 8050:8050 \
+            -e ADMIN_BOOTSTRAP_KEY=ci_startup_probe_key mcp-tools:ci
+          for i in $(seq 1 20); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' ci-svc)" = "healthy" ] && break
+            sleep 3
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' ci-svc)" = "healthy"
+          curl -sf http://localhost:8050/health >/dev/null
+          docker rm -f ci-svc
+
+      - name: Scan CVE des deux images
+        # `pip-audit` n'audite QUE le Python : il ne voit ni la couche OS, ni la
+        # stdlib Go embarquée dans le binaire Docker CLI statique. D'où ce scan.
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: mcp-tools:ci
+          only-severity: critical,high
+          exit-code: false
+
+      - name: Scan CVE sandbox
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: mcp-tools-sandbox:ci
+          only-severity: critical,high
+          exit-code: false

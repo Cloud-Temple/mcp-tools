@@ -4,6 +4,38 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-08-06
+
+Build reproductible et remédiation de sécurité. Aucun changement fonctionnel : les 12 outils, leurs signatures et l'API sont inchangés.
+
+### Fixed
+- **v0.4.1 non reconstructible depuis son tag** ([#2](https://github.com/Cloud-Temple/mcp-tools/issues/2)) — `requirements.txt` déclarait `mcp[cli]>=1.8.0` sans borne haute. La sortie de MCP SDK 2.0.0, qui supprime `mcp.server.fastmcp`, rendait tout rebuild d'un tag publié inexécutable (`ModuleNotFoundError`), bloquant la recréation de l'unité Tools côté plateforme. Le tag applicatif était immuable, son build ne l'était pas
+- **Le client MCP cassait aussi**, angle absent de l'issue — `streamablehttp_client` disparaît également en 2.0.0, ce qui briserait `scripts/cli/client.py` et la suite E2E sans qu'un healthcheck conteneur ne le détecte
+
+### Security
+- **`setuptools` 79.0.1 → 83.0.0** — PYSEC-2026-3447 (contournement d'exclusion `MANIFEST.in` sur systèmes de fichiers normalisants). Exploitabilité nulle dans cette image, qui ne construit aucune sdist, mais remontée par tout scanner de conformité. Avait échappé au premier audit car `pip freeze` exclut l'outillage par défaut
+- **Docker CLI 27.4.1 → 29.7.2** — le binaire statique embarquait Go stdlib 1.22.10, porteuse de 18 CVE dont 2 critiques (CVE-2025-68121, CVE-2025-22871). Surface invisible pour `pip-audit`, qui n'audite que le Python
+- **Sandbox : Alpine 3.20 → 3.24** — la 3.20 est sortie du support et cumulait **47 CVE critiques ou hautes sur 17 paquets**. Ramené à 3 vulnérabilités hautes, **zéro critique** : les critiques `curl`, `nodejs`, `openssl` et `expat` sont éliminées
+- **`pillow` 12.2.0 → 12.3.0** dans la sandbox — 10 CVE hautes (dont CVE-2026-54058, CVE-2026-59197, CVE-2026-59204). Installée depuis la roue musllinux officielle, sans compilation
+- **`git` retiré de l'image de service** — appelé par aucun outil (l'outil `git` est en Phase 2), mais il tirait 5 paquets `perl` porteurs de 2 CVE critiques marquées « not fixed » par Debian. Aucune perte de fonctionnalité : le tool `shell` n'exécute jamais dans l'image de service, il délègue à `mcp-tools-sandbox`, où `git` reste présent
+
+### Added
+- **`requirements.lock`** — clôture transitive complète (51 paquets, outillage `pip`/`setuptools`/`wheel` inclus), générée dans l'image cible. C'est désormais lui qu'installe le `Dockerfile`
+- **`scripts/lock_requirements.sh`** — régénère le lock **dans** `python:3.11-slim` linux/amd64. Un `pip freeze` lancé sur un poste de développement résoudrait d'autres versions et produirait un lock faux
+- **`test_15_reproducibility`** (`--test reproducibility`) — 8 contrôles : bornes de dépendances, présence et cohérence du lock, plafond `mcp < 2.0`, imports serveur **et** client dans l'image, `pip check`, `pip-audit`. Exécutable sans serveur, pour la CI
+- **CI GitHub Actions** (`.github/workflows/build.yml`) — le dépôt n'en avait aucune, c'est pourquoi l'incident n'a été découvert qu'au moment d'un déploiement. Build frais, démarrage, healthcheck et scan CVE des deux images, avec un passage hebdomadaire qui détecte la dérive amont avant qu'elle ne bloque
+
+### Changed
+- **`requirements.txt` devient un contrat de compatibilité**, plus la source d'installation. Les 10 dépendances directes portent désormais une borne haute
+- **`mcp[cli]` → `>=1.29.0,<2.0`**, figé à 1.29.0 par le lock. Le plafond ne peut être relevé sans réécrire les 11 fichiers de `src/` qui importent `FastMCP`, plus la CLI et la suite E2E
+- **Images de base épinglées par digest** (`python:3.11-slim`, `alpine:3.24`) — un tag mouvant annulait la reproductibilité que cette version installe
+- **`LABEL version`** du `Dockerfile` corrigé : il affichait encore `0.1.0`
+
+### Known issues
+- **`perl-base`** subsiste dans l'image de service : 2 CVE critiques et 2 hautes, toutes « not fixed » côté Debian. Le paquet est `Essential: yes` et livré par `python:3.11-slim` lui-même ; le retirer casserait dpkg. Exploitabilité nulle en pratique — le service n'exécute jamais perl. S'en affranchir suppose de changer d'image de base, décision volontairement hors périmètre
+- **`msgpack` et `pkg_resources`** : 1 CVE haute chacun, **vendorés dans pip**, donc non upgradables séparément et jamais exécutés. `pip` doit rester dans l'image, le critère d'acceptation de l'issue #2 exigeant d'y lancer `pip show mcp`
+- **`jq` et `wget`** dans la sandbox : 3 CVE hautes sans correctif publié dans Alpine 3.24
+
 ## [0.4.1] — 2026-06-29
 
 ### Fixed
