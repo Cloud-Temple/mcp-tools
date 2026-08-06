@@ -9,12 +9,35 @@ name: Build reproductible & sécurité
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
 jobs:
+  coherence-version:
+    name: Cohérence VERSION / tag / CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # le garde compare HEAD aux tags : historique complet requis
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Garde de cohérence
+        # Échoue si `main` porte un VERSION correspondant à un tag qui pointe un
+        # AUTRE commit — la branche a alors dérivé sous un numéro déjà publié et
+        # personne ne peut savoir quoi déployer. Vécu le 2026-08-06 : la
+        # plateforme a reçu deux cibles de déploiement en cinq minutes.
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            python3 scripts/check_release_coherence.py --tag "${GITHUB_REF_NAME}"
+          else
+            python3 scripts/check_release_coherence.py
+          fi
+
   gardes-statiques:
     name: Gardes dépendances & CVE
     runs-on: ubuntu-latest
