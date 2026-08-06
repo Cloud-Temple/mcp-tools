@@ -654,6 +654,35 @@ async def test_05_http():
         record("http auth bearer", False, str(e))
 
 
+def _perplexity_unavailable(data):
+    """Distingue « service externe indisponible » de « notre code est cassé ».
+
+    Un quota épuisé ou une clé absente ne dit RIEN sur la qualité du code : le
+    faire échouer produit un rouge permanent qu'on finit par ignorer, et un
+    rouge ignoré ne garde plus rien. À l'inverse, tout traiter en SKIP serait
+    de la complaisance. On ne relâche donc QUE sur des signatures d'indispo
+    explicitement identifiées ; toute autre erreur reste un échec.
+
+    Retourne le motif d'indisponibilité, ou None si l'erreur est fonctionnelle.
+    """
+    if data.get("status") != "error":
+        return None
+    msg = data.get("message", "")
+    low = msg.lower()
+    for marker, reason in (
+        ("non configurée", "clé API non configurée"),
+        ("insufficient_quota", "quota API épuisé (compte Perplexity)"),
+        ("exceeded your current quota", "quota API épuisé (compte Perplexity)"),
+        ("429", "rate limit API"),
+        ("502", "passerelle amont indisponible"),
+        ("503", "service amont indisponible"),
+        ("504", "timeout passerelle amont"),
+    ):
+        if marker in low:
+            return reason
+    return None
+
+
 async def test_06_perplexity():
     """Test 6: Outil perplexity_search (nécessite clé API)"""
     print("\n🔍 TEST 6 — Outil perplexity_search")
@@ -666,17 +695,22 @@ async def test_06_perplexity():
             "detail_level": "brief"
         })
 
-        if data.get("status") == "error" and "non configurée" in data.get("message", ""):
-            record("perplexity_search", False, "Clé API non configurée", skipped=True)
+        indispo = _perplexity_unavailable(data)
+        if indispo:
+            record("perplexity_search", False, f"service externe indisponible — {indispo}", skipped=True)
             return
 
         ok = data.get("status") == "success" and len(data.get("content", "")) > 0
         content_preview = data.get("content", "")[:80]
         record("perplexity_search (brief)", ok, f"{len(data.get('content',''))} chars: {content_preview}...")
 
-        citations = data.get("citations", [])
-        if citations:
-            record("perplexity citations", True, f"{len(citations)} citations")
+        # Assertion RÉELLE : le contrat de l'outil promet des citations sur une
+        # question factuelle. Un `if citations: record(..., True)` ne pouvait
+        # que passer — l'absence de citations n'était même pas enregistrée.
+        citations = data.get("citations")
+        ok_cit = isinstance(citations, list) and len(citations) > 0
+        record("perplexity citations", ok_cit,
+               f"{len(citations)} citations" if isinstance(citations, list) else f"type={type(citations).__name__}")
 
     except Exception as e:
         record("perplexity_search", False, str(e))
@@ -693,8 +727,9 @@ async def test_06b_perplexity_doc():
             "query": "Python asyncio"
         })
 
-        if data.get("status") == "error" and "non configurée" in data.get("message", ""):
-            record("perplexity_doc", False, "Clé API non configurée", skipped=True)
+        indispo = _perplexity_unavailable(data)
+        if indispo:
+            record("perplexity_doc", False, f"service externe indisponible — {indispo}", skipped=True)
             return
 
         ok = data.get("status") == "success" and len(data.get("content", "")) > 0
@@ -710,6 +745,11 @@ async def test_06b_perplexity_doc():
             "context": "TaskGroup et gestion des exceptions"
         })
 
+        indispo = _perplexity_unavailable(data)
+        if indispo:
+            record("perplexity_doc (context)", False, f"service externe indisponible — {indispo}", skipped=True)
+            return
+
         ok = data.get("status") == "success" and len(data.get("content", "")) > 0
         has_query = data.get("query") == "Python asyncio"
         has_context = data.get("context") == "TaskGroup et gestion des exceptions"
@@ -720,9 +760,10 @@ async def test_06b_perplexity_doc():
 
     # 6b-c. Citations présentes
     try:
-        citations = data.get("citations", [])
-        if citations:
-            record("perplexity_doc citations", True, f"{len(citations)} citations")
+        citations = data.get("citations")
+        ok_cit = isinstance(citations, list) and len(citations) > 0
+        record("perplexity_doc citations", ok_cit,
+               f"{len(citations)} citations" if isinstance(citations, list) else f"type={type(citations).__name__}")
     except Exception as e:
         record("perplexity_doc citations", False, str(e))
 
@@ -2181,7 +2222,7 @@ async def run_all_tests(only: str = None):
     # Les gardes statiques portent sur les fichiers de dépendances, pas sur un
     # serveur. La CI doit pouvoir les lancer sans déploiement — c'est tout
     # l'intérêt d'attraper une dérive AVANT de tenter un build.
-    if only not in OFFLINE_TESTS:
+    if only is None or not set(n.strip() for n in only.split(",")).issubset(OFFLINE_TESTS):
         connected = await test_01_connectivity()
         if not connected:
             print("\n❌ ARRÊT — Impossible de se connecter au serveur")
@@ -2189,15 +2230,18 @@ async def run_all_tests(only: str = None):
             return False
 
     if only:
-        # Lancer un test spécifique
-        if only == "connectivity":
-            pass  # Déjà fait ci-dessus
-        elif only in TEST_REGISTRY:
-            await TEST_REGISTRY[only]()
-        else:
-            print(f"\n❌ Test inconnu: '{only}'")
+        # `only` accepte une liste séparée par des virgules : la CI a besoin de
+        # lancer un sous-ensemble hermétique (sans secret externe) en un passage.
+        noms = [n.strip() for n in only.split(",") if n.strip()]
+        inconnus = [n for n in noms if n not in TEST_REGISTRY and n != "connectivity"]
+        if inconnus:
+            print(f"\n❌ Test(s) inconnu(s): {', '.join(inconnus)}")
             print(f"   Tests disponibles: {', '.join(TEST_REGISTRY.keys())}")
             return False
+        for nom in noms:
+            if nom == "connectivity":
+                continue  # Déjà exécuté ci-dessus
+            await TEST_REGISTRY[nom]()
     else:
         # Lancer tous les tests
         await test_02_auth()
@@ -2213,6 +2257,7 @@ async def run_all_tests(only: str = None):
         await test_11_token()
         await test_12_admin()
         await test_13_waf()
+        await test_14_cli()
         await test_15_reproducibility()
 
     # Résumé

@@ -33,3 +33,12 @@ workspace/
 .DS_Store
 Thumbs.db
 scripts/.smb*
+
+# Sauvegardes d'éditeur et de sed — `.env` est ignoré mais PAS `.env~`,
+# qui contient les mêmes secrets. Incident évité le 2026-08-06 par la
+# protection de secrets GitHub, pas par nos règles.
+*~
+*.bak
+*.orig
+.env.*
+!.env.example

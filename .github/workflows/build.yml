@@ -62,6 +62,21 @@ jobs:
           curl -sf http://localhost:8050/health >/dev/null
           docker rm -f ci-svc
 
+      - name: Recette E2E — sous-ensemble hermétique
+        # 132 assertions sur 9 outils, sans aucun secret externe.
+        # EXCLUS volontairement, et c'est documenté plutôt que masqué :
+        #   - token / admin  : exigent des identifiants S3 (Token Manager)
+        #   - perplexity(×2) : exigent une clé API facturée
+        #   - ssh            : les cas négatifs passent ici via les autres tests,
+        #                      les cas positifs exigent une cible SSH réelle
+        # Ces quatre-là restent dans la recette de release, exécutée à la main
+        # avec les secrets — voir README §4.
+        run: |
+          cp .env.example .env
+          sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=ci_e2e_$(openssl rand -hex 16)/" .env
+          python3 -m pip install --quiet -r requirements.lock
+          python3 scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
+
       - name: Scan CVE des deux images
         # `pip-audit` n'audite QUE le Python : il ne voit ni la couche OS, ni la
         # stdlib Go embarquée dans le binaire Docker CLI statique. D'où ce scan.
