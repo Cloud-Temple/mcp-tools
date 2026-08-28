@@ -15,6 +15,7 @@ Routes :
   POST /admin/api/tokens/purge        → purger les tokens expirés
   GET  /admin/api/logs                → logs HTTP récents
   GET  /admin/api/audit               → journal d'audit détaillé
+  GET  /admin/api/activity            → traces corrélées d'exécution
 """
 
 import hmac
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..config import get_settings
+from ..observability import get_activity
 
 # ═══════════════ LOGS HTTP (ring buffer) ═══════════════
 
@@ -260,6 +262,13 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
             else:
                 await _handle_audit(send)
 
+        elif path == "/admin/api/activity" and method == "GET":
+            if not is_admin:
+                response_status = 403
+                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+            else:
+                await _handle_activity(send)
+
         else:
             response_status = 404
             await _send_json(send, {"status": "error", "message": "Route inconnue"}, 404)
@@ -289,7 +298,7 @@ async def _handle_me(send, token_info: dict):
 async def _handle_health(send, mcp_instance):
     """GET /admin/api/health — État du serveur."""
     settings = get_settings()
-    tools_count = len(mcp_instance._tool_manager.list_tools())
+    tools_count = len(await mcp_instance.list_tools())
 
     await _send_json(send, {
         "status": "ok",
@@ -305,7 +314,7 @@ async def _handle_health(send, mcp_instance):
     })
 
 
-# Mapping des valeurs enum connues pour les paramètres (non exposées par FastMCP)
+# Mapping des valeurs enum connues pour les paramètres (non exposées par le SDK)
 _PARAM_ENUMS = {
     "network": {"operation": ["ping", "traceroute", "nslookup", "dig"]},
     "shell": {"shell": ["bash", "sh", "python3", "node"]},
@@ -326,16 +335,16 @@ async def _handle_tools_list(send, mcp_instance, token_info: dict = None):
     allowed_ids = token_info.get("tool_ids", []) if token_info else []
 
     tools = []
-    for tool in mcp_instance._tool_manager.list_tools():
+    for tool in await mcp_instance.list_tools():
         # Filtrer par tool_ids si le token n'est pas admin
         if allowed_ids and tool.name not in allowed_ids:
             continue
         raw_desc = (tool.description or "").strip()
         first_line = raw_desc.split("\n")[0].strip()
 
-        # Extraire les paramètres depuis le schema (FastMCP: tool.parameters)
+        # MCP SDK v2 expose le schema public via input_schema.
         params = []
-        schema = tool.parameters if hasattr(tool, "parameters") else {}
+        schema = tool.input_schema if hasattr(tool, "input_schema") else {}
         properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
         required = schema.get("required", []) if isinstance(schema, dict) else []
 
@@ -394,12 +403,38 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
     tok = current_token_info.set(token_info)
     try:
         t0 = time.monotonic()
-        result = await mcp_instance._tool_manager.call_tool(tool_name, arguments)
+        result = await mcp_instance.call_tool(tool_name, arguments)
         elapsed = round((time.monotonic() - t0) * 1000, 1)
+
+        # La console n'implémente pas le protocole d'interaction multi-tour v2
+        # (sampling / elicitation / roots). Ne jamais afficher ni rejouer son
+        # état opaque : l'opérateur reçoit une erreur explicite et sûre.
+        if getattr(result, "result_type", None) == "input_required":
+            message = "Cet outil demande une interaction client non prise en charge par la console admin."
+            add_audit(actor, "tool_run", tool_name, "interaction MCP requise", "error")
+            await _send_json(send, {
+                "status": "error",
+                "tool_name": tool_name,
+                "message": message,
+                "duration_ms": elapsed,
+            }, 422)
+            return
 
         # Extraire le contenu — gère dict, list de TextContent, ou autre
         if isinstance(result, dict):
             output_text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        elif hasattr(result, "content"):
+            parts = []
+            for item in result.content or []:
+                if hasattr(item, "text"):
+                    parts.append(item.text)
+                elif hasattr(item, "data"):
+                    parts.append(str(item.data))
+                else:
+                    parts.append(str(item))
+            output_text = "\n".join(parts)
+            if not output_text and getattr(result, "structured_content", None) is not None:
+                output_text = json.dumps(result.structured_content, ensure_ascii=False, indent=2, default=str)
         elif isinstance(result, (list, tuple)):
             parts = []
             for item in result:
@@ -415,11 +450,25 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
         else:
             output_text = str(result)
 
+        if getattr(result, "is_error", False):
+            add_audit(actor, "tool_run", tool_name, "erreur MCP", "error")
+            await _send_json(send, {
+                "status": "error",
+                "tool_name": tool_name,
+                "message": "L'outil a retourné une erreur.",
+                "result": output_text,
+                "duration_ms": elapsed,
+            }, 422)
+            return
+
         # Audit : exécution d'outil
-        args_summary = ", ".join(f"{k}={v!r}" for k, v in list(arguments.items())[:3])
-        if len(arguments) > 3:
-            args_summary += f", +{len(arguments)-3} params"
-        add_audit(actor, "tool_run", tool_name, f"args: {args_summary}" if args_summary else "", "success")
+        # L'audit ne doit jamais devenir un canal de fuite (mot de passe SSH,
+        # clé privée, token HTTP, contenu S3, etc.). On garde seulement les noms.
+        arg_names = [str(name) for name in arguments]
+        args_summary = ", ".join(arg_names[:10])
+        if len(arg_names) > 10:
+            args_summary += f", +{len(arg_names) - 10} paramètres"
+        add_audit(actor, "tool_run", tool_name, f"paramètres: {args_summary}" if args_summary else "", "success")
 
         await _send_json(send, {
             "status": "ok",
@@ -428,11 +477,13 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
             "duration_ms": elapsed,
         })
     except Exception as e:
-        add_audit(actor, "tool_run", tool_name, f"error: {str(e)[:200]}", "error")
+        # Les exceptions de validation peuvent reprendre des valeurs passées à
+        # l'outil. Le détail est volontairement absent du journal d'audit.
+        add_audit(actor, "tool_run", tool_name, f"erreur: {type(e).__name__}", "error")
         await _send_json(send, {
             "status": "error",
             "tool_name": tool_name,
-            "message": str(e),
+            "message": "L'exécution de l'outil a échoué.",
         })
     finally:
         current_token_info.reset(tok)
@@ -595,4 +646,14 @@ async def _handle_audit(send):
         "status": "ok",
         "count": len(_audit),
         "entries": list(reversed(_audit)),  # Plus récents d'abord
+    })
+
+
+async def _handle_activity(send):
+    """GET /admin/api/activity — Traces corrélées d'activité récentes."""
+    events = get_activity()
+    await _send_json(send, {
+        "status": "ok",
+        "count": len(events),
+        "events": events,
     })

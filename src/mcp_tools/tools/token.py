@@ -22,8 +22,9 @@ Stockage :
 from typing import Annotated, Optional, List
 
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access, current_token_info
+from ..observability import traced_tool
 
 
 ALLOWED_OPERATIONS = ("create", "list", "info", "revoke", "update")
@@ -32,18 +33,19 @@ ALLOWED_OPERATIONS = ("create", "list", "info", "revoke", "update")
 ALL_TOOL_IDS = [
     "shell", "network", "http", "ssh", "files",
     "perplexity_search", "perplexity_doc",
-    "system_health", "system_about",
+    "system_health", "system_about", "system_activity",
     "date", "calc", "token",
 ]
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("token")
     async def token(
         operation: Annotated[str, Field(description="Opération : create (nouveau token), list (tous les tokens), info (détails), revoke (supprimer), update (modifier permissions/tool_ids/email)")],
         client_name: Annotated[Optional[str], Field(default=None, description="Nom du client associé au token (requis pour create, info, revoke, update)")] = None,
         permissions: Annotated[Optional[List[str]], Field(default=None, description="Permissions du token (ex: ['access', 'admin']). Défaut: ['access']")] = None,
-        tool_ids: Annotated[Optional[List[str]], Field(default=None, description="Liste des IDs d'outils autorisés (ex: ['shell', 'http', 'calc']). ['all'] = tous les 12 outils. Vide = aucun accès (fail-closed pour non-admin)")] = None,
+        tool_ids: Annotated[Optional[List[str]], Field(default=None, description="Liste des IDs d'outils autorisés (ex: ['shell', 'http', 'calc']). ['all'] = tous les 13 outils. Vide = aucun accès (fail-closed pour non-admin)")] = None,
         expires_days: Annotated[int, Field(default=90, description="Durée de validité en jours (0 = jamais d'expiration)")] = 90,
         email: Annotated[Optional[str], Field(default=None, description="Email du propriétaire du token (optionnel, pour traçabilité)")] = None,
         ctx: Optional[Context] = None,
@@ -68,7 +70,7 @@ def register(mcp: FastMCP) -> None:
                 }
 
             # Résoudre le mot-clé "all" dans tool_ids
-            # ["all"] → liste complète des 12 outils
+            # ["all"] → liste complète des 13 outils
             if tool_ids and len(tool_ids) == 1 and tool_ids[0].lower() == "all":
                 tool_ids = list(ALL_TOOL_IDS)
 

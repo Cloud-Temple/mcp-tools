@@ -8,9 +8,10 @@ import asyncio
 import shutil
 from typing import Annotated, Optional
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 # Script Python injecté dans la sandbox — pré-importe math et statistics
@@ -25,9 +26,10 @@ except Exception as e:
 '''
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
 
     @mcp.tool()
+    @traced_tool("calc")
     async def calc(
         expr: Annotated[str, Field(description="Expression mathématique Python à évaluer (ex: '(3+5)*2', 'math.sqrt(144)', 'statistics.mean([10,20,30])')")],
         ctx: Optional[Context] = None,
@@ -81,12 +83,15 @@ async def _run_sandbox(script: str, expr: str, settings) -> dict:
         "python3", "-c", script,
     ]
 
+    process = None
     try:
+        record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "timeout": timeout})
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -94,6 +99,7 @@ async def _run_sandbox(script: str, expr: str, settings) -> dict:
                 timeout=timeout + 15,  # marge démarrage conteneur
             )
         except asyncio.TimeoutError:
+            record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
             process.kill()
             # Nettoyage du conteneur
             cleanup = await asyncio.create_subprocess_exec(
@@ -104,8 +110,28 @@ async def _run_sandbox(script: str, expr: str, settings) -> dict:
             await cleanup.wait()
             return {"status": "error", "message": f"Timeout ({timeout}s) — expression trop complexe ?"}
 
+        except asyncio.CancelledError:
+            record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
+            try:
+                if process is not None:
+                    process.kill()
+                    await process.wait()
+            except Exception:
+                pass
+            try:
+                cleanup = await asyncio.create_subprocess_exec(
+                    "docker", "rm", "-f", container_name,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await cleanup.wait()
+            except Exception:
+                pass
+            raise
+
         stdout_str = stdout.decode("utf-8", errors="replace").strip()
         stderr_str = stderr.decode("utf-8", errors="replace").strip()
+        record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
 
         # Vérifier si erreur Python
         if stdout_str.startswith("CALC_ERROR:"):

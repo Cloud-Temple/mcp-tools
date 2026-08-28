@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Point d'entrée CLI du service MCP Tools v0.3.0.
+Point d'entrée CLI du service MCP Tools v0.6.0.
 
-CLI complète avec 13 commandes Click + shell interactif.
+CLI complète avec 14 commandes Click + shell interactif.
 Chaque commande expose TOUS les paramètres MCP avec aide contextuelle.
 
 Commandes (13) :
     health          ❤️  Vérifier l'état de santé (pas d'auth)
     about           ℹ️  Informations sur le service
+    activity        📋 Traces d'activité (administrateur requis)
     run-shell       🖥️  Exécuter une commande en sandbox Docker
     network         📡 Diagnostics réseau (ping, traceroute, dig, nslookup)
     http            🌐 Client HTTP/REST (anti-SSRF)
@@ -49,10 +50,10 @@ Variables d'environnement :
     MCP_TOKEN — Token d'authentification
     ADMIN_BOOTSTRAP_KEY — Clé admin (fallback si MCP_TOKEN non défini)
 
-Outils MCP disponibles (12) :
+Outils MCP disponibles (13) :
     shell, network, http, ssh, files, date, calc,
     perplexity_search, perplexity_doc, token,
-    system_health, system_about
+    system_health, system_about, system_activity
 
 65 paramètres MCP documentés avec Annotated[type, Field(description="...")].
 """

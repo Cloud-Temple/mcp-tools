@@ -93,6 +93,21 @@ def about_cmd(ctx, output_json):
     asyncio.run(_run())
 
 
+@cli.command("activity")
+@click.option("--limit", default=100, type=click.IntRange(1, 1000), show_default=True,
+              help="Nombre maximal d'événements récents (administrateur requis)")
+@click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
+@click.pass_context
+def activity_cmd(ctx, limit, output_json):
+    """📋 Consulter les traces d'activité récentes (administrateur requis)."""
+    async def _run():
+        client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+        result = await client.call_tool("system_activity", {"limit": limit})
+        # Les événements structurés restent plus utiles sous leur forme JSON.
+        show_json(result)
+    asyncio.run(_run())
+
+
 # =============================================================================
 # Outil shell
 # MCP params: command, shell, cwd, timeout, network
@@ -721,7 +736,7 @@ def token_group(ctx):
     \b
     Sous-commandes : create, list, info, update, revoke.
     Chaque token restreint l'accès aux outils via tool_ids.
-    Utilisez --tools all pour autoriser tous les 12 outils.
+    Utilisez --tools all pour autoriser tous les 13 outils.
     """
     pass
 
@@ -729,7 +744,7 @@ def token_group(ctx):
 @token_group.command("create")
 @click.argument("name")
 @click.option("--tools", "-t", "tool_ids_str", default="",
-              help="Outils autorisés (virgule). 'all' = tous les 12 outils. Requis pour non-admin (fail-closed).")
+              help="Outils autorisés (virgule). 'all' = tous les 13 outils. Requis pour non-admin (fail-closed).")
 @click.option("--permissions", "-p", default="access",
               help="Permissions : access, admin (séparées par virgule). Défaut: access.")
 @click.option("--expires", "-e", default=90, type=int,
@@ -747,9 +762,9 @@ def token_create(ctx, name, tool_ids_str, permissions, expires, email, output_js
        pour autoriser tous les outils, ou listez-les explicitement.
 
     \b
-    Outils disponibles (12) :
+    Outils disponibles (13) :
       shell, network, http, ssh, files, perplexity_search,
-      perplexity_doc, system_health, system_about, date, calc, token
+      perplexity_doc, system_health, system_about, system_activity, date, calc, token
 
     \b
     Exemples :
@@ -814,7 +829,7 @@ def token_info(ctx, name, output_json):
 @token_group.command("update")
 @click.argument("name")
 @click.option("--tools", "-t", "tool_ids_str", default=None,
-              help="Nouveaux outils autorisés (virgule). 'all' = tous les 12 outils. Remplace la liste existante.")
+              help="Nouveaux outils autorisés (virgule). 'all' = tous les 13 outils. Remplace la liste existante.")
 @click.option("--permissions", "-p", default=None,
               help="Nouvelles permissions (access, admin). Remplace les permissions existantes.")
 @click.option("--email", default=None,
@@ -829,9 +844,9 @@ def token_update(ctx, name, tool_ids_str, permissions, email, output_json):
     ⚠️ --tools remplace TOUTE la liste tool_ids existante.
 
     \b
-    Outils disponibles (12) :
+    Outils disponibles (13) :
       shell, network, http, ssh, files, perplexity_search,
-      perplexity_doc, system_health, system_about, date, calc, token
+      perplexity_doc, system_health, system_about, system_activity, date, calc, token
 
     \b
     Exemples :

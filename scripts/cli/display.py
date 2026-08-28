@@ -27,7 +27,10 @@ def show_warning(msg: str):
 
 def show_json(data: dict):
     import json
-    console.print(Syntax(json.dumps(data, indent=2, ensure_ascii=False), "json"))
+    # `--json` est un contrat machine : Rich/Syntax peut replier une longue
+    # chaîne à la largeur du terminal et rendre le flux invalide pour jq ou un
+    # autre programme. L'écrire brut préserve exactement le JSON MCP.
+    print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
 
 # =============================================================================

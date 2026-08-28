@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Annotated, Optional
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
+from ..observability import traced_tool
 
 
 # Formats courants pour le parsing flexible
@@ -66,9 +67,10 @@ def _parse_date(date_str: str, tz: Optional[ZoneInfo] = None) -> datetime:
     )
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
 
     @mcp.tool()
+    @traced_tool("date")
     async def date(
         operation: Annotated[str, Field(description="Opération : now, today, diff, add, format, parse, week_number ou day_of_week")],
         date: Annotated[Optional[str], Field(default=None, description="Date d'entrée en ISO 8601 ou format courant (ex: '2026-03-06', '06/03/2026')")] = None,

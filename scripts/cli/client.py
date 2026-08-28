@@ -39,60 +39,55 @@ class MCPClient:
         Returns:
             Le résultat de l'outil (dict)
         """
+        import httpx2
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamable_http_client
 
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
+        async def progress_callback(progress: float, total: float | None, message: str | None) -> None:
+            if on_progress:
+                label = message or (f"Progression : {progress:g}/{total:g}" if total is not None else f"Progression : {progress:g}")
+                await on_progress(label)
+
         try:
-            async with streamablehttp_client(
-                f"{self.base_url}/mcp",
+            async with httpx2.AsyncClient(
                 headers=headers,
-                timeout=30,
-                sse_read_timeout=self.timeout,
-            ) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
+                timeout=httpx2.Timeout(30, read=self.timeout),
+                follow_redirects=True,
+            ) as http_client:
+                async with streamable_http_client(
+                    f"{self.base_url}/mcp",
+                    http_client=http_client,
+                ) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
 
-                    # Capturer les notifications de progression
-                    if on_progress:
-                        _original = session._received_notification
+                        result = await session.call_tool(
+                            tool_name,
+                            arguments,
+                            progress_callback=progress_callback if on_progress else None,
+                        )
 
-                        async def _patched(notification):
-                            try:
-                                root = getattr(notification, 'root', notification)
-                                params = getattr(root, 'params', None)
-                                if params:
-                                    msg = getattr(params, 'data', None)
-                                    if msg:
-                                        await on_progress(str(msg))
-                            except Exception:
-                                pass
-                            await _original(notification)
+                        # Parser la réponse MCP
+                        if getattr(result, 'is_error', False):
+                            error_msg = "Erreur serveur MCP"
+                            if result.content:
+                                error_msg = getattr(result.content[0], 'text', '') or error_msg
+                            return {"status": "error", "message": error_msg}
 
-                        session._received_notification = _patched
-
-                    result = await session.call_tool(tool_name, arguments)
-
-                    # Parser la réponse MCP
-                    if getattr(result, 'isError', False):
-                        error_msg = "Erreur serveur MCP"
+                        text = ""
                         if result.content:
-                            error_msg = getattr(result.content[0], 'text', '') or error_msg
-                        return {"status": "error", "message": error_msg}
+                            text = getattr(result.content[0], 'text', '') or ""
+                        if not text:
+                            return {"status": "error", "message": "Réponse vide"}
 
-                    text = ""
-                    if result.content:
-                        text = getattr(result.content[0], 'text', '') or ""
-                    if not text:
-                        return {"status": "error", "message": "Réponse vide"}
-
-                    try:
-                        return json.loads(text)
-                    except json.JSONDecodeError:
-                        return {"status": "ok", "raw": text}
+                        try:
+                            return json.loads(text)
+                        except json.JSONDecodeError:
+                            return {"status": "ok", "raw": text}
 
         except ConnectionRefusedError:
             return {"status": "error", "message": f"Serveur non accessible: {self.base_url}"}

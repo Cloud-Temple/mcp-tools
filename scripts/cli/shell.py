@@ -27,6 +27,7 @@ SHELL_COMMANDS = {
     "help":       "Afficher l'aide",
     "health":     "Vérifier l'état de santé",
     "about":      "Informations sur le service",
+    "activity":   "activity [--limit N] — Traces récentes (administrateur requis)",
     "run":        "run <commande> [--shell bash|sh|python3|node] [--network] [--timeout N] — Exécuter en sandbox",
     "network":    "network <op> <host> [args] [--timeout N] — ping, dig, nslookup, traceroute",
     "http":       "http <url> [METHOD] [--header 'K: V'] [--data JSON] [--body TXT] [--auth-type T --auth-value V] [--no-ssl] [--timeout N]",
@@ -112,6 +113,15 @@ async def cmd_about(client, state, args="", json_output=False):
         show_about_result(result)
     else:
         show_error(result.get("message", "Erreur"))
+
+
+async def cmd_activity(client, state, args="", json_output=False):
+    """Afficher les traces d'activité administratives récentes."""
+    _, options = _parse_options(args, int_keys=("limit",))
+    limit = options.get("limit", 100)
+    result = await client.call_tool("system_activity", {"limit": limit})
+    # Les traces sont déjà structurées : conserver le JSON dans le shell aussi.
+    show_json(result)
 
 
 # =============================================================================
@@ -705,7 +715,7 @@ async def cmd_token(client, state, args="", json_output=False):
         show_warning("Usage: token <op> [name] [--tools T] [--permissions P] [--expires N] [--email E]")
         show_warning("")
         show_warning("  Opérations : create, list, info, update, revoke")
-        show_warning("  'all' dans --tools = les 12 outils (résolu côté serveur)")
+        show_warning("  'all' dans --tools = les 13 outils (résolu côté serveur)")
         show_warning("")
         show_warning("  token create agent-prod --tools shell,date,calc --expires 90")
         show_warning("  token create cline-dev --tools all --expires 365")
@@ -788,7 +798,7 @@ async def run_shell(url: str, token: str):
            "--access-key", "--secret-key", "--region",
            "--tools", "--permissions", "--expires", "--email",
            "--tz", "--days", "--hours", "--minutes", "--format", "--date2",
-           "--cwd"],
+           "--cwd", "--limit"],
         ignore_case=True,
     )
 
@@ -824,6 +834,8 @@ async def run_shell(url: str, token: str):
                 await cmd_health(client, state, args, json_output)
             elif command == "about":
                 await cmd_about(client, state, args, json_output)
+            elif command == "activity":
+                await cmd_activity(client, state, args, json_output)
             elif command == "run":
                 await cmd_run(client, state, args, json_output)
             elif command in ("network", "ping"):

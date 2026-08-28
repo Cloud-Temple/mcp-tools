@@ -3,9 +3,9 @@
 Registre des outils MCP.
 """
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-def register_all_tools(mcp: FastMCP) -> None:
+def register_all_tools(mcp: MCPServer) -> None:
     """
     Importe et enregistre tous les modules d'outils auprès de l'instance mcp.
     """

@@ -17,7 +17,7 @@ FROM python:3.11-slim@sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51
 # Métadonnées
 LABEL maintainer="Cloud Temple"
 LABEL description="MCP Tools — Bibliothèque d'outils exécutables pour agents IA"
-LABEL version="0.5.2"
+LABEL version="0.6.0"
 
 # Variables d'environnement Python
 ENV PYTHONDONTWRITEBYTECODE=1

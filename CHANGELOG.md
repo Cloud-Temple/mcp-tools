@@ -4,6 +4,26 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] — 2026-08-29
+
+Migration majeure du SDK MCP et traçabilité d'exécution exploitable dans la console d'administration. Aucun changement de protocole requis côté agents existants : le transport Streamable HTTP historique reste accepté.
+
+### Added
+- **Journal d'activité corrélé** — chaque appel HTTP/MCP est tracé de sa réception à sa clôture : méthode RPC, outil, acteur, statut HTTP, octets émis, durée, annulation et erreur. La console `/admin` propose un onglet « Déroulé des appels » et l'outil admin `system_activity` rend ces traces disponibles aux agents autorisés
+- **Diagnostic transport SSE** — un `POST /mcp` qui ferme un flux `text/event-stream` sans octet produit l'événement `transport.sse_empty`, sans confondre la fermeture normale de session avec une anomalie
+- **Couverture E2E enrichie** — contrôles des traces admin, de leur refus pour un token non-admin, de l'alignement `mcp` / `mcp-types` v2, et de la parité de catalogue entre le CLI Click et `/admin`
+
+### Changed
+- **SDK MCP v2.1.1** ([#8](https://github.com/Cloud-Temple/mcp-tools/issues/8)) — serveur migré de `FastMCP` vers `MCPServer`, appels internes sur les API publiques `list_tools()` / `call_tool()`, et client CLI / recette sur `streamable_http_client` et `httpx2`
+- **Compatibilité transport** — le serveur v2 conserve les sessions Streamable HTTP du client MCP 1.28, validées en recette contre un appel `date`
+- **Catalogue d'outils** — `system_activity` devient le 13e outil ; `--tools all`, l'admin, le CLI Click, le shell interactif et la documentation affichent désormais 13 outils. La commande administrative `activity` est disponible dans les deux interfaces terminal
+
+### Fixed
+- **Annulation de sandbox** — `shell`, `network`, `http`, `ssh`, `files` et `calc` détruisent leur conteneur Docker sur annulation du call MCP v2 ; pour SSH, la trace indique explicitement que le résultat distant peut rester indéterminé
+- **Secrets dans les journaux** — les arguments sensibles et les erreurs de validation ne sont plus recopiés dans l'audit admin ; les mots de passe, clés privées, tokens, commandes, corps et en-têtes sont masqués avant enregistrement
+- **Console admin v2** — exécution des outils et lecture des schémas utilisent les API publiques du SDK ; les retours MCP en erreur et les interactions multi-tour non supportées sont traités explicitement
+- **JSON du CLI** — `--json` écrit maintenant un flux JSON brut et parseable, sans repli de ligne Rich ; le CLI peut donc être comparé de façon fiable à `/admin` ou consommé par un script
+
 ## [0.5.2] — 2026-08-06
 
 Outillage de publication. Aucun changement fonctionnel ni de dépendance : `src/` et `requirements.lock` sont inchangés.

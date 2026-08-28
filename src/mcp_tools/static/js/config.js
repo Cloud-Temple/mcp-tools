@@ -11,6 +11,7 @@ const app = {
     tokens: [],
     logs: [],
     audit: [],
+    activity: [],
     selectedTool: null,
     refreshTimer: null,
     refreshInterval: 10,  // secondes

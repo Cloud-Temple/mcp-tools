@@ -14,7 +14,7 @@ def check_tool_access(tool_name: str) -> None:
     """
     Vérifie que le token courant a accès à l'outil spécifié.
     Lève une exception ValueError si l'accès est refusé, 
-    ce qui sera retourné proprement par FastMCP.
+    ce qui sera retourné proprement par le serveur MCP.
 
     Args:
         tool_name: Le nom de l'outil (ex: "ssh", "network")

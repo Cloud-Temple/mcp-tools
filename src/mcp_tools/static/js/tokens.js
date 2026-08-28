@@ -158,7 +158,7 @@ function renderTokensView() {
             if (toolIds.length === 0) {
                 toolsDisplay = '<span class="badge badge-gray" title="Token admin : accès à tous les outils">Tous (admin)</span>';
             } else if (toolIds.length === ALL_TOOLS.length) {
-                toolsDisplay = '<span class="badge badge-blue" title="Tous les 12 outils autorisés">Tous (12)</span>';
+                toolsDisplay = '<span class="badge badge-blue" title="Tous les 13 outils autorisés">Tous (13)</span>';
             } else if (toolIds.length <= 4) {
                 toolsDisplay = toolIds.map(id =>
                     `<span class="badge badge-blue" title="${esc(TOOL_DESCRIPTIONS[id] || '')}">${esc(id)}</span>`

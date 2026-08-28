@@ -1,20 +1,25 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.4.0 | **Date** : 2026-05-21
+> **Version** : 0.6.0 | **Date** : 2026-08-29
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
 
 ## Phase 1 — 13 tools essentiels
 
-### Infra (4 tools)
+Les 13 tools marqués ✅ constituent le catalogue réellement enregistré par
+`MCPServer` en v0.6.0. `/admin`, `system_about`, le CLI Click et le shell
+interactif lisent ou exposent ce même catalogue. Les éléments 📐 restent du
+backlog et ne doivent pas être accordés dans un token de production.
+
+### Infra (3 tools implémentés, 1 prévu)
 
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                     | Source                             |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | **ssh** ✅  | `exec`, `upload`, `download`, `status` — Sandbox Docker (--network=bridge, sshpass+key dans tmpfs)              | host, username, auth_type (password/key), command, sudo, timeout (60s max), remote_path, content — 10 tests     | Sandbox Docker (from scratch)      |
 | **shell** ✅ | Exécution dans conteneur sandbox Docker éphémère (--network=none, --read-only, --cap-drop=ALL)                  | command, shell (bash/sh/python3/node), timeout (30s max). `cwd` ignoré en sandbox. Fallback local si `SANDBOX_ENABLED=false` | Dragonfly `shell` + sandbox Docker |
 | **network** ✅ | `ping`, `traceroute`, `nslookup`, `dig` — Sandbox Docker (--network=bridge, --cap-add=NET_RAW, RFC 1918 bloqué) | host, operation, extra_args (args passés à la commande), timeout. IPs privées interdites.                       | From scratch (sandbox Docker)      |
-| **docker**  | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                                  | container, command, service, compose_file, tail (logs), timeout                                                 | From scratch                       |
+| **docker** 📐 | `ps`, `logs`, `exec`, `pull`, `compose_up`, `compose_down`, `stats`, `inspect`                                  | container, command, service, compose_file, tail (logs), timeout                                                 | Hors v0.6.0                       |
 
 ### Réseau (1 tool)
 
@@ -35,7 +40,7 @@
 | **date** ✅ | `now`, `today`, `diff`, `add`, `format`, `parse`, `week_number`, `day_of_week` | date, operation, tz, days/hours/minutes, format                                       | Pure Python (datetime+zoneinfo) — 12 tests |
 | **calc** ✅ | Expression Python dans sandbox Docker isolée (math + statistics pré-importés)  | expr (expression Python, ex: `(3+5)*2`, `math.sqrt(144)`, `statistics.mean([1,2,3])`) | Sandbox Python Docker — 12 tests           |
 
-### Meta (2 tools)
+### Meta (2 tools prévus, hors v0.6.0)
 
 | Tool         | Opérations                                  | Params clés                              | Source                 |
 | ------------ | ------------------------------------------- | ---------------------------------------- | ---------------------- |
@@ -46,7 +51,24 @@
 
 | Tool        | Opérations                                                                                                      | Params clés                                                                                                      | Source                        |
 | ----------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| **token** ✅ | `create`, `list`, `info`, `update`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids`. `update` modifie permissions/tool_ids/email sans révoquer. `tool_ids=["all"]` résolu en 12 outils. Fail-closed §3.2 : non-admin + tool_ids vide = refusé | client_name, permissions, tool_ids (`["all"]` = tous), email (optionnel, traçabilité), expires_days. Token brut affiché une seule fois à la création — 12 tests E2E | Token Store S3 (from scratch) |
+| **token** ✅ | `create`, `list`, `info`, `update`, `revoke` — Admin uniquement. Tokens stockés en S3 (`_tokens/{sha256}.json`), cache mémoire TTL 5min. Chaque token restreint l'accès via `tool_ids`. `update` modifie permissions/tool_ids/email sans révoquer. `tool_ids=["all"]` résolu en 13 outils. Fail-closed §3.2 : non-admin + tool_ids vide = refusé | client_name, permissions, tool_ids (`["all"]` = tous), email (optionnel, traçabilité), expires_days. Token brut affiché une seule fois à la création | Token Store S3 (from scratch) |
+
+### Système (3 tools)
+
+| Tool | Description | Params clés | Source |
+| --- | --- | --- | --- |
+| **system_health** ✅ | État de santé, version, nombre d'outils et activation sandbox. Accessible à un token ayant cet outil. | — | MCP Tools |
+| **system_about** ✅ | Catalogue public dynamique : version et descriptions des 13 outils enregistrés. Sert de source de vérité au CLI. | — | MCP Tools |
+| **system_activity** ✅ | Traces récentes corrélées d'un appel HTTP/MCP, sans corps ni secret. Réservé à un administrateur. | limit (1-1000) | MCP Tools |
+
+### Observabilité de l'exécution
+
+Chaque outil est décoré pour journaliser son début, sa fin, son échec ou son
+annulation. `ActivityMiddleware` complète la trace avec réception HTTP,
+requête MCP, réponse, taille émise et clôture. Les paramètres sensibles et les
+payloads sont exclus. Le buffer (1 000 événements) alimente `/admin` et
+`system_activity`; l'archivage S3 avec rétention est volontairement hors v0.6.0
+(issues #9 et #10).
 
 ### Recherche Perplexity (3 tools)
 
@@ -125,28 +147,28 @@
 
 | Persona                | Tools autorisés (via `tool_ids` du token)                                                                               |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **sre-operator**       | ssh, shell, http, network, docker, files, date, calc, git, s3, host_audit, ssh_diagnostics, perplexity_search, generate |
-| **security-auditor**   | http, network, ssh_diagnostics, host_audit, pdf_search, doc_scraper, perplexity_search, perplexity_doc                  |
-| **dba**                | ssh, db, sqlite, files, calc, date, perplexity_search, generate                                                         |
-| **monitoring-analyst** | http, network, calc, date, files, perplexity_search, generate                                                           |
-| **doc-writer**         | files, pdf2text, pdf_search, office_to_pdf, doc_scraper, generate, perplexity_doc, perplexity_search                    |
+| **sre-operator**       | ssh, shell, http, network, files, date, calc, perplexity_search, system_health, system_about |
+| **security-auditor**   | http, network, ssh, files, perplexity_search, perplexity_doc, system_health, system_about |
+| **dba**                | ssh, files, calc, date, perplexity_search, system_health |
+| **monitoring-analyst** | http, network, calc, date, files, system_health, system_about |
+| **doc-writer**         | files, perplexity_doc, perplexity_search, date, calc, system_about |
 
 ---
 
 ## Requirements (Phase 1)
 
 ```
-mcp[cli]>=1.8.0
-uvicorn>=0.32.0
-pydantic>=2.0
-pydantic-settings>=2.0
-boto3>=1.34
-httpx>=0.27
-click>=8.1
-prompt-toolkit>=3.0
-rich>=13.0
-python-dotenv>=1.0
-jinja2>=3.1
+mcp[cli]>=2.1.1,<2.2
+uvicorn>=0.32.0,<1.0
+pydantic>=2.12,<3.0
+pydantic-settings>=2.0,<3.0
+boto3>=1.34,<2.0
+httpx>=0.27,<1.0
+httpx2>=2.5,<3.0
+click>=8.1,<9.0
+prompt-toolkit>=3.0,<4.0
+rich>=13.0,<16.0
+jinja2>=3.1,<4.0
 ```
 
 ### Requirements additionnels (Phase 2)
@@ -162,4 +184,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 21 mai 2026 — MCP Tools v0.4.0*
+*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.0*

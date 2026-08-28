@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de recette end-to-end — MCP Tools v0.3.1
+Script de recette end-to-end — MCP Tools v0.6.0
 
 Teste toutes les fonctionnalités du service MCP Tools via le protocole
 MCP Streamable HTTP (endpoint /mcp) et la CLI Click (subprocess).
 Vérifie la connectivité, l'authentification, chaque outil, la console admin,
-le WAF Coraza, et les 13 commandes CLI.
+le WAF Coraza, le CLI Click et le shell interactif.
 
 Usage:
     # Automatique : build + start + tests + stop
@@ -27,7 +27,7 @@ Usage:
     python3 scripts/test_service.py --test admin
 
 Prérequis:
-    - pip install mcp>=1.8.0 httpx click rich prompt-toolkit
+    - pip install -r requirements.lock
     - docker compose (si --no-docker n'est pas passé)
 
 Catégories de tests (15) :
@@ -45,7 +45,7 @@ Catégories de tests (15) :
     12. token          — CRUD + auth client + tool_ids isolation
     13. admin          — Console /admin (sécurité, API REST, permissions)
     14. waf            — Coraza OWASP CRS (XSS, SQLi, path traversal)
-    15. cli            — 38 tests CLI Click via subprocess (toutes commandes)
+    15. cli            — CLI Click, shell interactif et parité avec /admin
 
 Exit code: 0 si tous les tests passent, 1 sinon.
 """
@@ -107,34 +107,33 @@ async def call_tool(tool_name: str, args: dict = {}) -> dict:
     Appelle un outil MCP via Streamable HTTP.
     Retourne le résultat parsé en dict.
     """
+    import httpx2
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    async with streamablehttp_client(
-        f"{BASE_URL}/mcp",
-        headers=headers,
-        timeout=30,
-        sse_read_timeout=120,
-    ) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, args)
+    async with httpx2.AsyncClient(
+        headers=headers, timeout=httpx2.Timeout(30, read=120), follow_redirects=True,
+    ) as http_client:
+        async with streamable_http_client(f"{BASE_URL}/mcp", http_client=http_client) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, args)
 
-            text = ""
-            if result.content:
-                text = getattr(result.content[0], "text", "") or ""
+                text = ""
+                if result.content:
+                    text = getattr(result.content[0], "text", "") or ""
 
-            if not text:
-                raise RuntimeError(f"Réponse vide pour {tool_name}")
+                if not text:
+                    raise RuntimeError(f"Réponse vide pour {tool_name}")
 
-            data = json.loads(text)
+                data = json.loads(text)
 
-            if VERBOSE:
-                print(f"    📦 {tool_name} → {json.dumps(data, indent=2, ensure_ascii=False)[:800]}")
+                if VERBOSE:
+                    print(f"    📦 {tool_name} → {json.dumps(data, indent=2, ensure_ascii=False)[:800]}")
 
-            return data
+                return data
 
 
 async def call_rest(method: str, endpoint: str, headers: dict = None,
@@ -1401,40 +1400,40 @@ async def test_11_token():
     # 11g. Auth avec le token client — outil autorisé (date)
     if created_token:
         try:
+            import httpx2
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
+            from mcp.client.streamable_http import streamable_http_client
 
             headers = {"Authorization": f"Bearer {created_token}"}
-            async with streamablehttp_client(
-                f"{BASE_URL}/mcp", headers=headers, timeout=15, sse_read_timeout=30,
-            ) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool("date", {"operation": "now"})
-                    text = getattr(result.content[0], "text", "") if result.content else ""
-                    data = json.loads(text) if text else {}
-                    ok = data.get("status") == "success"
-                    record("token auth → date (autorisé)", ok, f"datetime={data.get('datetime', '?')[:20]}")
+            async with httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(15, read=30), follow_redirects=True) as http_client:
+                async with streamable_http_client(f"{BASE_URL}/mcp", http_client=http_client) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool("date", {"operation": "now"})
+                        text = getattr(result.content[0], "text", "") if result.content else ""
+                        data = json.loads(text) if text else {}
+                        ok = data.get("status") == "success"
+                        record("token auth → date (autorisé)", ok, f"datetime={data.get('datetime', '?')[:20]}")
         except Exception as e:
             record("token auth → date (autorisé)", False, str(e))
 
     # 11h. Auth avec le token client — outil interdit (shell)
     if created_token:
         try:
+            import httpx2
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
+            from mcp.client.streamable_http import streamable_http_client
 
             headers = {"Authorization": f"Bearer {created_token}"}
-            async with streamablehttp_client(
-                f"{BASE_URL}/mcp", headers=headers, timeout=15, sse_read_timeout=30,
-            ) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool("shell", {"command": "echo hack"})
-                    text = getattr(result.content[0], "text", "") if result.content else ""
-                    data = json.loads(text) if text else {}
-                    ok = data.get("status") == "error" and "refusé" in data.get("message", "").lower()
-                    record("token auth → shell (refusé)", ok, data.get("message", "?")[:60])
+            async with httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(15, read=30), follow_redirects=True) as http_client:
+                async with streamable_http_client(f"{BASE_URL}/mcp", http_client=http_client) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool("shell", {"command": "echo hack"})
+                        text = getattr(result.content[0], "text", "") if result.content else ""
+                        data = json.loads(text) if text else {}
+                        ok = data.get("status") == "error" and "refusé" in data.get("message", "").lower()
+                        record("token auth → shell (refusé)", ok, data.get("message", "?")[:60])
         except Exception as e:
             record("token auth → shell (refusé)", False, str(e))
 
@@ -1519,8 +1518,8 @@ async def test_12_admin():
     # 12d. Path traversal bloqué
     try:
         data = await call_rest("GET", "/admin/static/../../.env")
-        ok = data["status_code"] in (404, 403)
-        record("admin path traversal bloqué", ok, f"HTTP {data['status_code']} (attendu: 404)")
+        ok = data["status_code"] in (401, 403, 404)
+        record("admin path traversal bloqué", ok, f"HTTP {data['status_code']} (attendu: 401, 403 ou 404)")
     except Exception as e:
         record("admin path traversal bloqué", False, str(e))
 
@@ -1622,6 +1621,14 @@ async def test_12_admin():
         except Exception as e:
             record("admin non-admin → logs 403", False, str(e))
 
+        # 12k3b. Token non-admin → traces d'activité REFUSÉES (403)
+        try:
+            data = await call_rest("GET", "/admin/api/activity", headers=non_admin_headers)
+            ok = data["status_code"] == 403
+            record("admin non-admin → activité 403", ok, f"HTTP {data['status_code']} (attendu: 403)")
+        except Exception as e:
+            record("admin non-admin → activité 403", False, str(e))
+
         # 12k4. Token non-admin → tools filtrés par tool_ids
         try:
             data = await call_rest("GET", "/admin/api/tools", headers=non_admin_headers)
@@ -1698,6 +1705,19 @@ async def test_12_admin():
         record("admin API logs", ok and count > 0, f"count={count}")
     except Exception as e:
         record("admin API logs", False, str(e))
+
+    # 12o2. API activité — trace corrélée de l'appel admin précédent
+    try:
+        data = await call_rest("GET", "/admin/api/activity", headers=admin_headers)
+        ok = data["status_code"] == 200
+        body = data.get("body", {})
+        events = body.get("events", []) if isinstance(body, dict) else []
+        event_names = {entry.get("event") for entry in events if isinstance(entry, dict)}
+        has_trace = {"tool.started", "tool.completed"}.issubset(event_names)
+        record("admin API activité (trace corrélée)", ok and has_trace,
+               f"count={body.get('count', 0)}, événements={sorted(event_names)}")
+    except Exception as e:
+        record("admin API activité (trace corrélée)", False, str(e))
 
     # 12p. Route inconnue → 404
     try:
@@ -1791,10 +1811,13 @@ async def test_14_cli():
     cli_script = os.path.join(os.path.dirname(__file__), "mcp_cli.py")
     cli_env = {**os.environ, "MCP_URL": BASE_URL, "MCP_TOKEN": TOKEN}
 
-    def run_cli(*args, timeout=60):
+    def run_cli(*args, timeout=60, input_text=None):
         """Lance la CLI et retourne (exit_code, stdout, stderr)."""
         cmd = [sys.executable, cli_script] + list(args)
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=cli_env)
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=cli_env,
+            input=input_text,
+        )
         return r.returncode, r.stdout, r.stderr
 
     # ── 14a. --help ──
@@ -1829,6 +1852,57 @@ async def test_14_cli():
         record("cli about", ok, f"exit={rc}, output={out[:80].strip()}")
     except Exception as e:
         record("cli about", False, str(e))
+
+    # ── 14d2. Le catalogue Click provient du même serveur que /admin ──
+    try:
+        rc, out, err = run_cli("about", "--json")
+        about = json.loads(out)
+        admin = await call_rest(
+            "GET", "/admin/api/tools", headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        admin_tools = {
+            item["name"] for item in admin.get("body", {}).get("tools", [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        click_tools = {
+            item["name"] for item in about.get("tools", [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        ok = (
+            rc == 0
+            and admin.get("status_code") == 200
+            and about.get("tools_count") == 13
+            and click_tools == admin_tools
+        )
+        record(
+            "cli Click ↔ admin : catalogue synchronisé",
+            ok,
+            f"click={len(click_tools)}, admin={len(admin_tools)}, différence={sorted(click_tools ^ admin_tools)}",
+        )
+    except Exception as e:
+        record("cli Click ↔ admin : catalogue synchronisé", False, str(e))
+
+    # ── 14d3. Le 13e outil est utilisable depuis Click ──
+    try:
+        rc, out, err = run_cli("activity", "--limit", "5", "--json")
+        activity = json.loads(out)
+        ok = (
+            rc == 0
+            and activity.get("status") == "ok"
+            and isinstance(activity.get("events"), list)
+            and activity.get("count", 0) <= 5
+        )
+        record("cli activity (admin)", ok, f"exit={rc}, traces={activity.get('count', '?')}")
+    except Exception as e:
+        record("cli activity (admin)", False, str(e))
+
+    # ── 14d4. Le shell interactif annonce et accepte la commande activity ──
+    try:
+        rc, out, err = run_cli("shell", timeout=10, input_text="help\nquit\n")
+        ok = rc == 0 and "activity [--limit N]" in out and "Au revoir" in out
+        record("cli shell interactif : activity disponible", ok, f"exit={rc}")
+    except Exception as e:
+        record("cli shell interactif : activity disponible", False, str(e))
 
     # ── 14e. run-shell "echo hello_cli_test" ──
     try:
@@ -1979,8 +2053,8 @@ async def test_14_cli():
                 info_data = json.loads(out)
                 tools_count = len(info_data.get("tool_ids", []))
                 email = info_data.get("email", "")
-                ok = tools_count == 12 and email == "updated@e2e.com"
-                record("cli token info post-update", ok, f"tools={tools_count}/12, email={email}")
+                ok = tools_count == 13 and email == "updated@e2e.com"
+                record("cli token info post-update", ok, f"tools={tools_count}/13, email={email}")
             except Exception:
                 record("cli token info post-update", False, f"JSON parse failed, output={out[:80]}")
         else:
@@ -2134,21 +2208,21 @@ async def test_15_reproducibility():
     except Exception as e:
         record("lock couvre toutes les dépendances directes", False, str(e))
 
-    # 15d. Le SDK MCP est figé sous la majeure qui casse l'API.
+    # 15d. Le SDK MCP v2 et son paquet de types restent figés ensemble.
     try:
         mcp_pin = pins.get("mcp", "")
-        ok = bool(mcp_pin) and int(mcp_pin.split(".")[0]) < 2
-        record("lock : mcp figé en < 2.0", ok, f"mcp=={mcp_pin or 'absent'}")
+        types_pin = pins.get("mcp-types", "")
+        ok = bool(mcp_pin) and int(mcp_pin.split(".")[0]) == 2 and types_pin == mcp_pin
+        record("lock : MCP v2 et mcp-types alignés", ok,
+               f"mcp=={mcp_pin or 'absent'}, mcp-types=={types_pin or 'absent'}")
     except Exception as e:
-        record("lock : mcp figé en < 2.0", False, str(e))
+        record("lock : MCP v2 et mcp-types alignés", False, str(e))
 
     # 15e. Surface d'import réellement utilisée par le code, DANS l'image.
-    #      L'issue #2 ne visait que l'import serveur ; le client casse aussi en
-    #      2.0.0 (`streamablehttp_client`), ce qui briserait CLI et suite E2E
-    #      sans qu'un healthcheck conteneur ne le voie.
+    #      Le renommage v2 concerne à la fois MCPServer et le client HTTP.
     probes = [
-        ("serveur", "from mcp.server.fastmcp import FastMCP, Context"),
-        ("client", "from mcp import ClientSession; from mcp.client.streamable_http import streamablehttp_client"),
+        ("serveur", "from mcp.server.mcpserver import MCPServer, Context"),
+        ("client", "import httpx2; from mcp import ClientSession; from mcp.client.streamable_http import streamable_http_client"),
     ]
     for label, stmt in probes:
         reachable, rc, out = _docker_exec(["python", "-c", stmt], timeout=30)

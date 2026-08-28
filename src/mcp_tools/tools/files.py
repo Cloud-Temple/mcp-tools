@@ -29,9 +29,10 @@ import uuid
 from typing import Annotated, Optional
 
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 # =============================================================================
@@ -341,20 +342,31 @@ async def _run_in_sandbox(script: str, timeout: int, settings) -> dict:
         "python3", "-c", script,
     ]
 
+    # Timeout total = timeout + 15s marge (démarrage conteneur)
+    container_timeout = timeout + 15
+    record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "timeout": container_timeout})
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-
-    # Timeout total = timeout + 15s marge (démarrage conteneur)
-    container_timeout = timeout + 15
+    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=container_timeout,
         )
     except asyncio.TimeoutError:
+        record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": container_timeout})
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        await _kill_container(container_name)
+        raise
+    except asyncio.CancelledError:
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
         try:
             process.kill()
             await process.wait()
@@ -365,6 +377,7 @@ async def _run_in_sandbox(script: str, timeout: int, settings) -> dict:
 
     stdout_text = stdout.decode(errors="replace").strip()
     stderr_text = stderr.decode(errors="replace").strip()
+    record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
 
     # Parser le JSON de sortie
     if not stdout_text:
@@ -434,8 +447,9 @@ async def _run_local(script: str, timeout: int, settings) -> dict:
 # Enregistrement MCP
 # =============================================================================
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("files")
     async def files(
         operation: Annotated[str, Field(description="Opération S3 : list, read, write, delete, info, diff, versions ou enable_versioning")],
         path: Annotated[Optional[str], Field(default=None, description="Chemin (clé) de l'objet S3 (requis pour read, write, delete, info, diff)")] = None,

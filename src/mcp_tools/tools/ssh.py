@@ -31,9 +31,10 @@ import uuid
 from typing import Annotated, Optional
 
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 # =============================================================================
@@ -304,20 +305,36 @@ async def _run_in_sandbox(
         "sh", "-c", script,
     ]
 
+    # Timeout total = timeout SSH + 15s marge (démarrage conteneur)
+    container_timeout = timeout + 15
+    record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "operation": operation, "timeout": container_timeout})
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-
-    # Timeout total = timeout SSH + 15s marge (démarrage conteneur)
-    container_timeout = timeout + 15
+    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=container_timeout,
         )
     except asyncio.TimeoutError:
+        record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": container_timeout})
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        await _kill_container(container_name)
+        raise
+    except asyncio.CancelledError:
+        # Une commande distante a pu être reçue malgré l'annulation locale ;
+        # on nettoie le conteneur sans prétendre connaître le résultat SSH.
+        record_activity(
+            "sandbox.cancelled", level="warning", message="Sandbox SSH annulée et nettoyée",
+            details={"sandbox_id": container_name, "remote_result": "uncertain"},
+        )
         try:
             process.kill()
             await process.wait()
@@ -327,6 +344,7 @@ async def _run_in_sandbox(
         raise
 
     stdout_text = stdout.decode(errors="replace")
+    record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
     max_chars = settings.tool_max_output_chars
     parsed = _parse_ssh_output(stdout_text)
 
@@ -452,8 +470,9 @@ async def _run_local(
 # Enregistrement MCP
 # =============================================================================
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("ssh")
     async def ssh(
         host: Annotated[str, Field(description="Hostname ou IP du serveur SSH cible")],
         username: Annotated[str, Field(description="Nom d'utilisateur SSH pour la connexion")],

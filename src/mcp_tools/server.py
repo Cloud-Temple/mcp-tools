@@ -7,20 +7,17 @@ import sys
 import platform
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from .config import get_settings
+from .observability import ActivityMiddleware, get_activity, traced_tool
 
 # =============================================================================
-# Instance FastMCP
+# Instance MCPServer (SDK MCP v2)
 # =============================================================================
 
 settings = get_settings()
 
-mcp = FastMCP(
-    name=settings.mcp_server_name,
-    host=settings.mcp_server_host,
-    port=settings.mcp_server_port,
-)
+mcp = MCPServer(name=settings.mcp_server_name)
 
 # =============================================================================
 # Import et enregistrement automatique des outils
@@ -29,7 +26,7 @@ mcp = FastMCP(
 # Les outils s'enregistrent eux-mêmes auprès de l'instance `mcp`.
 
 from .tools import register_all_tools
-from .auth.context import check_tool_access
+from .auth.context import check_tool_access, current_token_info
 
 register_all_tools(mcp)
 
@@ -39,6 +36,7 @@ register_all_tools(mcp)
 # =============================================================================
 
 @mcp.tool()
+@traced_tool("system_health")
 async def system_health() -> dict:
     """Vérifie l'état de santé du service MCP Tools. Retourne le statut, la version, le nombre d'outils et l'état de la sandbox."""
     try:
@@ -49,7 +47,7 @@ async def system_health() -> dict:
         if version_file.exists():
             version = version_file.read_text().strip()
 
-        tools_count = len(mcp._tool_manager.list_tools())
+        tools_count = len(await mcp.list_tools())
 
         return {
             "status": "ok",
@@ -62,6 +60,7 @@ async def system_health() -> dict:
         return {"status": "error", "message": str(e)}
 
 @mcp.tool()
+@traced_tool("system_about")
 async def system_about() -> dict:
     """Informations détaillées sur le service MCP Tools : version, plateforme, liste complète des outils avec descriptions."""
     try:
@@ -73,7 +72,7 @@ async def system_about() -> dict:
             version = version_file.read_text().strip()
 
         tools = []
-        for tool in mcp._tool_manager.list_tools():
+        for tool in await mcp.list_tools():
             # Extraire uniquement la première ligne du docstring
             raw_desc = (tool.description or "").strip()
             first_line = raw_desc.split("\n")[0].strip()
@@ -95,6 +94,21 @@ async def system_about() -> dict:
         return {"status": "error", "message": str(e)}
 
 
+@mcp.tool()
+@traced_tool("system_activity")
+async def system_activity(limit: int = 100) -> dict:
+    """Retourne les traces d'activité récentes (administrateurs uniquement, secrets exclus)."""
+    try:
+        check_tool_access("system_activity")
+        token_info = current_token_info.get() or {}
+        if "admin" not in token_info.get("permissions", []):
+            return {"status": "error", "message": "Permission admin requise pour consulter l'activité."}
+        events = get_activity(limit)
+        return {"status": "ok", "count": len(events), "events": events}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # =============================================================================
 # Assemblage ASGI
 # =============================================================================
@@ -103,11 +117,12 @@ def create_app():
     from .auth.middleware import AuthMiddleware, LoggingMiddleware
     from .admin.middleware import AdminMiddleware
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(host=settings.mcp_server_host)
     app = LoggingMiddleware(app)
     app = AuthMiddleware(app)
     app = HealthCheckMiddleware(app)
     app = AdminMiddleware(app, mcp)  # /admin, /admin/static/*, /admin/api/*
+    app = ActivityMiddleware(app)
 
     return app
 
@@ -153,9 +168,9 @@ def _display_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in text)
 
 
-def _build_banner() -> str:
+async def _build_banner() -> str:
     """Construit la bannière de démarrage alignée proprement."""
-    tools_list = mcp._tool_manager.list_tools()
+    tools_list = await mcp.list_tools()
 
     W = 50  # largeur totale d'affichage (╔ + ═*48 + ╗)
     IW = W - 2  # largeur intérieure entre les ║
@@ -229,9 +244,10 @@ def _security_checks():
 
 
 def main():
+    import asyncio
     import uvicorn
 
-    print("\n" + _build_banner() + "\n", file=sys.stderr)
+    print("\n" + asyncio.run(_build_banner()) + "\n", file=sys.stderr)
 
     # Vérifications de sécurité (§3.7, sandbox)
     _security_checks()

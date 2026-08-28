@@ -19,9 +19,10 @@ import re
 import uuid
 from typing import Annotated, Optional
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 # =============================================================================
@@ -155,15 +156,27 @@ async def _run_in_sandbox(operation: str, host: str, extra_args: str, timeout: i
         settings.sandbox_image,
     ] + cmd_args
 
+    record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "operation": operation, "timeout": timeout})
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        await _kill_container(container_name)
+        raise
+    except asyncio.CancelledError:
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
         try:
             process.kill()
             await process.wait()
@@ -173,6 +186,7 @@ async def _run_in_sandbox(operation: str, host: str, extra_args: str, timeout: i
         raise
 
     max_chars = settings.tool_max_output_chars
+    record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
     return {
         "status": "success" if process.returncode == 0 else "error",
         "operation": operation,
@@ -223,8 +237,9 @@ async def _run_local(operation: str, host: str, extra_args: str, timeout: int, s
 ALLOWED_OPERATIONS = ("ping", "traceroute", "nslookup", "dig")
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("network")
     async def network(
         host: Annotated[str, Field(description="Hostname ou IP publique cible (ex: google.com, 8.8.8.8)")],
         operation: Annotated[str, Field(default="ping", description="Opération réseau : ping, traceroute, nslookup ou dig")] = "ping",

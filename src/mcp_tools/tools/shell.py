@@ -20,9 +20,10 @@ import sys
 import uuid
 from typing import Annotated, Optional
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -131,15 +132,18 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         shell, exec_flag, command,
     ])
 
+    record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "network": network, "timeout": timeout})
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
         # Tuer le process docker run ET le conteneur Docker
         try:
             process.kill()
@@ -148,8 +152,20 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
             pass
         await _kill_container(container_name)
         raise  # Re-raise pour que l'appelant gère le message d'erreur
+    except asyncio.CancelledError:
+        # Le SDK v2 propage l'annulation du client : docker run ne doit pas
+        # survivre au call MCP abandonné.
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        await _kill_container(container_name)
+        raise
 
     max_chars = settings.tool_max_output_chars
+    record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
     return {
         "status": "success" if process.returncode == 0 else "error",
         "stdout": _truncate(stdout.decode(errors="replace"), max_chars),
@@ -191,8 +207,9 @@ async def _run_local(command: str, shell: str, cwd: Optional[str], timeout: int,
     }
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("shell")
     async def shell(
         command: Annotated[str, Field(description="La commande à exécuter dans le conteneur sandbox")],
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",

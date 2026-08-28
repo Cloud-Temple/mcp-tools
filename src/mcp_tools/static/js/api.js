@@ -120,3 +120,7 @@ async function apiLogs() {
 async function apiAudit() {
     return await adminFetch('/admin/api/audit');
 }
+
+async function apiActivity() {
+    return await adminFetch('/admin/api/activity');
+}

@@ -1,8 +1,8 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.5.0 | **Date** : 2026-08-06 | **Auteur** : Cloud Temple
+> **Version** : 0.6.0 | **Date** : 2026-08-29 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
-> **Statut** : 🚧 Implémentation en cours — 12/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about) + Token Manager S3 (CRUD + update) + Console Admin Web + 65 paramètres MCP + CLI alignée 100%
+> **Statut** : 🚧 Implémentation en cours — 13/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about, system_activity) + Token Manager S3 (CRUD + update) + Console Admin Web + traces corrélées + CLI Click et shell alignés
 
 ---
 
@@ -31,7 +31,7 @@ Les agents (via MCP Agent) appellent MCP Tools pour exécuter des actions concr�
            ▼                                       ▼
 ┌────────────────────────────────────────────────────────┐
 │                MCP Tools Server (:8050)                │
-│                Python / FastMCP (starter-kit)          │
+│                Python / MCPServer (SDK MCP v2)         │
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │  Auth Middleware (starter-kit standard)          │  │
@@ -40,25 +40,22 @@ Les agents (via MCP Agent) appellent MCP Tools pour exécuter des actions concr�
 │  └──────────────────────────────────────────────────┘  │
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
-│  │  28 Outils MCP (tools/)                          │  │
+│  │  13 Outils MCP implémentés (tools/)              │  │
 │  │                                                  │  │
-│  │  Infra :    ssh, shell, network, docker          │  │
-│  │  Réseau :   http, ssh_diagnostics                │  │
-│  │  Données :  files, sqlite, db, s3                │  │
-│  │  Dev :      git, script_executor, calc, date     │  │
-│  │  Docs :     pdf2text, pdf_search, office_to_pdf, │  │
-│  │             doc_scraper                          │  │
+│  │  Infra :    ssh, shell, network                  │  │
+│  │  Réseau :   http                                │  │
+│  │  Données :  files                               │  │
+│  │  Util. :    date, calc                           │  │
 │  │  Recherche: perplexity_search, perplexity_doc    │  │
-│  │  Audit :   host_audit                            │  │
-│  │  Comm :    email_send, imap                      │  │
-│  │  Meta :    generate, mcp_call                    │  │
+│  │  Système :  token, system_health, system_about, │  │
+│  │             system_activity                      │  │
 │  └──────────────────────────────────────────────────┘  │
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │  Token Manager (S3 Dell ECS)                     │  │
 │  │  _tokens/{sha256}.json — cache TTL 5min          │  │
 │  │  create/list/info/update/revoke — admin only     │  │
-│  │  tool_ids=["all"] → 12 outils, fail-closed §3.2  │  │
+│  │  tool_ids=["all"] → 13 outils, fail-closed §3.2  │  │
 │  └──────────────────────────────────────────────────┘  │
 └──────────────────────────┬─────────────────────────────┘
                            │
@@ -92,13 +89,14 @@ lancé via `docker run --rm` avec les contraintes de sécurité suivantes :
 | `--no-new-privileges` | Pas d'escalade          | Bloque setuid/setgid                   |
 | `--tmpfs /tmp:noexec` | Temp sans exec          | Pas d'exécution depuis /tmp            |
 
-**Image sandbox** : `mcp-tools-sandbox` (Alpine 3.20 + bash, coreutils,
+**Image sandbox** : `mcp-tools-sandbox` (Alpine 3.24 + bash, coreutils,
 grep, sed, awk, jq, bc, curl, git, openssl, gnupg, python3, node).
 Buildée par `docker compose up`.
 
-**Prérequis** : le conteneur MCP Tools monte `/var/run/docker.sock` (read-only)
-pour pouvoir lancer les conteneurs sandbox. Le docker CLI est inclus dans
-l'image MCP Tools (binaire statique).
+**Prérequis** : le conteneur MCP Tools monte `/var/run/docker.sock` en
+lecture/écriture pour pouvoir créer, attendre et supprimer les conteneurs
+sandbox. C'est un accès hôte critique assumé et décrit dans l'audit ; le docker
+CLI est inclus dans l'image MCP Tools (binaire statique).
 
 **Fallback dev** : `SANDBOX_ENABLED=false` → exécution locale via subprocess
 (pour le développement sans Docker).
@@ -225,39 +223,44 @@ reprenant les codes graphiques de **Cloud Temple Live Memory** (dark theme, acce
 ### Architecture
 
 ```
-AdminMiddleware (ASGI, outermost)
+ActivityMiddleware (ASGI, outermost : trace sûre et corrélée)
     │
-    ├── GET /admin           → SPA HTML (admin.html)
-    ├── GET /admin/static/*  → fichiers statiques (CSS, JS, images)
-    └── */admin/api/*        → API REST admin (auth Bearer admin requise)
+    └── AdminMiddleware
             │
-            ├── GET  /admin/api/health         → état du serveur
-            ├── GET  /admin/api/tools          → liste des outils + paramètres
-            ├── POST /admin/api/tools/run      → exécuter un outil interactivement
-            ├── GET  /admin/api/tokens         → lister les tokens S3
-            ├── POST /admin/api/tokens         → créer un token
-            ├── GET  /admin/api/tokens/{name}  → info d'un token
-            ├── DELETE /admin/api/tokens/{name} → révoquer un token
-            └── GET  /admin/api/logs           → activité récente (ring buffer 200)
+            ├── GET /admin           → SPA HTML (admin.html)
+            ├── GET /admin/static/*  → fichiers statiques (CSS, JS, images)
+            └── */admin/api/*        → API REST (Bearer, droits selon route)
+                    │
+                    ├── GET  /admin/api/health   → état du serveur
+                    ├── GET  /admin/api/tools    → catalogue dynamique + paramètres
+                    ├── POST /admin/api/tools/run → exécuter un outil interactivement
+                    ├── /admin/api/tokens*       → CRUD tokens S3 (admin)
+                    ├── GET  /admin/api/audit    → journal métier (500 entrées)
+                    ├── GET  /admin/api/logs     → journal HTTP (200 entrées)
+                    └── GET  /admin/api/activity → déroulé corrélé (1 000 entrées)
 ```
 
 ### Pile middleware ASGI (ordre d'exécution)
 
 ```
-AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP
+ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → MCPServer streamable_http_app
 ```
 
-L'AdminMiddleware intercepte toutes les routes `/admin*` **avant** l'auth MCP.
-L'API admin gère sa propre authentification (Bearer token admin uniquement).
+L'ordre est donné de l'extérieur vers l'intérieur. `ActivityMiddleware` ne
+conserve ni payload ni secret : il ne journalise que le chemin, le type de
+requête MCP, l'outil, l'acteur, les étapes et les métriques de réponse.
+`AdminMiddleware` intercepte les routes `/admin*` avant l'auth MCP. Les routes
+de consultation générale respectent les droits du token ; la gestion des tokens
+et les trois journaux requièrent un token administrateur.
 
 ### 4 vues
 
 | Vue          | Description                                                                                          |
 | ------------ | ---------------------------------------------------------------------------------------------------- |
 | **Dashboard** | État du serveur (version, Python, sandbox, S3, Perplexity), stats tokens, actions rapides           |
-| **Tools**    | Grille des 12 outils avec recherche. Clic = formulaire dynamique (select pour enums, inputs typés). Exécution interactive avec résultat JSON formaté |
+| **Tools**    | Grille dynamique des 13 outils avec recherche. Clic = formulaire dynamique (select pour enums, inputs typés). Exécution interactive avec résultat JSON formaté |
 | **Tokens**   | Table CRUD : créer (checkboxes tool_ids), info, révoquer. Token brut affiché une seule fois         |
-| **Activité** | Logs temps réel (ring buffer mémoire 200 entrées, auto-refresh 5s). Méthode, path, status, durée   |
+| **Activité** | Trois onglets : déroulé d'appels corrélé (1 000), journal métier/audit (500) et journal HTTP (200), actualisés toutes les 5 s. Aucun corps, argument ou secret n'est affiché |
 
 ### Fichiers
 
@@ -265,10 +268,11 @@ L'API admin gère sa propre authentification (Bearer token admin uniquement).
 | ------------------------------------ | ------------------------------------------ |
 | `src/mcp_tools/admin/__init__.py`    | Module admin                               |
 | `src/mcp_tools/admin/middleware.py`  | AdminMiddleware ASGI (static + API routing) |
-| `src/mcp_tools/admin/api.py`        | REST API (7 endpoints + enum enrichment)   |
+| `src/mcp_tools/admin/api.py`        | REST API admin, catalogue dynamique et journaux |
+| `src/mcp_tools/observability.py`    | Trace corrélée, redaction et buffer d'activité |
 | `src/mcp_tools/static/admin.html`   | SPA HTML                                   |
 | `src/mcp_tools/static/css/admin.css` | Styles (design Cloud Temple)               |
-| `src/mcp_tools/static/js/*.js`      | 7 modules JS (config, api, app, dashboard, tools, tokens, logs) |
+| `src/mcp_tools/static/js/*.js`      | Modules SPA (config, api, app, dashboard, tools, tokens, logs) |
 | `src/mcp_tools/static/img/`         | Logo Cloud Temple SVG                      |
 
 ### Sécurité
@@ -277,6 +281,7 @@ L'API admin gère sa propre authentification (Bearer token admin uniquement).
 - **HTML/CSS/JS publics** : la page de login est servie sans auth (l'auth se fait côté API)
 - **CORS preflight** : OPTIONS géré pour les appels AJAX cross-origin
 - **Path traversal** : protection contre les `../` dans les chemins statiques
+- **Journaux** : les traces de diagnostic masquent mots de passe, tokens, clés, commandes, corps et en-têtes avant la mémoire ou `stderr`
 
 ---
 
@@ -302,7 +307,7 @@ Un agent `doc-writer` aurait : `["pdf2text", "pdf_search", "files", "doc_scraper
 
 - **Token admin** : `tool_ids` vide = accès universel implicite (aucune restriction)
 - **Token non-admin** : `tool_ids` vide = **ACCÈS REFUSÉ** (fail-closed). Le token doit lister explicitement les outils autorisés
-- **Mot-clé `all`** : `tool_ids=["all"]` est résolu côté serveur en la liste complète des 12 outils (`ALL_TOOL_IDS` dans `token.py`)
+- **Mot-clé `all`** : `tool_ids=["all"]` est résolu côté serveur en la liste complète des 13 outils (`ALL_TOOL_IDS` dans `token.py`)
 - **Opération `update`** (v0.2.2) : modifie `tool_ids`, `permissions` et `email` d'un token existant sans le révoquer (le token brut est conservé)
 
 ### Opérations Token Manager (5)
@@ -496,17 +501,24 @@ mcp-tools/
 
 | Phase       | Tools                                                                                                                           | Nombre | Effort  |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------- | ------ | ------- |
-| **Phase 1** | ssh, shell, http, network, docker, files, date, calc, token, generate, mcp_call, perplexity (×2)                                 | 13     | 2-3 sem |
+| **Phase 1 (livrée v0.6)** | ssh, shell, http, network, files, date, calc, token, perplexity (×2), system_health, system_about, system_activity | 13 | Livrée |
 | **Phase 2** | git, s3, db, host_audit, ssh_diagnostics, sqlite, script_executor, email_send, pdf2text, pdf_search, office_to_pdf, doc_scraper | 12     | 2-3 sem |
 | **Phase 3** | imap, perplexity_api, perplexity_deprecated                                                                                     | 3      | 1 sem   |
 
 ---
 
-## 8. Chaîne d'approvisionnement et reproductibilité (v0.5.0)
+## 8. Chaîne d'approvisionnement et reproductibilité (v0.6.0)
 
 ### Le problème résolu
 
 Un tag applicatif immuable ne suffit pas : si le build résout ses dépendances au moment où il tourne, une majeure amont publiée après coup peut rendre ce tag **inexécutable**. C'est arrivé à la v0.4.1 — `mcp[cli]>=1.8.0` a résolu MCP SDK 2.0.0, qui supprime `mcp.server.fastmcp`, bloquant la recréation de l'unité Tools côté plateforme (issue #2).
+
+La v0.6 réalise explicitement cette migration : le contrat autorise
+`mcp[cli]>=2.1.1,<2.2`, le lock fige `mcp` et `mcp-types` en 2.1.1, et le code
+utilise les API publiques `MCPServer`, `list_tools()` et `call_tool()`. La
+compatibilité au niveau du transport avec un client MCP 1.28 a aussi été
+vérifiée ; elle ne doit pas être interprétée comme un support SDK éternel de la
+branche 1.x.
 
 ### Séparation contrat / verrou
 
@@ -542,4 +554,4 @@ La CI (`.github/workflows/build.yml`) exécute les deux, sur les deux images, av
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 6 août 2026 — MCP Tools v0.5.0*
+*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.0*

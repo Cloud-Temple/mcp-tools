@@ -1,9 +1,9 @@
 # Audit de Sécurité — MCP Tools
 
-> **Date** : 24 Mars 2026 (mis à jour)
+> **Date** : 29 août 2026 (mis à jour)
 > **Auditeur** : Agent Cline
-> **Projet** : mcp-tools (v0.3.1)
-> **Statut de l'audit** : Terminé ✅ — Revue complémentaire effectuée
+> **Projet** : mcp-tools (v0.6.0)
+> **Statut de l'audit** : Revu après migration MCP v2 et ajout des traces d'exécution
 
 ## 1. Introduction et Périmètre de l'Audit
 
@@ -20,7 +20,7 @@ Le périmètre de l'audit couvre les aspects suivants :
 ## 2. Points Forts de la Sécurité (Défense en Profondeur)
 
 ### 2.1. Isolation par Sandboxes Docker Éphémères
-L'approche de sécurité globale repose sur l'exécution des opérations sensibles (`shell`, `network`, `http`, `ssh`, `files`, `calc`) dans des conteneurs isolés et jetables (`docker run --rm`), construits depuis `alpine:3.20`. 
+L'approche de sécurité globale repose sur l'exécution des opérations sensibles (`shell`, `network`, `http`, `ssh`, `files`, `calc`) dans des conteneurs isolés et jetables (`docker run --rm`), construits depuis `alpine:3.24`.
 Les contraintes appliquées systématiquement sont excellentes et conformes aux meilleures pratiques :
 - `User sandbox:sandbox` : Interdit les accès `root`.
 - `--read-only` : Le système de fichiers est immuable.
@@ -45,8 +45,8 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 
 ### 3.1. Contournement WAF sur l'endpoint `/mcp`
 - **Analyse** : Dans `waf/Caddyfile`, la route `handle /mcp*` est transmise via `reverse_proxy` *sans* activer la directive `coraza_waf`. 
-- **Risque (Faible/Moyen)** : Le serveur MCP Python doit parser lui-même les JSON reçus sans la protection des règles OWASP (ex. injection JSON, charge très volumineuse). Le choix architectural est compréhensible (compatibilité avec le flux SSE Streamable HTTP et les volumes en Base64), mais cela reporte toute la responsabilité de la validation des données sur Pydantic / FastMCP.
-- **Recommandation** : S'assurer que les limites de taille de payload et les validations de format strictes sont implémentées sur l'endpoint HTTP Python de FastMCP pour éviter les attaques de déni de service (DDoS) ciblées sur cet endpoint (bien que le `rate_limit` de 60 requêtes/minute aide déjà énormément).
+- **Risque (Faible/Moyen)** : Le serveur MCP Python doit parser lui-même les JSON reçus sans la protection des règles OWASP (ex. injection JSON, charge très volumineuse). Le choix architectural est compréhensible (compatibilité avec le flux SSE Streamable HTTP et les volumes en Base64), mais cela reporte toute la responsabilité de la validation des données sur Pydantic / `MCPServer`.
+- **Recommandation** : S'assurer que les limites de taille de payload et les validations de format strictes sont implémentées sur l'endpoint HTTP Python de `MCPServer` pour éviter les attaques de déni de service (DDoS) ciblées sur cet endpoint (bien que le `rate_limit` de 60 requêtes/minute aide déjà énormément).
 
 ### 3.2. "Default Allow" si la liste `tool_ids` est vide
 - **Analyse** : Dans `auth/context.py`, la logique de validation est la suivante : 
@@ -73,7 +73,7 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 ### 3.5. Montage de `/var/run/docker.sock`
 - **Analyse** : Le service `mcp-tools` mappe en lecture/écriture le socket de Docker hôte pour "Docker-out-of-Docker". 
 - **Risque (Critique / Accepté)** : Toute compromission de l'applicatif Python expose directement les droits `root` de la machine hôte. Il suffit d'envoyer une requête forgée sur l'API Docker pour monter le répertoire `/` de l'hôte et prendre son contrôle.
-- **Recommandation** : Le composant `mcp-tools` lui-même (qui héberge le code Python avec le module FastAPI/FastMCP) ne doit comporter aucune faille d'injection (Remote Code Execution) dans son propre code, car il tourne avec les droits Docker de la VM hôte. C'est le design choisi, mais l'hébergeur (Cloud Temple) doit en être conscient. 
+- **Recommandation** : Le composant `mcp-tools` lui-même (qui héberge le code Python et `MCPServer`) ne doit comporter aucune faille d'injection (Remote Code Execution) dans son propre code, car il tourne avec les droits Docker de la VM hôte. C'est le design choisi, mais l'hébergeur (Cloud Temple) doit en être conscient.
 
 ### 3.6. Timing Attack sur la comparaison de la Bootstrap Key
 - **Analyse** : Dans `auth/middleware.py` (ligne 67) et `admin/api.py` (ligne 91), la bootstrap key admin est comparée avec l'opérateur `==` standard de Python :
@@ -116,19 +116,32 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 - **Recommandation** : Supprimer le support du token en query string. Seul le header `Authorization: Bearer <token>` doit être accepté.
 - **Statut** : ✅ **Corrigé v0.3.1** — Support query string supprimé de `middleware.py`.
 
-### 3.9. Journal d'audit volatile (mémoire uniquement)
-- **Analyse** : Dans `admin/api.py`, le journal d'audit (`_audit`) et les logs HTTP (`_logs`) sont stockés dans des listes Python en mémoire (ring buffer de 500 et 200 entrées respectivement). Aucune persistance sur disque, S3, ou syslog.
-- **Risque (Moyen)** : En cas de redémarrage du conteneur (crash, mise à jour, OOM-kill), tout l'historique d'audit est perdu. Cela empêche toute investigation post-incident et rend les exigences de conformité (ISO 27001, SOC2, HDS) impossibles à satisfaire sur ce composant.
+### 3.9. Journal d'audit et de transport non durable
+- **Analyse** : Le journal métier (`_audit`, 500 entrées), le journal HTTP (`_logs`, 200 entrées) et les traces corrélées v0.6 (`observability.py`, 1 000 événements) sont en mémoire. Les entrées d'audit et d'activité sont aussi émises sur `stderr` en JSON structuré ; aucune écriture applicative durable ne se produit dans le chemin d'un call.
+- **Risque (Moyen)** : En cas de redémarrage du conteneur (crash, mise à jour, OOM-kill), la vue `/admin` perd son historique en mémoire. Sans collecte externe de `stderr`, une investigation post-incident reste incomplète.
 - **Recommandation** : 
-  - **Court terme** : Écrire chaque entrée d'audit sur `stderr` au format JSON structuré (capturé par Docker logs → collecté par Loki/ELK/CloudWatch).
-  - **Moyen terme** : Persister le journal d'audit sur S3 avec rotation (un fichier JSON par jour, rétention configurable).
-- **Statut** : ✅ **Corrigé v0.3.1** — Chaque entrée d'audit est dupliquée sur `stderr` en JSON structuré pour collecte par Docker logs.
+  - **Court terme** : Collecter `stderr` Docker dans la plateforme (Loki/ELK/CloudWatch ou équivalent), avec accès limité aux administrateurs.
+  - **Moyen terme** : Étudier une archive S3 compressée, avec rotation et rétention définies par l'environnement, sans bloquer les appels métiers.
+- **Statut** : 🟡 **Atténué v0.6.0** — sortie JSON structurée et diagnostic temps réel disponibles. La persistance S3 et la politique de rotation sont suivies dans les issues #9 et #10.
+
+### 3.10. Exposition de secrets par les traces d'exécution
+- **Analyse** : La traçabilité détaillée d'un call MCP peut, si elle duplique les arguments ou les sorties, divulguer des mots de passe SSH, clés privées, tokens S3, en-têtes HTTP, commandes et réponses métier.
+- **Risque (Élevé)** : Les journaux sont souvent plus largement accessibles et plus durablement conservés que le service lui-même. Un secret qui y entre doit être considéré comme compromis.
+- **Remédiation v0.6** : `ActivityMiddleware` ne lit les payloads que pour en déduire la méthode MCP, le nom de l'outil et des corrélateurs contrôlés. `traced_tool` ne conserve que les noms des paramètres. Les champs sensibles, corps, commandes, sorties et en-têtes sont masqués avant mémoire ou `stderr`. `system_activity` et les trois journaux de `/admin` restent réservés à l'administrateur.
+- **Risque résiduel** : Une métadonnée ajoutée dans le futur doit passer par la même politique de redaction ; les journaux externes du proxy/WAF restent à auditer séparément.
+- **Statut** : ✅ **Corrigé v0.6.0** pour les traces produites par l'application.
+
+### 3.11. Annulation MCP et conteneurs sandbox orphelins
+- **Analyse** : Une déconnexion ou une annulation du client peut interrompre la coroutine alors qu'un sous-processus Docker est encore actif. Sans nettoyage explicite, un conteneur peut consommer des ressources après la fin visible du call.
+- **Risque (Moyen)** : Déni de service progressif et divergence entre le journal applicatif et l'état réel de l'exécution.
+- **Remédiation v0.6** : `shell`, `network`, `http`, `files`, `ssh` et `calc` interceptent `asyncio.CancelledError`, détruisent le conteneur sandbox puis propagent l'annulation. Le journal produit `tool.cancelled` et `http.cancelled`; pour SSH, il signale explicitement que le résultat distant reste indéterminé.
+- **Statut** : ✅ **Corrigé v0.6.0** — test de régression avec `sleep` annulé et vérification de l'absence de conteneur restant.
 
 ---
 
 ## 4. Conclusion Générale
 
-L'architecture est de niveau "Entreprise". L'isolation est pensée depuis la base ("Secure by Design"), et les développements démontrent une solide compréhension des menaces classiques :
+L'architecture applique une défense en profondeur adaptée à un serveur d'outils pour agents. L'isolation est pensée depuis la base ("Secure by Design") et la v0.6 ajoute une trace exploitable sans recopier les données traitées :
 - Protection très stricte et intelligente contre la contrefaçon de requêtes (SSRF) avec les DNS bloquants.
 - Emprisonnement de l'activité asynchrone dans un conteneur éphémère et impénétrable ("Throw-away environment").
 - Utilisation des `tmpfs` non-exécutables.
@@ -146,8 +159,13 @@ L'architecture est de niveau "Entreprise". L'isolation est pensée depuis la bas
 | 3.6 | Timing attack bootstrap key | Critique     | ✅ v0.3.1           |
 | 3.7 | Bootstrap key par défaut    | Critique     | ✅ v0.3.1           |
 | 3.8 | Token en query string       | Élevé        | ✅ v0.3.1           |
-| 3.9 | Audit volatile              | Moyen        | ✅ v0.3.1           |
+| 3.9 | Journaux non durables       | Moyen        | 🟡 stderr v0.6, S3 #9/#10 |
+| 3.10 | Secrets dans les traces    | Élevé        | ✅ v0.6.0           |
+| 3.11 | Sandbox orpheline à l'annulation | Moyen  | ✅ v0.6.0           |
 
-La solution **MCP Tools** remplit ses objectifs de sécurité hautement exigeants pour des agents d'intelligence artificielle. Les vulnérabilités identifiées lors de la revue complémentaire (timing attack, bootstrap key, query string, audit volatile) ont été corrigées dans la version 0.3.1.
+Les corrections v0.6 n'éliminent pas les décisions de risque existantes : le
+socket Docker donne toujours un pouvoir hôte critique, et la persistance des
+journaux dépend encore de la collecte plateforme. Ces deux points doivent
+rester contrôlés avant tout déploiement sensible.
 
 ***Fin du rapport d'audit***

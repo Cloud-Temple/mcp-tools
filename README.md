@@ -23,7 +23,7 @@ docker compose up -d
 
 # Vérification
 curl http://localhost:8082/health
-# → {"status":"healthy","service":"mcp-tools","version":"0.5.1","transport":"streamable-http"}
+# → {"status":"healthy","service":"mcp-tools","version":"0.6.0","transport":"streamable-http"}
 
 # Console d'administration
 open http://localhost:8082/admin
@@ -41,6 +41,9 @@ python scripts/mcp_cli.py health
 
 # Infos service
 python scripts/mcp_cli.py about
+
+# Traces d'activité (administrateur requis)
+python scripts/mcp_cli.py activity --limit 50
 
 # Exécuter une commande shell
 python scripts/mcp_cli.py run-shell "hostname && uptime"
@@ -92,9 +95,9 @@ python scripts/mcp_cli.py shell
 
 ### 4. Recette E2E
 
-**184 assertions** couvrant les 12 outils, dont **74 négatives** (anti-SSRF, blocage RFC 1918, isolation réseau de la sandbox, injections, timeouts, refus d'entrées invalides, gardes de régression). Les valeurs calculées sont comparées à l'exact, pas seulement l'absence d'erreur.
+La recette E2E couvre les 13 outils, dont les cas négatifs (anti-SSRF, blocage RFC 1918, isolation réseau de la sandbox, injections, timeouts, refus d'entrées invalides, gardes de régression), la console `/admin`, le CLI Click et sa parité de catalogue avec l'admin. Les valeurs calculées sont comparées à l'exact, pas seulement l'absence d'erreur.
 
-Ce qui tourne **automatiquement en CI** : 132 assertions hermétiques sur 9 outils, plus les 8 gardes de reproductibilité. Ce qui reste **manuel faute de secrets en CI** : `token` et `admin` (identifiants S3), `perplexity_search` et `perplexity_doc` (clé API facturée), et les cas SSH positifs (cible réelle). À jouer avant chaque release.
+Ce qui tourne **automatiquement en CI** est hermétique ; les scénarios qui demandent des secrets restent à jouer avant chaque release : `token` et `admin` (identifiants S3), `perplexity_search` et `perplexity_doc` (clé API facturée), et les cas SSH positifs (cible réelle).
 
 ```bash
 # Tous les tests (build + start + test + stop)
@@ -142,7 +145,7 @@ Après toute modification de `requirements.txt`, régénérer le lock **dans l'i
 
 Un `pip freeze` lancé depuis le poste de développement résoudrait d'autres versions que `python:3.11-slim` linux/amd64 et produirait un lock faux.
 
-Contrôler les gardes (bornes, cohérence du lock, plafond `mcp < 2.0`, imports serveur et client, CVE) :
+Contrôler les gardes (bornes, cohérence du lock, alignement `mcp` / `mcp-types` v2, imports serveur et client, CVE) :
 
 ```bash
 python3 scripts/test_service.py --test reproducibility --no-docker
@@ -157,7 +160,7 @@ Internet/LAN → :8082 (WAF Caddy+Coraza) → mcp-tools:8050 (interne)
 ### Pile ASGI
 
 ```
-AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
+ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → MCPServer streamable_http_app
 ```
 
 ### 3 couches (pattern Cloud Temple)
@@ -169,7 +172,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 | Shell interactif | `scripts/cli/shell.py`    | Interface interactive      |
 | Affichage        | `scripts/cli/display.py`  | Rich partagé (couches 2+3) |
 
-### Outils disponibles (12/27 — Phase 1)
+### Outils disponibles (13/28 — Phase 1)
 
 > **Tous les paramètres** de chaque outil sont documentés avec des descriptions détaillées via le protocole MCP. Les clients compatibles (Cline, Claude Desktop…) affichent automatiquement ces descriptions.
 
@@ -187,6 +190,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 | `token`             | Gestion des tokens d'authentification MCP (create, list, info, revoke) — admin uniquement, isolation par tool_ids, email propriétaire                                  |
 | `system_health`     | Santé du service                                                                                                                                                       |
 | `system_about`      | Métadonnées et liste des outils                                                                                                                                        |
+| `system_activity`   | Traces d'exécution corrélées récentes, sans payload ni secret — administrateur uniquement                                                                            |
 
 ### Console d'administration (`/admin`)
 
@@ -196,7 +200,7 @@ Une interface web d'administration est disponible sur `/admin` :
 http://localhost:8082/admin
 ```
 
-**4 vues** : Dashboard (état serveur), Tools (exécution interactive avec formulaires dynamiques), Tokens (CRUD), Activité (logs temps réel).
+**4 vues** : Dashboard (état serveur), Tools (exécution interactive avec formulaires dynamiques), Tokens (CRUD), Activité (déroulé des appels corrélé, journal métier et journal HTTP).
 
 Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission admin). Design Cloud Temple (dark theme). Same-origin uniquement (pas de CORS cross-origin).
 
@@ -209,10 +213,11 @@ Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission 
 - **Sandbox Docker** : Chaque commande shell/network/http dans un conteneur éphémère isolé (--cap-drop=ALL, --read-only, non-root)
 - **Token Manager S3** : Tokens stockés en S3 Dell ECS (`_tokens/{sha256}.json`), cache mémoire TTL 5min, isolation par `tool_ids`
 - **Admin same-origin** : Console `/admin` sans CORS cross-origin, auth admin obligatoire sur l'API
+- **Traces sûres** : aucune commande, sortie, corps HTTP, en-tête ou secret n'est copié dans le buffer d'activité ou dans `stderr`
 - **Anti-SSRF** : Résolution DNS + blocage RFC 1918 / loopback / metadata cloud pour les tools `http` et `network`
 - **Utilisateur non-root** dans Docker
 - **Timeouts et limites** sur tous les outils
-- **Kill automatique** des conteneurs sandbox en cas de timeout
+- **Kill automatique** des conteneurs sandbox en cas de timeout ou d'annulation MCP
 
 ## Variables d'environnement
 

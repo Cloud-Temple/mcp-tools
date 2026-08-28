@@ -516,6 +516,33 @@ tr.row-expired:hover td { opacity: 0.75; }
 .log-duration { font-size: 0.65rem; color: #555; min-width: 55px; text-align: right; }
 .log-client { font-size: 0.65rem; color: #41a890; min-width: 60px; }
 
+/* ═══════════════ ACTIVITÉ CORRÉLÉE ═══════════════ */
+.activity-filters { display: flex; gap: 0.45rem; align-items: center; margin-bottom: 0.8rem; }
+.activity-filters .search-bar { flex: 1; margin: 0; }
+.activity-filters select {
+    min-width: 130px; padding: 0.45rem 0.55rem; border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.09); background: rgba(255,255,255,0.05); color: #bbb;
+}
+.activity-entry {
+    display: flex; gap: 0.55rem; padding: 0.5rem 0.2rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 2px solid #41a890;
+}
+.activity-entry.activity-warning { border-left-color: #f39c12; }
+.activity-entry.activity-error { border-left-color: #e74c3c; }
+.activity-time { min-width: 72px; color: #777; font: 0.68rem 'SF Mono', 'Fira Code', monospace; }
+.activity-time span { display: block; color: #4d4d65; font-size: 0.61rem; margin-top: 0.12rem; }
+.activity-level { width: 16px; color: #41a890; font-size: 0.75rem; padding-top: 0.1rem; }
+.activity-warning .activity-level { color: #f39c12; }
+.activity-error .activity-level { color: #e74c3c; }
+.activity-body { min-width: 0; flex: 1; }
+.activity-summary { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; color: #bbb; font-size: 0.76rem; }
+.activity-summary code { color: #69c5b3; font: 0.7rem 'SF Mono', 'Fira Code', monospace; }
+.activity-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
+.activity-tags span { padding: 0.1rem 0.3rem; border-radius: 3px; background: rgba(65,168,144,0.11); color: #83d9c8; font: 0.62rem 'SF Mono', 'Fira Code', monospace; }
+.activity-body details { margin-top: 0.3rem; color: #666; font-size: 0.67rem; }
+.activity-body summary { cursor: pointer; width: max-content; }
+.activity-body pre { margin: 0.35rem 0 0; padding: 0.45rem; max-height: 240px; overflow: auto; border-radius: 4px; background: rgba(0,0,0,0.16); color: #9393ab; font: 0.66rem/1.4 'SF Mono', 'Fira Code', monospace; white-space: pre-wrap; word-break: break-word; }
+
 /* ═══════════════ MODAL ═══════════════ */
 .modal-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -617,6 +644,8 @@ tr.row-expired:hover td { opacity: 0.75; }
     .form-row { flex-direction: column; gap: 0; }
     .perm-selector { flex-direction: column; }
     .audit-filters { flex-direction: column; }
+    .activity-filters { flex-wrap: wrap; }
+    .activity-filters .search-bar { flex-basis: 100%; }
     .tool-picker-cat-tools { gap: 0.1rem; }
     .tool-picker-tool { min-width: 110px; }
 }

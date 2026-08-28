@@ -28,9 +28,10 @@ from typing import Annotated, Any, Dict, Optional
 from urllib.parse import urlparse
 
 from pydantic import Field
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
+from ..observability import record_activity, traced_tool
 
 
 # =============================================================================
@@ -323,20 +324,31 @@ async def _run_in_sandbox(
         "sh", "-c", script,
     ]
 
+    # Timeout total = timeout curl + 15s marge (démarrage conteneur + overhead)
+    container_timeout = timeout + 15
+    record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "method": method, "timeout": container_timeout})
     process = await asyncio.create_subprocess_exec(
         *docker_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-
-    # Timeout total = timeout curl + 15s marge (démarrage conteneur + overhead)
-    container_timeout = timeout + 15
+    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
 
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=container_timeout,
         )
     except asyncio.TimeoutError:
+        record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": container_timeout})
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        await _kill_container(container_name)
+        raise
+    except asyncio.CancelledError:
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
         try:
             process.kill()
             await process.wait()
@@ -346,6 +358,7 @@ async def _run_in_sandbox(
         raise
 
     stdout_text = stdout.decode(errors="replace")
+    record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
     max_chars = settings.tool_max_output_chars
     parsed = _parse_curl_output(stdout_text)
 
@@ -436,8 +449,9 @@ async def _run_local(
 # Enregistrement MCP
 # =============================================================================
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: MCPServer) -> None:
     @mcp.tool()
+    @traced_tool("http")
     async def http(
         url: Annotated[str, Field(description="URL cible (http:// ou https://). Les IPs privées RFC 1918 sont bloquées (anti-SSRF)")],
         method: Annotated[str, Field(default="GET", description="Méthode HTTP : GET, POST, PUT, DELETE, PATCH ou HEAD")] = "GET",

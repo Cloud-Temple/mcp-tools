@@ -23,7 +23,7 @@ docker compose up -d
 
 # Verify
 curl http://localhost:8082/health
-# → {"status":"healthy","service":"mcp-tools","version":"0.5.1","transport":"streamable-http"}
+# → {"status":"healthy","service":"mcp-tools","version":"0.6.0","transport":"streamable-http"}
 
 # Admin console
 open http://localhost:8082/admin
@@ -41,6 +41,9 @@ python scripts/mcp_cli.py health
 
 # Service info
 python scripts/mcp_cli.py about
+
+# Activity traces (administrator required)
+python scripts/mcp_cli.py activity --limit 50
 
 # Execute a shell command
 python scripts/mcp_cli.py run-shell "hostname && uptime"
@@ -135,7 +138,7 @@ After changing `requirements.txt`, regenerate the lock **inside the target image
 
 A `pip freeze` run on a developer machine would resolve different versions than `python:3.11-slim` linux/amd64 and produce a bogus lock.
 
-Run the guards (dependency bounds, lock consistency, `mcp < 2.0` ceiling, server and client imports, CVEs):
+Run the guards (dependency bounds, lock consistency, aligned `mcp` / `mcp-types` v2 versions, server and client imports, CVEs):
 
 ```bash
 python3 scripts/test_service.py --test reproducibility --no-docker
@@ -150,7 +153,7 @@ Internet/LAN → :8082 (WAF Caddy+Coraza) → mcp-tools:8050 (internal)
 ### ASGI Stack
 
 ```
-AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → FastMCP streamable_http_app
+ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddleware → MCPServer streamable_http_app
 ```
 
 ### 3-layer pattern (Cloud Temple standard)
@@ -162,7 +165,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 | Interactive Shell| `scripts/cli/shell.py`    | Interactive interface      |
 | Display          | `scripts/cli/display.py`  | Shared Rich output (2+3)  |
 
-### Available Tools (12/27 — Phase 1)
+### Available Tools (13/28 — Phase 1)
 
 > **All parameters** for each tool are documented with detailed descriptions via the MCP protocol. Compatible clients (Cline, Claude Desktop…) automatically display these descriptions.
 
@@ -180,6 +183,7 @@ AdminMiddleware → HealthCheckMiddleware → AuthMiddleware → LoggingMiddlewa
 | `token`             | MCP authentication token management (create, list, info, revoke) — admin only, tool_ids isolation, owner email                                                         |
 | `system_health`     | Service health check                                                                                                                                                   |
 | `system_about`      | Metadata and tool listing                                                                                                                                              |
+| `system_activity`   | Recent correlated execution traces, without payloads or secrets — administrator only                                                                                |
 
 ### Admin Console (`/admin`)
 
@@ -189,7 +193,7 @@ A web administration interface is available at `/admin`:
 http://localhost:8082/admin
 ```
 
-**4 views**: Dashboard (server status), Tools (interactive execution with dynamic forms), Tokens (CRUD), Activity (real-time logs).
+**4 views**: Dashboard (server status), Tools (interactive execution with dynamic forms), Tokens (CRUD), Activity (correlated call timeline, business journal, and HTTP journal).
 
 Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permission). Cloud Temple design (dark theme). Same-origin only (no cross-origin CORS).
 
@@ -202,10 +206,11 @@ Admin authentication required (ADMIN_BOOTSTRAP_KEY or S3 token with admin permis
 - **Docker sandbox**: Each shell/network/http command runs in an ephemeral isolated container (--cap-drop=ALL, --read-only, non-root)
 - **S3 Token Manager**: Tokens stored in S3 Dell ECS (`_tokens/{sha256}.json`), in-memory cache TTL 5min, `tool_ids` isolation
 - **Admin same-origin**: `/admin` console with no cross-origin CORS, admin auth required on API
+- **Safe tracing**: commands, outputs, HTTP bodies, headers, and secrets are excluded from the activity buffer and `stderr`
 - **Anti-SSRF**: DNS resolution + RFC 1918 / loopback / cloud metadata blocking for `http` and `network` tools
 - **Non-root user** in Docker
 - **Timeouts and limits** on all tools
-- **Automatic kill** of sandbox containers on timeout
+- **Automatic kill** of sandbox containers on timeout or MCP cancellation
 
 ## Environment Variables
 
