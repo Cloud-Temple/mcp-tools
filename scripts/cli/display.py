@@ -34,6 +34,114 @@ def show_json(data: dict):
 
 
 # =============================================================================
+# Affichage activité corrélée
+# =============================================================================
+
+_ACTIVITY_STATE = {
+    "succeeded": ("✅", "terminé"),
+    "tool_failed": ("❌", "échec outil"),
+    "remote_result_uncertain": ("⚠️", "résultat distant incertain"),
+    "response_missing": ("❌", "réponse MCP absente"),
+    "response_delivery_failed": ("❌", "émission ASGI échouée"),
+    "response_terminal_unobserved": ("⚠️", "réponse terminale non observée"),
+    "response_incomplete": ("⚠️", "réponse incomplète"),
+    "client_cancelled": ("⚠️", "client annulé"),
+    "cancelled": ("⚠️", "annulé"),
+    "transport_failed": ("❌", "transport en échec"),
+    "transport_completed": ("✅", "transport terminé"),
+    "incomplete": ("⚠️", "incomplet"),
+}
+
+
+def _activity_label(state: str) -> tuple[str, str]:
+    return _ACTIVITY_STATE.get(state or "", ("•", state or "inconnu"))
+
+
+def _format_activity_duration(duration_ms) -> str:
+    if not isinstance(duration_ms, (int, float)):
+        return "—"
+    if duration_ms < 1000:
+        return f"{round(duration_ms)} ms"
+    return f"{duration_ms / 1000:.1f} s"
+
+
+def show_activity_result(result: dict, details: bool = False, include_protocol: bool = False):
+    """Affiche les appels corrélés ; le JSON brut reste disponible avec --json."""
+    if result.get("status") != "ok":
+        show_error(result.get("message", "Impossible de lire l'activité"))
+        return
+
+    stats = result.get("stats", {}) if isinstance(result.get("stats"), dict) else {}
+    all_calls = result.get("calls", []) if isinstance(result.get("calls"), list) else []
+    calls = all_calls if include_protocol else [call for call in all_calls if call.get("kind") == "tool_call"]
+    title = f"📋 Activité corrélée — {len(calls)} appel(s)"
+    if not include_protocol and len(calls) != len(all_calls):
+        title += f" (tools sur {len(all_calls)} traces)"
+    if stats:
+        title += f" · buffer {stats.get('stored_events', '?')}/{stats.get('max_events', '?')}"
+    table = Table(title=title, show_header=True)
+    table.add_column("Heure", style="dim", no_wrap=True)
+    table.add_column("Verdict", no_wrap=True)
+    table.add_column("Tool", style="cyan")
+    table.add_column("Acteur / call", overflow="fold")
+    table.add_column("Trace", style="dim", overflow="fold")
+    table.add_column("Durée", justify="right", no_wrap=True)
+    table.add_column("Transport", style="dim", overflow="fold")
+
+    for call in calls:
+        icon, label = _activity_label(str(call.get("terminal_state", "")))
+        if call.get("terminal_state") == "succeeded" and not call.get("mcp_terminal_required"):
+            label = "terminé — réponse HTTP émise"
+        if call.get("timeline_complete") is False:
+            label += " · trace partielle"
+        started = str(call.get("started_at", ""))
+        time_value = started[11:19] if len(started) >= 19 else started
+        actor = str(call.get("actor", "—"))
+        call_id = str(call.get("call_id", ""))
+        actor_call = actor if not call_id else f"{actor}\n{call_id}"
+        duration_value = _format_activity_duration(call.get("duration_ms"))
+        table.add_row(
+            time_value,
+            f"{icon} {label}",
+            str(call.get("tool", call.get("rpc_method", "—"))),
+            actor_call,
+            str(call.get("trace_id", "—")),
+            duration_value,
+            str(call.get("transport_state", "—")),
+        )
+    console.print(table)
+
+    if not calls:
+        console.print("[dim]Aucun appel d'outil dans cette fenêtre. Utilisez --all pour voir les échanges de protocole.[/dim]")
+
+    if stats.get("evicted_capacity") or stats.get("evicted_age"):
+        show_warning(
+            "Historique local tronqué : "
+            f"capacité={stats.get('evicted_capacity', 0)}, âge={stats.get('evicted_age', 0)}."
+        )
+
+    if details:
+        import json
+        for call in calls:
+            icon, label = _activity_label(str(call.get("terminal_state", "")))
+            if call.get("timeline_complete") is False:
+                label += " · trace partielle"
+            lines = []
+            for event in call.get("events", []):
+                timestamp = str(event.get("timestamp", ""))
+                moment = timestamp[11:23] if len(timestamp) >= 23 else timestamp
+                line = f"{event.get('sequence', '?'):>5} {moment}  {event.get('event', '?')}"
+                if event.get("details"):
+                    line += "  " + json.dumps(event["details"], ensure_ascii=False, default=str)
+                lines.append(line)
+            console.print(Panel(
+                "\n".join(lines) or "Aucune étape conservée.",
+                title=f"{icon} {label} · {call.get('trace_id', '?')}",
+                border_style="green" if call.get("terminal_state") == "succeeded" else "yellow",
+            ))
+
+
+# =============================================================================
 # Affichage system_health
 # =============================================================================
 

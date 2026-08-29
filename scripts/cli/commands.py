@@ -39,7 +39,7 @@ from .display import (
     show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
     show_date_result, show_calc_result, show_doc_result,
-    show_ssh_result, show_files_result, show_token_result,
+    show_ssh_result, show_files_result, show_token_result, show_activity_result,
 )
 
 
@@ -96,15 +96,26 @@ def about_cmd(ctx, output_json):
 @cli.command("activity")
 @click.option("--limit", default=100, type=click.IntRange(1, 1000), show_default=True,
               help="Nombre maximal d'événements récents (administrateur requis)")
+@click.option("--trace-id", help="Restituer une trace précise, sans la tronquer")
+@click.option("--call-id", help="Restituer un appel agent/CLI précis, sans la tronquer")
+@click.option("--details", is_flag=True, help="Afficher toutes les étapes de chaque appel")
+@click.option("--all", "include_protocol", is_flag=True, help="Inclure les échanges MCP de protocole")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def activity_cmd(ctx, limit, output_json):
-    """📋 Consulter les traces d'activité récentes (administrateur requis)."""
+def activity_cmd(ctx, limit, trace_id, call_id, details, include_protocol, output_json):
+    """📋 Consulter les traces corrélées d'activité (administrateur requis)."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
-        result = await client.call_tool("system_activity", {"limit": limit})
-        # Les événements structurés restent plus utiles sous leur forme JSON.
-        show_json(result)
+        params = {"limit": limit}
+        if trace_id:
+            params["trace_id"] = trace_id
+        if call_id:
+            params["call_id"] = call_id
+        result = await client.call_tool("system_activity", params)
+        if output_json:
+            show_json(result)
+        else:
+            show_activity_result(result, details=details, include_protocol=include_protocol)
     asyncio.run(_run())
 
 

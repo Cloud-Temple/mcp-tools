@@ -117,7 +117,7 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 - **Statut** : ✅ **Corrigé v0.3.1** — Support query string supprimé de `middleware.py`.
 
 ### 3.9. Journal d'audit et de transport non durable
-- **Analyse** : Le journal métier (`_audit`, 500 entrées), le journal HTTP (`_logs`, 200 entrées) et les traces corrélées v0.6 (`observability.py`, 1 000 événements) sont en mémoire. Les entrées d'audit et d'activité sont aussi émises sur `stderr` en JSON structuré ; aucune écriture applicative durable ne se produit dans le chemin d'un call.
+- **Analyse** : Le journal métier (`_audit`, 500 entrées), le journal HTTP (`_logs`, 200 entrées) et les traces corrélées (`observability.py`, 5 000 événements et 86 400 s par défaut, configurables) sont en mémoire. Les entrées d'audit et d'activité sont aussi émises sur `stderr` en JSON structuré ; aucune écriture applicative durable ne se produit dans le chemin d'un call.
 - **Risque (Moyen)** : En cas de redémarrage du conteneur (crash, mise à jour, OOM-kill), la vue `/admin` perd son historique en mémoire. Sans collecte externe de `stderr`, une investigation post-incident reste incomplète.
 - **Recommandation** : 
   - **Court terme** : Collecter `stderr` Docker dans la plateforme (Loki/ELK/CloudWatch ou équivalent), avec accès limité aux administrateurs.
@@ -127,7 +127,7 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 ### 3.10. Exposition de secrets par les traces d'exécution
 - **Analyse** : La traçabilité détaillée d'un call MCP peut, si elle duplique les arguments ou les sorties, divulguer des mots de passe SSH, clés privées, tokens S3, en-têtes HTTP, commandes et réponses métier.
 - **Risque (Élevé)** : Les journaux sont souvent plus largement accessibles et plus durablement conservés que le service lui-même. Un secret qui y entre doit être considéré comme compromis.
-- **Remédiation v0.6** : `ActivityMiddleware` ne lit les payloads que pour en déduire la méthode MCP, le nom de l'outil et des corrélateurs contrôlés. `traced_tool` ne conserve que les noms des paramètres. Les champs sensibles, corps, commandes, sorties et en-têtes sont masqués avant mémoire ou `stderr`. `system_activity` et les trois journaux de `/admin` restent réservés à l'administrateur.
+- **Remédiation v0.6** : `ActivityMiddleware` ne lit les payloads que pour en déduire la méthode MCP, le nom de l'outil et des corrélateurs contrôlés. `traced_tool` ne conserve que les noms des paramètres. Les champs sensibles, corps, commandes, sorties et en-têtes sont masqués avant mémoire ou `stderr`. `system_activity` et les trois journaux de `/admin` restent réservés à l'administrateur. Le `mcp_session_id` est réduit à une référence hachée avant stockage.
 - **Risque résiduel** : Une métadonnée ajoutée dans le futur doit passer par la même politique de redaction ; les journaux externes du proxy/WAF restent à auditer séparément.
 - **Statut** : ✅ **Corrigé v0.6.0** pour les traces produites par l'application.
 

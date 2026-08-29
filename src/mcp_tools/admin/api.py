@@ -26,9 +26,10 @@ import platform
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import parse_qs
 
 from ..config import get_settings
-from ..observability import get_activity
+from ..observability import bind_activity, get_activity_context, get_activity_snapshot, record_activity
 
 # ═══════════════ LOGS HTTP (ring buffer) ═══════════════
 
@@ -38,6 +39,7 @@ _MAX_LOGS = 200
 
 def add_log(method: str, path: str, status: int, duration_ms: float, client: str = ""):
     """Ajoute une entrée de log HTTP au ring buffer."""
+    trace = get_activity_context()
     _logs.append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "method": method,
@@ -45,6 +47,8 @@ def add_log(method: str, path: str, status: int, duration_ms: float, client: str
         "status": status,
         "duration_ms": round(duration_ms, 1),
         "client": client,
+        **({"trace_id": trace["trace_id"]} if trace.get("trace_id") else {}),
+        **({"call_id": trace["call_id"]} if trace.get("call_id") else {}),
     })
     if len(_logs) > _MAX_LOGS:
         _logs.pop(0)
@@ -67,6 +71,7 @@ def add_audit(actor: str, action: str, target: str = "", details: str = "", stat
         details: Détails supplémentaires (permissions, tool_ids, etc.)
         status: Résultat (success, error)
     """
+    trace = get_activity_context()
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "actor": actor,
@@ -74,6 +79,8 @@ def add_audit(actor: str, action: str, target: str = "", details: str = "", stat
         "target": target,
         "details": details,
         "status": status,
+        **({"trace_id": trace["trace_id"]} if trace.get("trace_id") else {}),
+        **({"call_id": trace["call_id"]} if trace.get("call_id") else {}),
     }
     _audit.append(entry)
     if len(_audit) > _MAX_AUDIT:
@@ -175,110 +182,101 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
     # Auth : tout token valide (admin ou non)
     token_info = _validate_token(scope)
     if token_info is None:
+        record_activity(
+            "auth.rejected", level="warning",
+            message="Authentification admin refusée",
+            details={"reason": "missing_or_invalid_bearer"},
+        )
         add_audit("anonymous", "login_failed", details="Token invalide ou manquant", status="error")
         await _send_json(send, {"status": "error", "message": "Token requis"}, 401)
         return
 
     client_name = token_info.get("client_name", "?")
     is_admin = _is_admin(token_info)
+    bind_activity(actor=client_name, auth_role="admin" if is_admin else "access")
+    record_activity(
+        "auth.accepted", message="Authentification admin acceptée",
+        details={"role": "admin" if is_admin else "access"},
+    )
 
     # ── Routing ──────────────────────────────────────────────────────
 
-    t0 = time.monotonic()
-    response_status = 200
+    # Routes accessibles à tous les tokens authentifiés. Le statut HTTP est
+    # capturé par LoggingMiddleware sur le message ASGI réellement envoyé :
+    # ne pas le recopier ici évite de journaliser à tort un 200 sur une erreur.
+    if path == "/admin/api/me" and method == "GET":
+        await _handle_me(send, token_info)
 
-    try:
-        # Routes accessibles à tous les tokens authentifiés
-        if path == "/admin/api/me" and method == "GET":
-            await _handle_me(send, token_info)
+    elif path == "/admin/api/health" and method == "GET":
+        await _handle_health(send, mcp_instance)
 
-        elif path == "/admin/api/health" and method == "GET":
-            await _handle_health(send, mcp_instance)
+    elif path == "/admin/api/tools" and method == "GET":
+        await _handle_tools_list(send, mcp_instance, token_info)
 
-        elif path == "/admin/api/tools" and method == "GET":
-            await _handle_tools_list(send, mcp_instance, token_info)
+    elif path == "/admin/api/tools/run" and method == "POST":
+        await _handle_tools_run(receive, send, mcp_instance, token_info)
 
-        elif path == "/admin/api/tools/run" and method == "POST":
-            await _handle_tools_run(receive, send, mcp_instance, token_info)
-
-        # Routes admin uniquement — Tokens
-        elif path == "/admin/api/tokens" and method == "GET":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_tokens_list(send)
-
-        elif path == "/admin/api/tokens" and method == "POST":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_tokens_create(receive, send, client_name)
-
-        elif path == "/admin/api/tokens/purge" and method == "POST":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_tokens_purge(send, client_name)
-
-        elif path.startswith("/admin/api/tokens/") and method == "GET":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                name = path.split("/admin/api/tokens/", 1)[1]
-                await _handle_tokens_info(send, name)
-
-        elif path.startswith("/admin/api/tokens/") and method == "PUT":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                name = path.split("/admin/api/tokens/", 1)[1]
-                await _handle_tokens_update(receive, send, name, client_name)
-
-        elif path.startswith("/admin/api/tokens/") and method == "DELETE":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                name = path.split("/admin/api/tokens/", 1)[1]
-                await _handle_tokens_revoke(send, name, client_name)
-
-        # Routes admin uniquement — Logs & Audit
-        elif path == "/admin/api/logs" and method == "GET":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_logs(send)
-
-        elif path == "/admin/api/audit" and method == "GET":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_audit(send)
-
-        elif path == "/admin/api/activity" and method == "GET":
-            if not is_admin:
-                response_status = 403
-                await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
-            else:
-                await _handle_activity(send)
-
+    # Routes admin uniquement — Tokens
+    elif path == "/admin/api/tokens" and method == "GET":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
         else:
-            response_status = 404
-            await _send_json(send, {"status": "error", "message": "Route inconnue"}, 404)
+            await _handle_tokens_list(send)
 
-    except Exception:
-        response_status = 500
-        raise
-    finally:
-        elapsed = round((time.monotonic() - t0) * 1000, 1)
-        add_log(method, path, response_status, elapsed, client_name)
+    elif path == "/admin/api/tokens" and method == "POST":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            await _handle_tokens_create(receive, send, client_name)
+
+    elif path == "/admin/api/tokens/purge" and method == "POST":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            await _handle_tokens_purge(send, client_name)
+
+    elif path.startswith("/admin/api/tokens/") and method == "GET":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            name = path.split("/admin/api/tokens/", 1)[1]
+            await _handle_tokens_info(send, name)
+
+    elif path.startswith("/admin/api/tokens/") and method == "PUT":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            name = path.split("/admin/api/tokens/", 1)[1]
+            await _handle_tokens_update(receive, send, name, client_name)
+
+    elif path.startswith("/admin/api/tokens/") and method == "DELETE":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            name = path.split("/admin/api/tokens/", 1)[1]
+            await _handle_tokens_revoke(send, name, client_name)
+
+    # Routes admin uniquement — Logs & Audit
+    elif path == "/admin/api/logs" and method == "GET":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            await _handle_logs(send)
+
+    elif path == "/admin/api/audit" and method == "GET":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            await _handle_audit(send)
+
+    elif path == "/admin/api/activity" and method == "GET":
+        if not is_admin:
+            await _send_json(send, {"status": "error", "message": "Permission admin requise"}, 403)
+        else:
+            await _handle_activity(scope, send)
+
+    else:
+        await _send_json(send, {"status": "error", "message": "Route inconnue"}, 404)
 
 
 # ═══════════════ HANDLERS ═══════════════
@@ -384,11 +382,17 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
     """POST /admin/api/tools/run — Exécuter un outil (respecte tool_ids)."""
     from ..auth.context import current_token_info
 
+    trace_id = get_activity_context().get("trace_id")
+
+    def with_trace(payload: dict) -> dict:
+        """Retourne le corrélateur serveur sans modifier le résultat de l'outil."""
+        return {**payload, **({"trace_id": trace_id} if trace_id else {})}
+
     body = await _read_body(receive)
     try:
         data = json.loads(body)
     except Exception:
-        await _send_json(send, {"status": "error", "message": "JSON invalide"}, 400)
+        await _send_json(send, with_trace({"status": "error", "message": "JSON invalide"}), 400)
         return
 
     tool_name = data.get("tool_name", "")
@@ -396,7 +400,7 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
     actor = token_info.get("client_name", "?") if token_info else "?"
 
     if not tool_name:
-        await _send_json(send, {"status": "error", "message": "tool_name requis"}, 400)
+        await _send_json(send, with_trace({"status": "error", "message": "tool_name requis"}), 400)
         return
 
     # Injecter le contexte token pour check_tool_access (respecte tool_ids)
@@ -412,12 +416,12 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
         if getattr(result, "result_type", None) == "input_required":
             message = "Cet outil demande une interaction client non prise en charge par la console admin."
             add_audit(actor, "tool_run", tool_name, "interaction MCP requise", "error")
-            await _send_json(send, {
+            await _send_json(send, with_trace({
                 "status": "error",
                 "tool_name": tool_name,
                 "message": message,
                 "duration_ms": elapsed,
-            }, 422)
+            }), 422)
             return
 
         # Extraire le contenu — gère dict, list de TextContent, ou autre
@@ -450,15 +454,29 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
         else:
             output_text = str(result)
 
-        if getattr(result, "is_error", False):
-            add_audit(actor, "tool_run", tool_name, "erreur MCP", "error")
-            await _send_json(send, {
+        # MCPServer peut encapsuler une erreur métier retournée par un outil
+        # dans un CallToolResult sans positionner is_error. Ne reconnaissons
+        # que le contrat JSON minimal de nos outils, jamais un texte arbitraire.
+        tool_reported_error = bool(getattr(result, "is_error", False))
+        if not tool_reported_error:
+            try:
+                tool_payload = json.loads(output_text)
+            except (TypeError, json.JSONDecodeError):
+                tool_payload = None
+            tool_reported_error = (
+                isinstance(tool_payload, dict)
+                and tool_payload.get("status") in {"error", "failed"}
+            )
+
+        if tool_reported_error:
+            add_audit(actor, "tool_run", tool_name, "erreur outil", "error")
+            await _send_json(send, with_trace({
                 "status": "error",
                 "tool_name": tool_name,
                 "message": "L'outil a retourné une erreur.",
                 "result": output_text,
                 "duration_ms": elapsed,
-            }, 422)
+            }), 422)
             return
 
         # Audit : exécution d'outil
@@ -470,21 +488,21 @@ async def _handle_tools_run(receive, send, mcp_instance, token_info: dict = None
             args_summary += f", +{len(arg_names) - 10} paramètres"
         add_audit(actor, "tool_run", tool_name, f"paramètres: {args_summary}" if args_summary else "", "success")
 
-        await _send_json(send, {
+        await _send_json(send, with_trace({
             "status": "ok",
             "tool_name": tool_name,
             "result": output_text,
             "duration_ms": elapsed,
-        })
+        }))
     except Exception as e:
         # Les exceptions de validation peuvent reprendre des valeurs passées à
         # l'outil. Le détail est volontairement absent du journal d'audit.
         add_audit(actor, "tool_run", tool_name, f"erreur: {type(e).__name__}", "error")
-        await _send_json(send, {
+        await _send_json(send, with_trace({
             "status": "error",
             "tool_name": tool_name,
             "message": "L'exécution de l'outil a échoué.",
-        })
+        }), 500)
     finally:
         current_token_info.reset(tok)
 
@@ -649,11 +667,27 @@ async def _handle_audit(send):
     })
 
 
-async def _handle_activity(send):
-    """GET /admin/api/activity — Traces corrélées d'activité récentes."""
-    events = get_activity()
+async def _handle_activity(scope, send):
+    """GET /admin/api/activity — Traces corrélées, regroupées par appel."""
+    raw_query = scope.get("query_string", b"")
+    query = parse_qs(raw_query.decode("utf-8", errors="ignore"))
+    try:
+        limit = int(query.get("limit", ["1000"])[0])
+    except (TypeError, ValueError):
+        limit = 1000
+    trace_id = query.get("trace_id", [None])[0]
+    call_id = query.get("call_id", [None])[0]
+    if isinstance(trace_id, str) and len(trace_id) > 128:
+        trace_id = None
+    if isinstance(call_id, str) and len(call_id) > 128:
+        call_id = None
+
+    snapshot = get_activity_snapshot(limit, trace_id=trace_id, call_id=call_id)
     await _send_json(send, {
         "status": "ok",
-        "count": len(events),
-        "events": events,
+        "count": len(snapshot["events"]),
+        "call_count": len(snapshot["calls"]),
+        "events": snapshot["events"],
+        "calls": snapshot["calls"],
+        "stats": snapshot["stats"],
     })

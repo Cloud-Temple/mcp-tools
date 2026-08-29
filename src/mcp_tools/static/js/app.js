@@ -61,6 +61,9 @@ function doLogout() {
     app.tokens = [];
     app.logs = [];
     app.audit = [];
+    app.activity = [];
+    app.activityCalls = [];
+    app.activityStats = null;
     app.selectedTool = null;
     app.me = null;
     showLogin();

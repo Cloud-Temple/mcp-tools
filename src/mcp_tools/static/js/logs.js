@@ -14,6 +14,8 @@ async function loadLogs() {
         app.audit = auditR.status === 'ok' ? (auditR.entries || []) : [];
         app.logs = logsR.status === 'ok' ? (logsR.logs || []) : [];
         app.activity = activityR.status === 'ok' ? (activityR.events || []) : [];
+        app.activityCalls = activityR.status === 'ok' ? (activityR.calls || []) : [];
+        app.activityStats = activityR.status === 'ok' ? (activityR.stats || null) : null;
         el.innerHTML = renderLogsView();
     } catch (e) {
         if (e.message !== 'Unauthorized') el.innerHTML = '<div class="empty-state">⚠️ Erreur de chargement</div>';
@@ -33,7 +35,7 @@ function renderLogsView() {
         </div>
     </div>
     <div class="tabs">
-        <button class="tab ${_currentLogsTab === 'activity' ? 'active' : ''}" data-log-tab="activity" onclick="switchLogsTab('activity')">⚡ Déroulé des appels <span class="count">${app.activity.length}</span></button>
+        <button class="tab ${_currentLogsTab === 'activity' ? 'active' : ''}" data-log-tab="activity" onclick="switchLogsTab('activity')">⚡ Déroulé des appels <span class="count">${app.activityCalls.filter(call => call.kind === 'tool_call').length}</span></button>
         <button class="tab ${_currentLogsTab === 'audit' ? 'active' : ''}" data-log-tab="audit" onclick="switchLogsTab('audit')">🔍 Journal métier <span class="count">${app.audit.length}</span></button>
         <button class="tab ${_currentLogsTab === 'http' ? 'active' : ''}" data-log-tab="http" onclick="switchLogsTab('http')">🌐 Journal HTTP <span class="count">${app.logs.length}</span></button>
     </div>
@@ -55,36 +57,100 @@ function switchLogsTab(tab) {
 // ═══════════════ DÉROULÉ CORRÉLÉ ═══════════════
 
 function renderActivityTab() {
-    if (!app.activity.length) {
-        return `<div class="empty-state"><div class="empty-state-icon">⚡</div>Aucune trace d'appel enregistrée.<br><span style="font-size:0.75rem;color:#555">Les étapes HTTP, MCP, outil et sandbox apparaîtront ici.</span></div>`;
+    const calls = app.activityCalls || [];
+    const toolCalls = calls.filter(call => call.kind === 'tool_call');
+    if (!calls.length) {
+        return `<div class="empty-state"><div class="empty-state-icon">⚡</div>Aucune trace d'appel enregistrée.<br><span style="font-size:0.75rem;color:#555">Chaque appel affichera sa demande, son exécution, sa réponse MCP et son verdict terminal.</span></div>`;
     }
-    const types = [...new Set(app.activity.map(event => event.event).filter(Boolean))].sort();
+    const states = [...new Set(calls.map(call => call.terminal_state).filter(Boolean))].sort();
+    const tools = [...new Set(calls.map(call => call.tool).filter(Boolean))].sort();
+    const stats = app.activityStats || {};
+    const retention = stats.max_events ? `<div class="activity-retention">Affichés ${esc(String(app.activity.length))}/${esc(String(stats.stored_events || 0))} événements conservés · buffer ${esc(String(stats.max_events))} · ${esc(String(stats.max_age_seconds || 0))} s · génération ${esc(stats.server_generation || '—')}${stats.evicted_capacity || stats.evicted_age ? ` · ⚠ évictions ${esc(String((stats.evicted_capacity || 0) + (stats.evicted_age || 0)))}` : ''}</div>` : '';
     return `<div class="activity-filters">
-        <div class="search-bar"><span class="search-icon">🔍</span><input class="search-input" id="activityFilterSearch" placeholder="Agent, outil, modèle, trace, étape…" oninput="filterActivity()"></div>
-        <select id="activityFilterType" onchange="filterActivity()"><option value="">Toutes les étapes</option>${types.map(type => `<option value="${esc(type)}">${esc(type)}</option>`).join('')}</select>
-        <select id="activityFilterLevel" onchange="filterActivity()"><option value="">Tous les niveaux</option><option value="info">Info</option><option value="warning">Avertissement</option><option value="error">Erreur</option></select>
-    </div><div id="activityEntries">${app.activity.map(renderActivityEntry).join('')}</div>`;
+        <div class="search-bar"><span class="search-icon">🔍</span><input class="search-input" id="activityFilterSearch" placeholder="Agent, outil, call, trace, étape…" oninput="filterActivity()"></div>
+        <select id="activityFilterKind" onchange="filterActivity()"><option value="tool_call" selected>Appels tools</option><option value="">Toutes les requêtes</option><option value="mcp_protocol">Protocole MCP</option><option value="admin">API admin</option></select>
+        <select id="activityFilterState" onchange="filterActivity()"><option value="">Tous les verdicts</option>${states.map(state => `<option value="${esc(state)}">${esc(activityStateInfo(state).label)}</option>`).join('')}</select>
+        <select id="activityFilterTool" onchange="filterActivity()"><option value="">Tous les tools</option>${tools.map(tool => `<option value="${esc(tool)}">${esc(tool)}</option>`).join('')}</select>
+    </div>${retention}<div id="activityEntries">${toolCalls.length ? toolCalls.map(renderActivityCall).join('') : '<div class="empty-state" style="padding:1.5rem">Aucun appel d’outil dans cette fenêtre. Choisissez « Toutes les requêtes » pour voir le protocole.</div>'}</div>`;
 }
 
 function filterActivity() {
-    const type = document.getElementById('activityFilterType')?.value || '';
-    const level = document.getElementById('activityFilterLevel')?.value || '';
+    const kind = document.getElementById('activityFilterKind')?.value || '';
+    const state = document.getElementById('activityFilterState')?.value || '';
+    const tool = document.getElementById('activityFilterTool')?.value || '';
     const search = (document.getElementById('activityFilterSearch')?.value || '').toLowerCase();
-    const entries = app.activity.filter(event => (!type || event.event === type) && (!level || event.level === level) && (!search || JSON.stringify(event).toLowerCase().includes(search)));
+    const entries = (app.activityCalls || []).filter(call => (
+        (!kind || call.kind === kind)
+        && (!state || call.terminal_state === state)
+        && (!tool || call.tool === tool)
+        && (!search || JSON.stringify(call).toLowerCase().includes(search))
+    ));
     const el = document.getElementById('activityEntries');
-    if (el) el.innerHTML = entries.length ? entries.map(renderActivityEntry).join('') : '<div class="empty-state" style="padding:1.5rem">Aucun résultat pour ces filtres</div>';
+    if (el) el.innerHTML = entries.length ? entries.map(renderActivityCall).join('') : '<div class="empty-state" style="padding:1.5rem">Aucun résultat pour ces filtres</div>';
 }
 
-function renderActivityEntry(event) {
+function activityStateInfo(state) {
+    const states = {
+        succeeded: { icon: '✅', label: 'Terminé — réponse MCP émise', level: 'success' },
+        tool_failed: { icon: '❌', label: 'Échec outil', level: 'error' },
+        remote_result_uncertain: { icon: '⚠️', label: 'Résultat distant incertain', level: 'warning' },
+        response_missing: { icon: '❌', label: 'Réponse MCP absente', level: 'error' },
+        response_delivery_failed: { icon: '❌', label: 'Émission ASGI échouée', level: 'error' },
+        response_terminal_unobserved: { icon: '⚠️', label: 'Réponse terminale non observée', level: 'warning' },
+        response_incomplete: { icon: '⚠️', label: 'Réponse incomplète', level: 'warning' },
+        client_cancelled: { icon: '⚠️', label: 'Client annulé', level: 'warning' },
+        cancelled: { icon: '⚠️', label: 'Annulé', level: 'warning' },
+        transport_failed: { icon: '❌', label: 'Transport en échec', level: 'error' },
+        transport_completed: { icon: '✅', label: 'Transport terminé', level: 'success' },
+        incomplete: { icon: '⚠️', label: 'Incomplet', level: 'warning' },
+    };
+    return states[state] || { icon: '•', label: state || 'Inconnu', level: 'warning' };
+}
+
+function renderActivityCall(call) {
+    const state = activityStateInfo(call.terminal_state);
+    const verdictLabel = call.terminal_state === 'succeeded' && !call.mcp_terminal_required
+        ? 'Terminé — réponse HTTP émise'
+        : state.label;
+    const tags = [
+        call.tool && `🔧 ${call.tool}`,
+        call.actor && `👤 ${call.actor}`,
+        call.agent_id && `🤝 ${call.agent_id}`,
+        call.model && `🤖 ${call.model}`,
+        call.call_id && `☎ ${call.call_id}`,
+        call.rpc_request_id !== undefined && `JSON-RPC ${call.rpc_request_id}`,
+        call.mcp_session_ref && `session ${call.mcp_session_ref}`,
+        call.trace_id && `⌁ ${call.trace_id}`,
+        call.timeline_complete === false && '⚠ chronologie partielle',
+    ].filter(Boolean);
+    const duration = typeof call.duration_ms === 'number' ? fmtDuration(call.duration_ms) : '—';
+    const transport = call.transport_state || '—';
+    const open = state.level !== 'success' || call.timeline_complete === false ? ' open' : '';
+    return `<details class="activity-call activity-${state.level}"${open}>
+        <summary><div class="activity-call-summary">
+            <span class="activity-call-time">${fmtTime(call.started_at)}<small>${fmtDateShort(call.started_at)}</small></span>
+            <span class="activity-call-verdict">${state.icon} ${esc(verdictLabel)}</span>
+            <code>${esc(call.tool || call.rpc_method || call.path || 'appel')}</code>
+            <span class="activity-call-duration">${esc(duration)}</span>
+            <span class="activity-call-transport">${esc(transport)}</span>
+            <span class="activity-call-steps">${esc(String(call.event_count || 0))} étapes</span>
+        </div></summary>
+        <div class="activity-call-body">
+            ${tags.length ? `<div class="activity-tags">${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}</div>` : ''}
+            <div class="activity-timeline">${(call.events || []).map(renderActivityStep).join('')}</div>
+        </div>
+    </details>`;
+}
+
+function renderActivityStep(event) {
     const level = ['info', 'warning', 'error'].includes(event.level) ? event.level : 'info';
-    const tags = [event.tool && `🔧 ${event.tool}`, event.actor && `👤 ${event.actor}`, event.model && `🤖 ${event.model}`, event.agent_id && `🤝 ${event.agent_id}`, event.call_id && `☎ ${event.call_id}`, event.trace_id && `⌁ ${event.trace_id}`].filter(Boolean);
-    const details = JSON.stringify(event, null, 2);
-    return `<div class="activity-entry activity-${level}">
-        <div class="activity-time">${fmtTime(event.timestamp)}<span>${fmtDateShort(event.timestamp)}</span></div>
-        <div class="activity-level">${level === 'error' ? '✖' : level === 'warning' ? '⚠' : '●'}</div>
-        <div class="activity-body"><div class="activity-summary"><code>${esc(event.event || 'unknown')}</code><span>${esc(event.message || '')}</span></div>
-        ${tags.length ? `<div class="activity-tags">${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}</div>` : ''}
-        <details><summary>Détails sûrs</summary><pre>${esc(details)}</pre></details></div>
+    const details = event.details ? `<details><summary>Détails sûrs</summary><pre>${esc(JSON.stringify(event, null, 2))}</pre></details>` : '';
+    return `<div class="activity-step activity-${level}">
+        <span class="activity-step-sequence">${esc(String(event.sequence || '?'))}</span>
+        <span class="activity-step-time">${fmtTime(event.timestamp)}</span>
+        <code>${esc(event.event || 'unknown')}</code>
+        <span class="activity-step-message">${esc(event.message || '')}</span>
+        ${details}
     </div>`;
 }
 
@@ -148,12 +214,16 @@ function updateLogRefresh() {
             const [auditR, logsR, activityR] = await Promise.all([apiAudit(), apiLogs(), apiActivity()]);
             if (auditR.status === 'ok') app.audit = auditR.entries || [];
             if (logsR.status === 'ok') app.logs = logsR.logs || [];
-            if (activityR.status === 'ok') app.activity = activityR.events || [];
+            if (activityR.status === 'ok') {
+                app.activity = activityR.events || [];
+                app.activityCalls = activityR.calls || [];
+                app.activityStats = activityR.stats || null;
+            }
             const content = document.getElementById('logsTabContent');
             if (content) content.innerHTML = renderCurrentLogsTab();
             document.querySelectorAll('[data-log-tab] .count').forEach(count => {
                 const tab = count.closest('[data-log-tab]').dataset.logTab;
-                count.textContent = tab === 'activity' ? app.activity.length : tab === 'audit' ? app.audit.length : app.logs.length;
+                count.textContent = tab === 'activity' ? app.activityCalls.filter(call => call.kind === 'tool_call').length : tab === 'audit' ? app.audit.length : app.logs.length;
             });
         } catch {}
     }, interval * 1000);

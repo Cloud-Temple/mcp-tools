@@ -19,7 +19,7 @@ from .display import (
     show_shell_result, show_network_result,
     show_http_result, show_perplexity_result,
     show_date_result, show_calc_result, show_doc_result,
-    show_ssh_result, show_files_result, show_token_result,
+    show_ssh_result, show_files_result, show_token_result, show_activity_result,
 )
 
 
@@ -27,7 +27,7 @@ SHELL_COMMANDS = {
     "help":       "Afficher l'aide",
     "health":     "Vérifier l'état de santé",
     "about":      "Informations sur le service",
-    "activity":   "activity [--limit N] — Traces récentes (administrateur requis)",
+    "activity":   "activity [--limit N] [--trace-id ID|--call-id ID] [--details] [--all] — Traces corrélées (admin)",
     "run":        "run <commande> [--shell bash|sh|python3|node] [--network] [--timeout N] — Exécuter en sandbox",
     "network":    "network <op> <host> [args] [--timeout N] — ping, dig, nslookup, traceroute",
     "http":       "http <url> [METHOD] [--header 'K: V'] [--data JSON] [--body TXT] [--auth-type T --auth-value V] [--no-ssl] [--timeout N]",
@@ -116,12 +116,22 @@ async def cmd_about(client, state, args="", json_output=False):
 
 
 async def cmd_activity(client, state, args="", json_output=False):
-    """Afficher les traces d'activité administratives récentes."""
-    _, options = _parse_options(args, int_keys=("limit",))
-    limit = options.get("limit", 100)
-    result = await client.call_tool("system_activity", {"limit": limit})
-    # Les traces sont déjà structurées : conserver le JSON dans le shell aussi.
-    show_json(result)
+    """Afficher les traces d'activité regroupées par appel."""
+    _, options = _parse_options(args, int_keys=("limit",), bool_flags=("details", "all"))
+    params = {"limit": options.get("limit", 100)}
+    if options.get("trace_id"):
+        params["trace_id"] = options["trace_id"]
+    if options.get("call_id"):
+        params["call_id"] = options["call_id"]
+    result = await client.call_tool("system_activity", params)
+    if json_output:
+        show_json(result)
+    else:
+        show_activity_result(
+            result,
+            details=bool(options.get("details")),
+            include_protocol=bool(options.get("all")),
+        )
 
 
 # =============================================================================
@@ -798,7 +808,7 @@ async def run_shell(url: str, token: str):
            "--access-key", "--secret-key", "--region",
            "--tools", "--permissions", "--expires", "--email",
            "--tz", "--days", "--hours", "--minutes", "--format", "--date2",
-           "--cwd", "--limit"],
+           "--cwd", "--limit", "--trace-id", "--call-id", "--details", "--all"],
         ignore_case=True,
     )
 

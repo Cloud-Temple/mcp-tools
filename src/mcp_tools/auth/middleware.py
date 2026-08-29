@@ -12,6 +12,7 @@ from typing import Optional
 
 from .context import current_token_info
 from ..config import get_settings
+from ..observability import bind_activity, get_activity_context, record_activity
 
 
 class AuthMiddleware:
@@ -52,8 +53,22 @@ class AuthMiddleware:
             token_info = self._validate_token(token)
 
         if token_info is None:
+            if path == "/mcp":
+                record_activity(
+                    "auth.rejected", level="warning",
+                    message="Authentification MCP refusée",
+                    details={"reason": "missing_or_invalid_bearer"},
+                )
             await self._send_error(send, 401, "Authorization header required ou invalide")
             return
+
+        if path == "/mcp":
+            actor = token_info.get("client_name", "?")
+            bind_activity(actor=actor, auth_role="admin" if "admin" in token_info.get("permissions", []) else "access")
+            record_activity(
+                "auth.accepted", message="Authentification MCP acceptée",
+                details={"role": "admin" if "admin" in token_info.get("permissions", []) else "access"},
+            )
 
         tok = current_token_info.set(token_info)
         try:
@@ -106,6 +121,8 @@ class AuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 class LoggingMiddleware:
+    _QUIET_PATHS = {"/health", "/admin/api/activity", "/admin/api/logs", "/admin/api/audit"}
+
     def __init__(self, app):
         self.app = app
 
@@ -121,12 +138,34 @@ class LoggingMiddleware:
         async def send_wrapper(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
-                status_code = message.get("status", 0)
+                candidate_status = message.get("status", 0)
+                await send(message)
+                # L'ASGI aval a accepté les en-têtes : seulement maintenant
+                # le statut est une observation fiable pour le journal HTTP.
+                status_code = candidate_status
+                return
             await send(message)
 
         try:
             await self.app(scope, receive, send_wrapper)
+        except Exception:
+            # Si un handler échoue avant d'émettre ses headers, l'ASGI
+            # extérieur rendra un 500. Le journal doit refléter ce résultat,
+            # pas le code sentinelle 0.
+            if not status_code:
+                status_code = 500
+            raise
         finally:
             elapsed = round((time.monotonic() - t0) * 1000, 1)
-            if path not in ("/health",):
+            if path not in self._QUIET_PATHS and not path.startswith("/admin/static/"):
                 print(f"📡 {method} {path} → {status_code} ({elapsed}ms)", file=sys.stderr)
+                # Ce middleware voit la réponse effectivement émise, y compris
+                # pour /admin/api. C'est donc la source unique du journal HTTP
+                # corrélé : les handlers Admin ne doivent pas deviner un 200.
+                try:
+                    from ..admin.api import add_log
+                    actor = str(get_activity_context().get("actor", ""))
+                    add_log(method, path, status_code, elapsed, actor)
+                except Exception:
+                    # L'observabilité ne doit jamais altérer une réponse.
+                    pass

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de recette end-to-end — MCP Tools v0.6.0
+Script de recette end-to-end — MCP Tools v0.6.1
 
 Teste toutes les fonctionnalités du service MCP Tools via le protocole
 MCP Streamable HTTP (endpoint /mcp) et la CLI Click (subprocess).
@@ -1683,6 +1683,8 @@ async def test_12_admin():
     except Exception as e:
         record("admin API tools (params+enums)", False, str(e))
 
+    admin_tool_trace_id = None
+
     # 12n. API tools/run — exécution via admin
     try:
         data = await call_rest("POST", "/admin/api/tools/run",
@@ -1691,10 +1693,33 @@ async def test_12_admin():
         ok = data["status_code"] == 200
         body = data.get("body", {})
         has_result = isinstance(body, dict) and "result" in body
-        record("admin API tools/run (date now)", ok and has_result,
-               f"HTTP {data['status_code']}, duration={body.get('duration_ms', '?')}ms")
+        admin_tool_trace_id = body.get("trace_id") if isinstance(body, dict) else None
+        has_trace_id = isinstance(admin_tool_trace_id, str) and admin_tool_trace_id.startswith("tr_")
+        record("admin API tools/run (date now)", ok and has_result and has_trace_id,
+               f"HTTP {data['status_code']}, duration={body.get('duration_ms', '?')}ms, trace={admin_tool_trace_id or '?'}")
     except Exception as e:
         record("admin API tools/run (date now)", False, str(e))
+
+    # 12n2. Une erreur métier retournée dans CallToolResult ne doit jamais
+    # devenir un faux succès HTTP/console.
+    admin_error_trace_id = None
+    try:
+        data = await call_rest("POST", "/admin/api/tools/run",
+                               headers={**admin_headers, "Content-Type": "application/json"},
+                               json_body={"tool_name": "date", "arguments": {"operation": "invalid-operation"}})
+        body = data.get("body", {})
+        admin_error_trace_id = body.get("trace_id") if isinstance(body, dict) else None
+        ok = (
+            data["status_code"] == 422
+            and isinstance(body, dict)
+            and body.get("status") == "error"
+            and isinstance(admin_error_trace_id, str)
+            and admin_error_trace_id.startswith("tr_")
+        )
+        record("admin API tools/run (erreur métier)", ok,
+               f"HTTP {data['status_code']}, trace={admin_error_trace_id or '?'}")
+    except Exception as e:
+        record("admin API tools/run (erreur métier)", False, str(e))
 
     # 12o. API logs — contient des entrées
     try:
@@ -1702,20 +1727,39 @@ async def test_12_admin():
         ok = data["status_code"] == 200
         body = data.get("body", {})
         count = body.get("count", 0) if isinstance(body, dict) else 0
-        record("admin API logs", ok and count > 0, f"count={count}")
+        logs = body.get("logs", []) if isinstance(body, dict) else []
+        linked = any(entry.get("trace_id") == admin_tool_trace_id for entry in logs if isinstance(entry, dict))
+        error_logged = any(
+            entry.get("trace_id") == admin_error_trace_id and entry.get("status") == 422
+            for entry in logs if isinstance(entry, dict)
+        )
+        record("admin API logs", ok and count > 0 and linked and error_logged,
+               f"count={count}, succès lié={linked}, erreur 422 liée={error_logged}")
     except Exception as e:
         record("admin API logs", False, str(e))
 
-    # 12o2. API activité — trace corrélée de l'appel admin précédent
+    # 12o2. API activité — chronologie complète de l'appel admin précédent
     try:
-        data = await call_rest("GET", "/admin/api/activity", headers=admin_headers)
+        path = f"/admin/api/activity?trace_id={admin_tool_trace_id}" if admin_tool_trace_id else "/admin/api/activity"
+        data = await call_rest("GET", path, headers=admin_headers)
         ok = data["status_code"] == 200
         body = data.get("body", {})
         events = body.get("events", []) if isinstance(body, dict) else []
         event_names = {entry.get("event") for entry in events if isinstance(entry, dict)}
-        has_trace = {"tool.started", "tool.completed"}.issubset(event_names)
-        record("admin API activité (trace corrélée)", ok and has_trace,
-               f"count={body.get('count', 0)}, événements={sorted(event_names)}")
+        calls = body.get("calls", []) if isinstance(body, dict) else []
+        call = next((item for item in calls if item.get("trace_id") == admin_tool_trace_id), {})
+        has_trace = {
+            "http.received", "auth.accepted", "tool.started", "tool.completed",
+            "http.response_started", "http.response_completed", "trace.closed",
+        }.issubset(event_names)
+        has_terminal_verdict = (
+            call.get("tool") == "date"
+            and call.get("terminal_state") == "succeeded"
+            and call.get("response_completed") is True
+            and call.get("mcp_terminal_required") is False
+        )
+        record("admin API activité (trace corrélée)", ok and has_trace and has_terminal_verdict,
+               f"trace={admin_tool_trace_id or '?'}, verdict={call.get('terminal_state', '?')}, étapes={len(events)}")
     except Exception as e:
         record("admin API activité (trace corrélée)", False, str(e))
 
@@ -1882,7 +1926,7 @@ async def test_14_cli():
     except Exception as e:
         record("cli Click ↔ admin : catalogue synchronisé", False, str(e))
 
-    # ── 14d3. Le 13e outil est utilisable depuis Click ──
+    # ── 14d3. Le 13e outil restitue contrat, appels et stats ──
     try:
         rc, out, err = run_cli("activity", "--limit", "5", "--json")
         activity = json.loads(out)
@@ -1890,11 +1934,21 @@ async def test_14_cli():
             rc == 0
             and activity.get("status") == "ok"
             and isinstance(activity.get("events"), list)
+            and isinstance(activity.get("calls"), list)
+            and isinstance(activity.get("stats"), dict)
             and activity.get("count", 0) <= 5
         )
-        record("cli activity (admin)", ok, f"exit={rc}, traces={activity.get('count', '?')}")
+        record("cli activity JSON (admin)", ok, f"exit={rc}, traces={activity.get('count', '?')}, appels={activity.get('call_count', '?')}")
     except Exception as e:
-        record("cli activity (admin)", False, str(e))
+        record("cli activity JSON (admin)", False, str(e))
+
+    # ── 14d3b. Sans --json, la CLI est une vue lisible et non un dump ──
+    try:
+        rc, out, err = run_cli("activity", "--limit", "5")
+        ok = rc == 0 and "Activité corrélée" in out and not out.lstrip().startswith("{")
+        record("cli activity lisible (admin)", ok, f"exit={rc}")
+    except Exception as e:
+        record("cli activity lisible (admin)", False, str(e))
 
     # ── 14d4. Le shell interactif annonce et accepte la commande activity ──
     try:
@@ -2023,7 +2077,9 @@ async def test_14_cli():
         rc, out, err = run_cli("token", "create", cli_test_client,
                                 "--tools", "date,calc,shell", "--expires", "1", "--email", "test@e2e.com")
         ok = rc == 0 and (cli_test_client in out or "créé" in out.lower() or "success" in out.lower())
-        record("cli token create", ok, f"exit={rc}, output={out[:100].strip()}")
+        # La CLI affiche le token brut une seule fois : ne jamais le recopier
+        # dans la sortie de recette ni dans un collecteur CI.
+        record("cli token create", ok, f"exit={rc}, token créé={ok}")
     except Exception as e:
         record("cli token create", False, str(e))
 

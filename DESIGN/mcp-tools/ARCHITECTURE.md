@@ -1,6 +1,6 @@
 # Architecture — MCP Tools
 
-> **Version** : 0.6.0 | **Date** : 2026-08-29 | **Auteur** : Cloud Temple
+> **Version** : 0.6.1 | **Date** : 2026-08-29 | **Auteur** : Cloud Temple
 > **Projet** : mcp-tools | **Licence** : Apache 2.0
 > **Statut** : 🚧 Implémentation en cours — 13/28 tools validés (shell, network, http, ssh, files, token, perplexity_search, perplexity_doc, date, calc, system_health, system_about, system_activity) + Token Manager S3 (CRUD + update) + Console Admin Web + traces corrélées + CLI Click et shell alignés
 
@@ -237,7 +237,7 @@ ActivityMiddleware (ASGI, outermost : trace sûre et corrélée)
                     ├── /admin/api/tokens*       → CRUD tokens S3 (admin)
                     ├── GET  /admin/api/audit    → journal métier (500 entrées)
                     ├── GET  /admin/api/logs     → journal HTTP (200 entrées)
-                    └── GET  /admin/api/activity → déroulé corrélé (1 000 entrées)
+                    └── GET  /admin/api/activity → appels corrélés, buffer configurable (5 000 événements par défaut)
 ```
 
 ### Pile middleware ASGI (ordre d'exécution)
@@ -248,7 +248,9 @@ ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddlew
 
 L'ordre est donné de l'extérieur vers l'intérieur. `ActivityMiddleware` ne
 conserve ni payload ni secret : il ne journalise que le chemin, le type de
-requête MCP, l'outil, l'acteur, les étapes et les métriques de réponse.
+requête MCP, l'outil, l'acteur, les étapes et les métriques de réponse. Le
+journal HTTP reçoit les appels MCP et Admin, avec le même `trace_id`; ses
+propres routes de consultation sont exclues pour ne pas s'auto-alimenter.
 `AdminMiddleware` intercepte les routes `/admin*` avant l'auth MCP. Les routes
 de consultation générale respectent les droits du token ; la gestion des tokens
 et les trois journaux requièrent un token administrateur.
@@ -260,7 +262,7 @@ et les trois journaux requièrent un token administrateur.
 | **Dashboard** | État du serveur (version, Python, sandbox, S3, Perplexity), stats tokens, actions rapides           |
 | **Tools**    | Grille dynamique des 13 outils avec recherche. Clic = formulaire dynamique (select pour enums, inputs typés). Exécution interactive avec résultat JSON formaté |
 | **Tokens**   | Table CRUD : créer (checkboxes tool_ids), info, révoquer. Token brut affiché une seule fois         |
-| **Activité** | Trois onglets : déroulé d'appels corrélé (1 000), journal métier/audit (500) et journal HTTP (200), actualisés toutes les 5 s. Aucun corps, argument ou secret n'est affiché |
+| **Activité** | Trois onglets : appels corrélés avec étapes et verdict terminal, journal métier/audit (500) et journal HTTP (200), actualisés toutes les 5 s. Le buffer d'appels est borné par `ACTIVITY_MAX_EVENTS` et `ACTIVITY_MAX_AGE_SECONDS` ; ses évictions sont visibles. Aucun corps, argument ou secret n'est affiché |
 
 ### Fichiers
 
@@ -554,4 +556,4 @@ La CI (`.github/workflows/build.yml`) exécute les deux, sur les deux images, av
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.0*
+*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.1*

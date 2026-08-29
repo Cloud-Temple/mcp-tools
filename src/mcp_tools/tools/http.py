@@ -31,7 +31,7 @@ from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
-from ..observability import record_activity, traced_tool
+from ..observability import bind_activity, record_activity, traced_tool
 
 
 # =============================================================================
@@ -517,6 +517,17 @@ def register(mcp: MCPServer) -> None:
 
         except asyncio.TimeoutError:
             return {"status": "error", "message": f"Timeout de {timeout}s dépassé."}
+        except asyncio.CancelledError:
+            # Après l'envoi d'une méthode mutante, la cible peut avoir appliqué
+            # l'effet avant que l'annulation locale ne tue la sandbox.
+            if str(method).upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+                bind_activity(remote_result="uncertain")
+                record_activity(
+                    "remote.result_uncertain", level="warning",
+                    message="Opération HTTP mutante annulée : effet distant indéterminé",
+                    details={"method": str(method).upper()},
+                )
+            raise
         except FileNotFoundError:
             return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que docker est installé et docker.sock monté."}
         except Exception as e:

@@ -1,6 +1,6 @@
 # Catalogue des Tools — MCP Tools
 
-> **Version** : 0.6.0 | **Date** : 2026-08-29
+> **Version** : 0.6.1 | **Date** : 2026-08-29
 > **Référence** : Voir `ARCHITECTURE.md` pour le contexte global
 
 ---
@@ -59,16 +59,32 @@ backlog et ne doivent pas être accordés dans un token de production.
 | --- | --- | --- | --- |
 | **system_health** ✅ | État de santé, version, nombre d'outils et activation sandbox. Accessible à un token ayant cet outil. | — | MCP Tools |
 | **system_about** ✅ | Catalogue public dynamique : version et descriptions des 13 outils enregistrés. Sert de source de vérité au CLI. | — | MCP Tools |
-| **system_activity** ✅ | Traces récentes corrélées d'un appel HTTP/MCP, sans corps ni secret. Réservé à un administrateur. | limit (1-1000) | MCP Tools |
+| **system_activity** ✅ | Traces récentes corrélées d'un appel HTTP/MCP, sans corps ni secret. Retourne les appels groupés, les événements et l'état du buffer. Réservé à un administrateur. | limit, trace_id, call_id | MCP Tools |
 
 ### Observabilité de l'exécution
 
-Chaque outil est décoré pour journaliser son début, sa fin, son échec ou son
-annulation. `ActivityMiddleware` complète la trace avec réception HTTP,
-requête MCP, réponse, taille émise et clôture. Les paramètres sensibles et les
-payloads sont exclus. Le buffer (1 000 événements) alimente `/admin` et
-`system_activity`; l'archivage S3 avec rétention est volontairement hors v0.6.0
-(issues #9 et #10).
+Chaque outil journalise son début, sa fin, son échec ou son annulation.
+`ActivityMiddleware` complète une même chronologie avec réception HTTP,
+authentification, métadonnées JSON-RPC, réponse acceptée par l'ASGI et verdict
+terminal. Les corrélateurs sont `trace_id`, `call_id` agent quand fourni,
+identifiant JSON-RPC, acteur et référence de session hachée. Arguments,
+payloads, commandes, sorties, corps et secrets sont exclus.
+
+Le buffer local est borné par `ACTIVITY_MAX_EVENTS` (5 000 par défaut) et
+`ACTIVITY_MAX_AGE_SECONDS` (86 400 s par défaut) ; les évictions sont exposées
+dans `stats`. Chaque appel indique aussi si son début et sa clôture sont encore
+présents (`timeline_complete`) : une trace évincée partiellement ne se fait pas
+passer pour une chronologie exhaustive. Un filtre `trace_id` ou `call_id`
+restitue toute la chronologie conservée, sans la tronquer à la fenêtre courante.
+« Réponse terminale émise » prouve
+l'acceptation par l'ASGI, pas la réception TCP par l'agent. L'archivage S3 et
+la rétention durable restent volontairement hors de ce changement (issues #9
+et #10).
+
+Pour une requête MCP trop volumineuse pour que ses métadonnées soient lues sans
+conserver le corps, le verdict exige une réponse terminale par prudence. Une
+annulation de mutation HTTP ou S3 est classée `remote_result_uncertain` : le
+service ne prétend pas savoir si l'effet distant a déjà été appliqué.
 
 ### Recherche Perplexity (3 tools)
 
@@ -184,4 +200,4 @@ beautifulsoup4>=4.12 # HTML scraping
 
 ---
 
-*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.0*
+*Document créé le 5 mars 2026 — Mis à jour le 29 août 2026 — MCP Tools v0.6.1*

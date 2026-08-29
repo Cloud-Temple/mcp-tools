@@ -44,6 +44,11 @@ python scripts/mcp_cli.py about
 
 # Traces d'activité (administrateur requis)
 python scripts/mcp_cli.py activity --limit 50
+# Afficher la chronologie de chaque appel et retrouver un incident précis
+python scripts/mcp_cli.py activity --details
+python scripts/mcp_cli.py activity --call-id call-123 --details
+# Contrat JSON pour un agent ou un script ; --all ajoute le protocole MCP
+python scripts/mcp_cli.py activity --trace-id tr_123 --json
 
 # Exécuter une commande shell
 python scripts/mcp_cli.py run-shell "hostname && uptime"
@@ -200,7 +205,15 @@ Une interface web d'administration est disponible sur `/admin` :
 http://localhost:8082/admin
 ```
 
-**4 vues** : Dashboard (état serveur), Tools (exécution interactive avec formulaires dynamiques), Tokens (CRUD), Activité (déroulé des appels corrélé, journal métier et journal HTTP).
+**4 vues** : Dashboard (état serveur), Tools (exécution interactive avec formulaires dynamiques), Tokens (CRUD), Activité (un appel corrélé de la réception HTTP à son verdict terminal, puis journal métier et journal HTTP). Les appels MCP et les routes Admin y partagent le même `trace_id` ; un `call_id` agent, s'il est fourni, permet de les retrouver. Les valeurs métier — arguments, commandes, sorties, corps et secrets — ne sont jamais affichées.
+
+Le verdict « réponse MCP émise » signifie que l'application a remis une enveloppe JSON-RPC terminale à l'ASGI. Il ne prétend pas prouver la réception réseau par l'agent : cette dernière exige la corrélation avec les journaux WAF/proxy et agent.
+
+Si les métadonnées d'un très gros appel MCP ne peuvent pas être inspectées sans
+retenir son corps, la trace exige conservativement une enveloppe terminale au
+lieu d'afficher un succès. Une annulation d'écriture HTTP ou S3 indique de même
+`remote_result_uncertain` : l'effet distant peut avoir eu lieu avant l'arrêt
+local.
 
 Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission admin). Design Cloud Temple (dark theme). Same-origin uniquement (pas de CORS cross-origin).
 
@@ -238,6 +251,8 @@ Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission 
 | `PERPLEXITY_TIMEOUT`   | Timeout dédié Perplexity (s) | `600`                     |
 | `TOOL_DEFAULT_TIMEOUT` | Timeout par défaut outils (s)| `600`                     |
 | `TOOL_MAX_OUTPUT_CHARS`| Troncature max des outputs   | `50000`                   |
+| `ACTIVITY_MAX_EVENTS`  | Événements conservés en mémoire pour `/admin` et `system_activity` | `5000` |
+| `ACTIVITY_MAX_AGE_SECONDS` | Âge maximal du buffer d'activité local | `86400` |
 | `SANDBOX_DNS`          | DNS pour sandbox réseau      | `8.8.8.8,8.8.4.4`         |
 
 ### Client CLI

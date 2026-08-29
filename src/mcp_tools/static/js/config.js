@@ -12,6 +12,8 @@ const app = {
     logs: [],
     audit: [],
     activity: [],
+    activityCalls: [],
+    activityStats: null,
     selectedTool: null,
     refreshTimer: null,
     refreshInterval: 10,  // secondes

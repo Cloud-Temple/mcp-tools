@@ -34,7 +34,7 @@ from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
-from ..observability import record_activity, traced_tool
+from ..observability import bind_activity, record_activity, traced_tool
 
 
 # =============================================================================
@@ -331,6 +331,7 @@ async def _run_in_sandbox(
     except asyncio.CancelledError:
         # Une commande distante a pu être reçue malgré l'annulation locale ;
         # on nettoie le conteneur sans prétendre connaître le résultat SSH.
+        bind_activity(remote_result="uncertain")
         record_activity(
             "sandbox.cancelled", level="warning", message="Sandbox SSH annulée et nettoyée",
             details={"sandbox_id": container_name, "remote_result": "uncertain"},

@@ -542,6 +542,31 @@ tr.row-expired:hover td { opacity: 0.75; }
 .activity-body details { margin-top: 0.3rem; color: #666; font-size: 0.67rem; }
 .activity-body summary { cursor: pointer; width: max-content; }
 .activity-body pre { margin: 0.35rem 0 0; padding: 0.45rem; max-height: 240px; overflow: auto; border-radius: 4px; background: rgba(0,0,0,0.16); color: #9393ab; font: 0.66rem/1.4 'SF Mono', 'Fira Code', monospace; white-space: pre-wrap; word-break: break-word; }
+.activity-retention { margin: -0.25rem 0 0.65rem; color: #777; font: 0.66rem 'SF Mono', 'Fira Code', monospace; }
+.activity-call { margin: 0.45rem 0; border: 1px solid rgba(65,168,144,0.2); border-left: 3px solid #41a890; border-radius: 6px; background: rgba(255,255,255,0.015); }
+.activity-call.activity-warning { border-left-color: #f39c12; }
+.activity-call.activity-error { border-left-color: #e74c3c; }
+.activity-call > summary { cursor: pointer; list-style: none; padding: 0.58rem 0.7rem; }
+.activity-call > summary::-webkit-details-marker { display: none; }
+.activity-call-summary { display: grid; grid-template-columns: 82px minmax(210px, 1.5fr) minmax(90px, 0.7fr) 65px minmax(115px, 0.8fr) 68px; gap: 0.55rem; align-items: center; font-size: 0.72rem; }
+.activity-call-time { color: #87879b; font-family: 'SF Mono', 'Fira Code', monospace; }
+.activity-call-time small { display: block; color: #56566d; font-size: 0.59rem; }
+.activity-call-verdict { font-weight: 600; color: #d5d5df; }
+.activity-call-summary code { color: #69c5b3; font: 0.68rem 'SF Mono', 'Fira Code', monospace; overflow: hidden; text-overflow: ellipsis; }
+.activity-call-duration, .activity-call-steps { text-align: right; color: #858596; font: 0.65rem 'SF Mono', 'Fira Code', monospace; }
+.activity-call-transport { color: #9b9bae; font: 0.64rem 'SF Mono', 'Fira Code', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-call-body { padding: 0 0.7rem 0.7rem; border-top: 1px solid rgba(255,255,255,0.05); }
+.activity-timeline { margin-top: 0.55rem; border-left: 1px solid rgba(105,197,179,0.24); }
+.activity-step { display: grid; grid-template-columns: 44px 70px minmax(150px, 0.7fr) minmax(160px, 2fr); gap: 0.45rem; align-items: baseline; padding: 0.34rem 0.45rem 0.34rem 0.65rem; border-bottom: 1px dotted rgba(255,255,255,0.05); font-size: 0.68rem; }
+.activity-step:last-child { border-bottom: none; }
+.activity-step-sequence, .activity-step-time { color: #626275; font-family: 'SF Mono', 'Fira Code', monospace; }
+.activity-step code { color: #83d9c8; font: 0.66rem 'SF Mono', 'Fira Code', monospace; }
+.activity-step-message { color: #b6b6c4; }
+.activity-step.activity-warning code { color: #f6bf59; }
+.activity-step.activity-error code { color: #f17c76; }
+.activity-step details { grid-column: 3 / -1; color: #777; }
+.activity-step details summary { cursor: pointer; width: max-content; }
+.activity-step pre { margin: 0.35rem 0 0; padding: 0.45rem; max-height: 260px; overflow: auto; border-radius: 4px; background: rgba(0,0,0,0.16); color: #9393ab; font: 0.64rem/1.4 'SF Mono', 'Fira Code', monospace; white-space: pre-wrap; word-break: break-word; }
 
 /* ═══════════════ MODAL ═══════════════ */
 .modal-overlay {
@@ -646,6 +671,10 @@ tr.row-expired:hover td { opacity: 0.75; }
     .audit-filters { flex-direction: column; }
     .activity-filters { flex-wrap: wrap; }
     .activity-filters .search-bar { flex-basis: 100%; }
+    .activity-call-summary { grid-template-columns: 1fr 1fr; }
+    .activity-call-verdict { grid-column: 1 / -1; }
+    .activity-step { grid-template-columns: 40px 60px minmax(0, 1fr); }
+    .activity-step-message { grid-column: 2 / -1; }
     .tool-picker-cat-tools { gap: 0.1rem; }
     .tool-picker-tool { min-width: 110px; }
 }

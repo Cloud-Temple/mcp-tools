@@ -32,7 +32,7 @@ from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
-from ..observability import record_activity, traced_tool
+from ..observability import bind_activity, record_activity, traced_tool
 
 
 # =============================================================================
@@ -542,6 +542,18 @@ def register(mcp: MCPServer) -> None:
 
         except asyncio.TimeoutError:
             return {"status": "error", "message": f"Timeout de {timeout}s dépassé."}
+        except asyncio.CancelledError:
+            # put/delete/versioning sont transmis au service S3 avant que la
+            # sandbox locale ne puisse être arrêtée : ne jamais affirmer leur
+            # résultat lors d'une annulation du client.
+            if operation in {"write", "delete", "enable_versioning"}:
+                bind_activity(remote_result="uncertain")
+                record_activity(
+                    "remote.result_uncertain", level="warning",
+                    message="Opération S3 mutante annulée : effet distant indéterminé",
+                    details={"operation": operation},
+                )
+            raise
         except FileNotFoundError:
             return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que docker est installé et docker.sock monté."}
         except Exception as e:

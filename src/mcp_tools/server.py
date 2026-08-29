@@ -6,10 +6,11 @@ Serveur MCP Tools — Point d'entrée principal.
 import sys
 import platform
 from pathlib import Path
+from typing import Optional
 
 from mcp.server.mcpserver import MCPServer
 from .config import get_settings
-from .observability import ActivityMiddleware, get_activity, traced_tool
+from .observability import ActivityMiddleware, activity_stats, get_activity_context, get_activity_snapshot, traced_tool
 
 # =============================================================================
 # Instance MCPServer (SDK MCP v2)
@@ -55,6 +56,7 @@ async def system_health() -> dict:
             "version": version,
             "tools_count": tools_count,
             "sandbox_enabled": settings.sandbox_enabled,
+            "activity": activity_stats(),
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -96,15 +98,34 @@ async def system_about() -> dict:
 
 @mcp.tool()
 @traced_tool("system_activity")
-async def system_activity(limit: int = 100) -> dict:
-    """Retourne les traces d'activité récentes (administrateurs uniquement, secrets exclus)."""
+async def system_activity(
+    limit: int = 100,
+    trace_id: Optional[str] = None,
+    call_id: Optional[str] = None,
+) -> dict:
+    """Retourne les traces d'activité corrélées, filtrables par trace ou call (administrateurs uniquement, secrets exclus)."""
     try:
         check_tool_access("system_activity")
         token_info = current_token_info.get() or {}
         if "admin" not in token_info.get("permissions", []):
             return {"status": "error", "message": "Permission admin requise pour consulter l'activité."}
-        events = get_activity(limit)
-        return {"status": "ok", "count": len(events), "events": events}
+        current_trace_id = get_activity_context().get("trace_id")
+        snapshot = get_activity_snapshot(
+            limit,
+            trace_id=trace_id,
+            call_id=call_id,
+            # La consultation ne doit pas se présenter elle-même comme un call
+            # inachevé : sa propre trace se clôture après le retour MCP.
+            exclude_trace_id=None if trace_id or call_id else current_trace_id,
+        )
+        return {
+            "status": "ok",
+            "count": len(snapshot["events"]),
+            "call_count": len(snapshot["calls"]),
+            "events": snapshot["events"],
+            "calls": snapshot["calls"],
+            "stats": snapshot["stats"],
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -118,10 +139,12 @@ def create_app():
     from .admin.middleware import AdminMiddleware
 
     app = mcp.streamable_http_app(host=settings.mcp_server_host)
-    app = LoggingMiddleware(app)
     app = AuthMiddleware(app)
     app = HealthCheckMiddleware(app)
     app = AdminMiddleware(app, mcp)  # /admin, /admin/static/*, /admin/api/*
+    # Doit envelopper AdminMiddleware : sinon les appels /admin/api sont
+    # visibles dans l'activité mais absents du journal HTTP commun.
+    app = LoggingMiddleware(app)
     app = ActivityMiddleware(app)
 
     return app

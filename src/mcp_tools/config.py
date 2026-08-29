@@ -7,6 +7,7 @@ Variables d'environnement chargées depuis .env.
 
 from functools import lru_cache
 from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -40,6 +41,12 @@ class Settings(BaseSettings):
     tool_max_concurrent: int = 20
     tool_default_timeout: int = 600
     tool_max_timeout: int = 600
+
+    # --- Observabilité ---
+    # Buffer local borné : il sert au diagnostic temps réel. La conservation
+    # durable reste volontairement découplée du chemin d'exécution.
+    activity_max_events: int = Field(default=5_000, ge=100, le=100_000)
+    activity_max_age_seconds: int = Field(default=86_400, ge=60, le=31_536_000)
 
     # --- Sandbox Docker (tool shell) ---
     sandbox_image: str = "mcp-tools-sandbox"

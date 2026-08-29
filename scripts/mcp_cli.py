@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Point d'entrée CLI du service MCP Tools v0.6.0.
+Point d'entrée CLI du service MCP Tools v0.6.1.
 
 CLI complète avec 14 commandes Click + shell interactif.
 Chaque commande expose TOUS les paramètres MCP avec aide contextuelle.

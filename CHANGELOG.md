@@ -4,6 +4,19 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] — 2026-08-29
+
+### Added
+- **Verdict de trace exploitable** — le flux d'activité groupe désormais les étapes par `trace_id` et expose l'état d'exécution, l'état de transport, le verdict terminal, les évictions du buffer, l'intégrité de chronologie et les corrélateurs sûrs (`call_id`, ID JSON-RPC, acteur, référence de session hachée).
+- **Recherche précise** — `/admin/api/activity` et `system_activity` acceptent `trace_id` et `call_id`; une recherche ciblée conserve toute la chronologie concernée.
+- **Journal HTTP corrélé** — les requêtes MCP comme les routes Admin alimentent le même journal HTTP avec leur `trace_id`; les lectures de journaux sont exclues pour éviter l'auto-bruit.
+
+### Fixed
+- **Fausse complétion de réponse** — une réponse n'est marquée terminée qu'après acceptation du corps par l'ASGI. Un échec d'émission est rendu comme `response_delivery_failed`, distinct d'une réponse MCP absente ou d'un résultat distant incertain.
+- **Restitution CLI/Admin** — la CLI Click et le shell affichent par défaut une vue corrélée lisible, avec détails ou JSON machine sur demande, conforme à la vue `/admin`.
+- **Verdicts conservateurs** — un appel MCP trop volumineux pour inspecter ses métadonnées reste tenu à une enveloppe terminale ; un flux SSE vide ne peut donc plus devenir un faux succès. Une annulation de mutation HTTP ou S3 indique `remote_result_uncertain`.
+- **Journal HTTP Admin** — le statut vient désormais du message ASGI effectivement accepté. Une erreur métier d'outil encapsulée par le SDK retourne `422`, et une exception avant réponse est journalisée `500`, jamais `200` ou `0`.
+
 ## [0.6.0] — 2026-08-29
 
 Migration majeure du SDK MCP et traçabilité d'exécution exploitable dans la console d'administration. Aucun changement de protocole requis côté agents existants : le transport Streamable HTTP historique reste accepté.

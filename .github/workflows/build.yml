@@ -69,8 +69,8 @@ jobs:
         # L'issue #2 ne visait que l'import serveur ; le client casse aussi en
         # mcp 2.0.0, ce qu'un simple healthcheck ne verrait pas.
         run: |
-          docker run --rm mcp-tools:ci python -c "from mcp.server.fastmcp import FastMCP, Context"
-          docker run --rm mcp-tools:ci python -c "from mcp import ClientSession; from mcp.client.streamable_http import streamablehttp_client"
+          docker run --rm mcp-tools:ci python -c "from mcp.server import MCPServer; from mcp.server.mcpserver import Context"
+          docker run --rm mcp-tools:ci python -c "from mcp import ClientSession; from mcp.client.streamable_http import streamable_http_client"
           docker run --rm --entrypoint python mcp-tools:ci -m pip check
 
       - name: Démarrage et healthcheck
@@ -98,6 +98,7 @@ jobs:
           cp .env.example .env
           sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=ci_e2e_$(openssl rand -hex 16)/" .env
           python3 -m pip install --quiet -r requirements.lock
+          python3 -m unittest discover -s tests -v
           python3 scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
 
       - name: Scan CVE des deux images
