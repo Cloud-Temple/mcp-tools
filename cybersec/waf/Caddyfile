@@ -1,0 +1,74 @@
+{
+	order rate_limit first
+	order coraza_waf after rate_limit
+	admin off
+}
+
+{$SITE_ADDRESS::8080} {
+	header {
+		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	rate_limit {
+		zone mcp {
+			match {
+				path /mcp*
+			}
+			key {remote_host}
+			events 1000
+			window 1m
+		}
+		zone admin {
+			match {
+				path /admin*
+			}
+			key {remote_host}
+			events 100
+			window 1m
+		}
+		zone global {
+			key {remote_host}
+			events 2000
+			window 1m
+		}
+	}
+
+	handle /mcp* {
+		reverse_proxy {$BACKEND:mcp-cybersec:8051} {
+			flush_interval -1
+			transport http {
+				read_timeout 1800s
+				write_timeout 1800s
+				response_header_timeout 1800s
+			}
+		}
+	}
+
+	handle /admin* {
+		reverse_proxy {$BACKEND:mcp-cybersec:8051} {
+			transport http {
+				read_timeout 300s
+				write_timeout 300s
+				response_header_timeout 300s
+			}
+		}
+	}
+
+	handle {
+		coraza_waf {
+			load_owasp_crs
+			directives `
+				Include @coraza.conf-recommended
+				Include @crs-setup.conf.example
+				Include @owasp_crs/*.conf
+				SecRuleEngine On
+				SecAction "id:900110,phase:1,pass,nolog,setvar:tx.inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4"
+			`
+		}
+		reverse_proxy {$BACKEND:mcp-cybersec:8051}
+	}
+}

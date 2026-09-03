@@ -4,6 +4,47 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-09-03
+
+Cette version est préparée sur la branche `codex/mcp-cybersec-0.7.0`. Elle n'est
+ni taguée ni déployée à ce stade.
+
+### Added
+- **`mcp-cybersec`, second service MCP déployable séparément** — image,
+  compose, WAF, port et réseaux propres. Le service historique `mcp-tools` et
+  son catalogue ne sont pas modifiés.
+- **Campagnes sous mandat** — création en état `prepared`, approbation
+  administrative avec snapshot immuable et hash, fenêtre temporelle,
+  capacités, limites de débit et arrêt d'urgence persistés dans S3.
+- **Outillage cyber borné (13 outils)** — `campaign`, `scope`, `network`,
+  `http`, `nmap`, `nuclei`, `evidence`, `shell`, `files`, `token` et les trois
+  outils système. Les jobs `nmap` et `nuclei` sont asynchrones, idempotents et
+  annulables.
+- **Console `/admin` et CLI Click cybersec** — suivi des campagnes, mandats,
+  jobs, preuves et tokens, avec journal d'activité corrélé réutilisant le
+  socle observabilité déjà qualifié.
+- **Recette laboratoire locale** — overlay Compose isolé, cible privée sans
+  port exposé, manifeste `laboratory=true` et templates Nuclei officiels
+  épinglés avec leur provenance.
+
+### Security
+- **Isolation stricte** — tenant obligatoire pour les tokens de mission,
+  préfixe S3 par tenant/campagne, accès `files` limité au workspace de sa
+  campagne, aucun accès agent au bucket, aux secrets ou au socket Docker.
+- **Contrôle de périmètre systématique** — validation DNS/IP/URL, refus des
+  plages privées, loopback et metadata, puis revalidation avant les actions
+  réseau et les redirections HTTP. Nuclei reçoit les IP déjà validées (avec
+  Host/SNI contrôlé), ce qui ferme la fenêtre de DNS rebinding. L'exception
+  laboratoire exige les trois conditions explicites : mode local, CIDR local
+  et mandat approuvé.
+- **Shell sans réseau** — le shell de campagne est lancé avec
+  `--network=none`, racine en lecture seule et ressources bornées. Les accès
+  réseau passent uniquement par les outils à mandat (`network`, `http`,
+  `nmap`, `nuclei`).
+- **Secrets séparés** — seules les variables `CYBERSEC_*`, prévues pour une
+  injection Vault, sont acceptées. Les identifiants, bucket et tokens de
+  `mcp-tools` ne sont jamais repris.
+
 ## [0.6.1] — 2026-08-29
 
 ### Added

@@ -1,0 +1,20 @@
+id: http-safe-reflection
+
+info:
+  name: HTTP Safe Reflection Marker
+  author: Cloud Temple
+  severity: info
+  description: >-
+    Verifies whether a harmless campaign marker is reflected by the target.
+    It is an observation to confirm, not an XSS exploit.
+  tags: internal,safe,reflection
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}?mcp_cybersec_marker=mcp-cybersec-safe-marker"
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "mcp-cybersec-safe-marker"

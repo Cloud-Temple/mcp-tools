@@ -1,0 +1,30 @@
+# Overlay de recette strictement locale. Ne pas utiliser en production.
+#
+# docker compose -f docker-compose.cybersec.yml -f docker-compose.cybersec.lab.yml up --build
+services:
+  mcp-cybersec:
+    environment:
+      CYBERSEC_LAB_MODE: "true"
+      CYBERSEC_LAB_ALLOWED_CIDRS: "172.30.0.0/24"
+    networks:
+      mcp-cybersec-network: {}
+      mcp-cybersec-scan-network: {}
+
+  cybersec-lab-target:
+    build:
+      context: .
+      dockerfile: cybersec/lab-target/Dockerfile
+    image: mcp-cybersec-lab-target:0.7.0
+    container_name: mcp-cybersec-lab-target
+    restart: "no"
+    networks:
+      mcp-cybersec-scan-network:
+        ipv4_address: 172.30.0.10
+        aliases:
+          - lab.target.test
+
+networks:
+  mcp-cybersec-scan-network:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

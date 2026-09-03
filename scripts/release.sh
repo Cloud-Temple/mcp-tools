@@ -68,10 +68,18 @@ echo "  ok  main propre, synchronisée, tag libre, CHANGELOG rédigé, aucun sec
 # --- Bump --------------------------------------------------------------------
 etape "Bump VERSION → ${VERSION_CIBLE}"
 echo "${VERSION_CIBLE}" > VERSION
-if grep -q '^LABEL version=' Dockerfile; then
-    sed -i.bak "s/^LABEL version=.*/LABEL version=\"${VERSION_CIBLE}\"/" Dockerfile && rm -f Dockerfile.bak
-fi
-echo "  VERSION=$(cat VERSION) · $(grep '^LABEL version=' Dockerfile)"
+DOCKERFILES=(Dockerfile)
+[[ -f Dockerfile.cybersec ]] && DOCKERFILES+=(Dockerfile.cybersec)
+for dockerfile in "${DOCKERFILES[@]}"; do
+    if grep -q '^LABEL version=' "$dockerfile"; then
+        sed -i.bak "s/^LABEL version=.*/LABEL version=\"${VERSION_CIBLE}\"/" "$dockerfile"
+        rm -f "${dockerfile}.bak"
+    fi
+done
+echo "  VERSION=$(cat VERSION)"
+for dockerfile in "${DOCKERFILES[@]}"; do
+    grep '^LABEL version=' "$dockerfile" || true
+done
 
 # --- Gardes ------------------------------------------------------------------
 etape "Gardes de cohérence et de reproductibilité"
@@ -82,14 +90,14 @@ python3 scripts/test_service.py --test reproducibility --no-docker \
 
 if [[ "$DRY_RUN" == "1" ]]; then
     etape "DRY_RUN — annulation du bump, rien n'est publié"
-    git checkout -- VERSION Dockerfile
+    git checkout -- VERSION "${DOCKERFILES[@]}"
     echo "  ok  tous les contrôles passent ; relancer sans DRY_RUN pour publier"
     exit 0
 fi
 
 # --- Publication atomique ----------------------------------------------------
 etape "Commit, tag et publication"
-git add VERSION Dockerfile
+git add VERSION "${DOCKERFILES[@]}"
 git commit -m "v${VERSION_CIBLE}
 
 $(sed -n "/^## \[${VERSION_CIBLE}\]/,/^## \[/p" CHANGELOG.md | sed '1d;$d' | head -40)
