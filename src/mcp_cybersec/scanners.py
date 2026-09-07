@@ -94,7 +94,7 @@ class DockerScannerRunner:
             f"--pids-limit={self.settings.cybersec_scanner_pids_limit}",
             "--security-opt=no-new-privileges:true",
             "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m",
-            f"--mount=type=bind,src={output_dir.resolve()},dst=/output,rw",
+            f"--mount=type=bind,src={output_dir.resolve()},dst=/output",
             "--user=10001:10001",
             image,
             *arguments,
@@ -180,11 +180,11 @@ def build_nmap_arguments(
     if profile == "full-tcp" and not all_tcp:
         raise ValidationError("Le profil full-tcp exige targets.all_tcp=true dans le mandat approuvé.")
 
-    arguments = ["-n", "-sT", f"-T{timing}", "--max-rate", str(max_rate), "--host-timeout", f"{timeout}s", "-oX", "/output/nmap.xml", "-oN", "/output/nmap.txt"]
+    arguments = ["-n", f"-T{timing}", "--max-rate", str(max_rate), "--host-timeout", f"{timeout}s", "-oX", "/output/nmap.xml", "-oN", "/output/nmap.txt"]
     if discovery_only:
         arguments.append("-sn")
     else:
-        arguments.append("-Pn")
+        arguments.extend(["-sT", "-Pn"])
         if profile == "full-tcp":
             arguments.append("-p-")
         elif profile == "top-ports" and all_tcp:

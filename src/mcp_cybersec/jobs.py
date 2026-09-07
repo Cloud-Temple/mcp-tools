@@ -255,7 +255,9 @@ class ScanJobManager:
             # Vérification synchrone avant que Docker ne reçoive la commande.
             if not await should_continue():
                 raise AuthorizationError("Campagne annulée, expirée ou périmètre modifié avant le scan.")
-            with tempfile.TemporaryDirectory(prefix=f"{job['job_id']}-") as directory:
+            runtime_root = Path(self.settings.cybersec_runtime_host_dir)
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=f"{job['job_id']}-", dir=runtime_root) as directory:
                 outcome = await self.runner.run(
                     job["tool"], job["job_id"], job["arguments"], Path(directory), should_continue
                 )

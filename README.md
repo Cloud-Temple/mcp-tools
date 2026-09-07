@@ -190,10 +190,16 @@ recette dédiée et un `CYBERSEC_ADMIN_BOOTSTRAP_KEY` non par défaut, injectés
 Vault ou un fichier d'environnement local non suivi.
 
 ```bash
+install -d -m 1777 /tmp/mcp-cybersec-runtime
 docker compose -f docker-compose.cybersec.yml up --build
 curl http://localhost:8081/health
 python scripts/mcp_cybersec_cli.py --url http://localhost:8081 about
 ```
+
+`CYBERSEC_RUNTIME_HOST_DIR` doit être un répertoire temporaire dédié,
+préprovisionné en mode `01777` et monté au même chemin dans le service. Il est
+nécessaire aux bind mounts des runners Docker ; il ne porte aucune donnée
+durable, les preuves restent dans S3.
 
 L'overlay `docker-compose.cybersec.lab.yml` ajoute une cible privée sans port
 exposé, dans `172.30.0.0/24`. Il ne doit être utilisé qu'après un GO humain de

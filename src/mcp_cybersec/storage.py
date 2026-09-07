@@ -129,7 +129,12 @@ class S3ObjectStore:
             aws_access_key_id=settings.cybersec_s3_access_key_id,
             aws_secret_access_key=settings.cybersec_s3_secret_access_key,
             region_name=settings.cybersec_s3_region_name,
-            config=Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "standard"}),
+            config=Config(
+                signature_version="s3v4",
+                connect_timeout=settings.cybersec_s3_connect_timeout_seconds,
+                read_timeout=settings.cybersec_s3_read_timeout_seconds,
+                retries={"total_max_attempts": settings.cybersec_s3_total_max_attempts, "mode": "standard"},
+            ),
         )
         self.bucket = settings.cybersec_s3_bucket_name
 

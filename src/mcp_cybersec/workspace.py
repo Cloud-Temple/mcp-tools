@@ -46,7 +46,7 @@ class DockerShellRunner:
             f"--pids-limit={self.settings.cybersec_shell_pids_limit}",
             "--security-opt=no-new-privileges:true",
             "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m",
-            f"--mount=type=bind,src={workspace.resolve()},dst=/workspace,rw",
+            f"--mount=type=bind,src={workspace.resolve()},dst=/workspace",
             "--workdir=/workspace", "--user=10001:10001",
             self.settings.cybersec_shell_image, shell, self._FLAGS[shell], command,
         ]
@@ -111,7 +111,9 @@ class ShellService:
             raise AuthorizationError("Campagne close : shell et écriture de workspace refusés.")
         input_paths = self._paths(input_paths or [], "input_paths")
         output_paths = self._paths(output_paths or [], "output_paths")
-        with tempfile.TemporaryDirectory(prefix="cybersec-shell-") as temp:
+        runtime_root = Path(self.settings.cybersec_runtime_host_dir)
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="cybersec-shell-", dir=runtime_root) as temp:
             workspace = Path(temp) / "workspace"
             workspace.mkdir()
             workspace.chmod(0o777)

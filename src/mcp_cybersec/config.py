@@ -30,6 +30,15 @@ class CybersecSettings(BaseSettings):
     cybersec_s3_bucket_name: str = "mcp-cybersec"
     cybersec_s3_region_name: str = "fr1"
     cybersec_s3_prefix: str = "mcp-cybersec"
+    # Les opérations de mandat et de job doivent échouer vite si S3 est
+    # indisponible : aucun scan ne doit pouvoir partir sans persistance.
+    cybersec_s3_connect_timeout_seconds: float = Field(default=3.0, ge=1.0, le=30.0)
+    cybersec_s3_read_timeout_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
+    cybersec_s3_total_max_attempts: int = Field(default=2, ge=1, le=5)
+
+    # Chemin identique sur l'hôte et dans le service : le démon Docker y voit
+    # les artefacts temporaires à monter dans les runners fixes.
+    cybersec_runtime_host_dir: str = "/tmp/mcp-cybersec-runtime"
 
     # Vault ne fournit jamais sa valeur à un outil : l'agent Vault peut
     # injecter les variables CYBERSEC_S3_* avant le démarrage. Ces références

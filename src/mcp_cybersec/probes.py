@@ -212,12 +212,14 @@ class DockerHttpCommandRunner:
             raise ValidationError("URL HTTP invalide.")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         name = f"mcp-cybersec-http-{uuid.uuid4().hex[:16]}"
-        with tempfile.TemporaryDirectory(prefix="cybersec-http-") as temp:
+        runtime_root = Path(self.settings.cybersec_runtime_host_dir)
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="cybersec-http-", dir=runtime_root) as temp:
             root = Path(temp)
             output = root / "output"
             output.mkdir()
             output.chmod(0o777)
-            mounts = [f"--mount=type=bind,src={output.resolve()},dst=/output,rw"]
+            mounts = [f"--mount=type=bind,src={output.resolve()},dst=/output"]
             command = [
                 "curl", "--silent", "--show-error", "--request", method,
                 "--max-time", str(timeout), "--connect-timeout", str(timeout),
@@ -230,7 +232,7 @@ class DockerHttpCommandRunner:
                 input_file = root / "body.bin"
                 input_file.write_bytes(body)
                 input_file.chmod(0o644)
-                mounts.append(f"--mount=type=bind,src={input_file.resolve()},dst=/input/body.bin,ro")
+                mounts.append(f"--mount=type=bind,src={input_file.resolve()},dst=/input/body.bin,readonly")
                 command.extend(["--data-binary", "@/input/body.bin"])
             command.append(url)
             docker_command = [

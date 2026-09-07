@@ -11,7 +11,9 @@ Avant tout démarrage hors laboratoire, vérifier :
    rollout ;
 3. les images d'exécution construites à partir du commit/tag approuvé ;
 4. les réseaux scanner et le WAF cybersec séparés ;
-5. un mandat écrit, tenant identifié, fenêtre, scope, capacités et limites
+5. `CYBERSEC_RUNTIME_HOST_DIR` préprovisionné en mode `01777`, dédié aux
+   artefacts éphémères et monté au même chemin dans le service ;
+6. un mandat écrit, tenant identifié, fenêtre, scope, capacités et limites
    explicitement approuvés.
 
 Un healthcheck vert ou un catalogue MCP de 13 outils ne vaut pas autorisation
@@ -22,6 +24,7 @@ de scanner une cible.
 La qualification minimale ne fait aucun appel de sécurité vers une cible :
 
 ```bash
+install -d -m 1777 "${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}"
 docker compose -f docker-compose.cybersec.yml config
 docker compose -f docker-compose.cybersec.yml build
 docker compose -f docker-compose.cybersec.yml up -d

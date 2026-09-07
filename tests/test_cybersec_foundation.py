@@ -2,15 +2,18 @@
 """Contrats de sûreté du lot campagne/périmètre, sans DNS réel ni S3."""
 
 import asyncio
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.mcp_cybersec.campaigns import CampaignService
 from src.mcp_cybersec.config import CybersecSettings
 from src.mcp_cybersec.identity import AuthorizationError
 from src.mcp_cybersec.models import ValidationError
 from src.mcp_cybersec.scope import ScopeGuard
-from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore, ObjectNotFound
+from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore, ObjectNotFound, S3ObjectStore
 
 
 MISSION = {
@@ -154,6 +157,28 @@ class CybersecFoundationTests(unittest.IsolatedAsyncioTestCase):
         decision = await guard.check(campaign["campaign_id"], "lab.target.test", MISSION, required_test_class="recon")
         self.assertTrue(decision["allowed"])
         self.assertEqual(["172.30.0.10"], decision["addresses"])
+
+    async def test_s3_client_has_bounded_runtime_timeouts(self):
+        captured = {}
+
+        def client(*_args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        with patch.dict(sys.modules, {"boto3": SimpleNamespace(client=client)}):
+            S3ObjectStore(CybersecSettings(
+                cybersec_s3_endpoint_url="https://s3.example.test",
+                cybersec_s3_access_key_id="test",
+                cybersec_s3_secret_access_key="test",
+                cybersec_s3_connect_timeout_seconds=4,
+                cybersec_s3_read_timeout_seconds=6,
+                cybersec_s3_total_max_attempts=2,
+            ))
+
+        config = captured["config"]
+        self.assertEqual(4, config.connect_timeout)
+        self.assertEqual(6, config.read_timeout)
+        self.assertEqual(2, config.retries["total_max_attempts"])
 
 
 if __name__ == "__main__":

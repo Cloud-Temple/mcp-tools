@@ -14,7 +14,9 @@ services:
     container_name: mcp-cybersec-network-build
     entrypoint: ["true"]
     restart: "no"
-    networks: [mcp-cybersec-network]
+    # Ce conteneur one-shot ancre le bridge scanner, qui doit exister avant
+    # le premier job mais ne doit pas connecter le service MCP lui-même.
+    networks: [mcp-cybersec-scan-network]
 
   cybersec-shell-image:
     build:
@@ -63,13 +65,24 @@ services:
       CYBERSEC_S3_BUCKET_NAME: ${CYBERSEC_S3_BUCKET_NAME:-mcp-cybersec}
       CYBERSEC_S3_REGION_NAME: ${CYBERSEC_S3_REGION_NAME:-fr1}
       CYBERSEC_S3_PREFIX: ${CYBERSEC_S3_PREFIX:-mcp-cybersec}
+      CYBERSEC_S3_CONNECT_TIMEOUT_SECONDS: ${CYBERSEC_S3_CONNECT_TIMEOUT_SECONDS:-3}
+      CYBERSEC_S3_READ_TIMEOUT_SECONDS: ${CYBERSEC_S3_READ_TIMEOUT_SECONDS:-5}
+      CYBERSEC_S3_TOTAL_MAX_ATTEMPTS: ${CYBERSEC_S3_TOTAL_MAX_ATTEMPTS:-2}
+      CYBERSEC_RUNTIME_HOST_DIR: ${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}
       CYBERSEC_SCANNER_NETWORK: mcp-cybersec-scan-network
+      # Recette locale uniquement : la validation de périmètre reste fail-closed
+      # tant qu'un CIDR explicite et un mandat laboratory=true ne sont pas fournis.
+      CYBERSEC_LAB_MODE: ${CYBERSEC_LAB_MODE:-false}
+      CYBERSEC_LAB_ALLOWED_CIDRS: ${CYBERSEC_LAB_ALLOWED_CIDRS:-}
       ACTIVITY_MAX_EVENTS: ${CYBERSEC_ACTIVITY_MAX_EVENTS:-5000}
       ACTIVITY_MAX_AGE_SECONDS: ${CYBERSEC_ACTIVITY_MAX_AGE_SECONDS:-86400}
     volumes:
       # Socket réservé au code interne aux images fixes ; aucun tool MCP ne
       # le monte ni ne peut choisir image, réseau, volume ou commande.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Répertoire éphémère pré-provisionné (01777), monté au même chemin de
+      # part et d'autre pour les bind mounts Docker des runners fixes.
+      - ${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}:${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}
     group_add:
       - "${DOCKER_GID:-0}"
     depends_on:

@@ -5,11 +5,14 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from src.mcp_cybersec.campaigns import CampaignService
 from src.mcp_cybersec.config import CybersecSettings
 from src.mcp_cybersec.jobs import ScanJobManager
 from src.mcp_cybersec.models import ValidationError
+from src.mcp_cybersec.scanners import DockerScannerRunner, build_nmap_arguments
 from src.mcp_cybersec.scope import ScopeGuard
 from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore
 
@@ -26,12 +29,14 @@ ADMIN = {"client_name": "human-admin", "permissions": ["admin", "access"], "tool
 class FakeRunner:
     def __init__(self, wait=False):
         self.calls = []
+        self.output_dirs = []
         self.cancelled = set()
         self.wait = wait
         self.started = asyncio.Event()
 
     async def run(self, tool, job_id, arguments, output_dir: Path, should_continue):
         self.calls.append((tool, job_id, arguments))
+        self.output_dirs.append(output_dir)
         self.started.set()
         while self.wait and job_id not in self.cancelled:
             if not await should_continue():
@@ -67,7 +72,12 @@ class FakeRunner:
 class CybersecJobTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.repository = CybersecRepository(MemoryObjectStore(), "cybersec-test")
-        self.settings = CybersecSettings(cybersec_job_cancel_poll_seconds=0.2)
+        self.runtime = TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+        self.settings = CybersecSettings(
+            cybersec_job_cancel_poll_seconds=0.2,
+            cybersec_runtime_host_dir=self.runtime.name,
+        )
         self.campaigns = CampaignService(self.repository, self.settings)
 
         async def resolver(_host):
@@ -161,6 +171,56 @@ class CybersecJobTests(unittest.IsolatedAsyncioTestCase):
         job = await self.repository.get_job("tenant-a", self.campaign["campaign_id"], started["job_id"])
         self.assertEqual("interrupted", job["status"])
         self.assertIn(f"{started['job_id']}/nmap.xml", job["evidence_refs"])
+
+    async def test_real_scanner_runner_uses_valid_output_mount(self):
+        captured = {}
+
+        class Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_subprocess(*args, **kwargs):
+            captured["command"] = args
+            captured["kwargs"] = kwargs
+            return Process()
+
+        async def should_continue():
+            return True
+
+        runner = DockerScannerRunner(self.settings)
+        with TemporaryDirectory() as output:
+            with patch("src.mcp_cybersec.scanners.asyncio.create_subprocess_exec", fake_subprocess):
+                result = await runner.run("nmap", "job_abcdef", ["-sn", "192.0.2.1"], Path(output), should_continue)
+
+        command = captured["command"]
+        self.assertEqual("docker", command[0])
+        self.assertTrue(any(value.endswith(",dst=/output") for value in command))
+        self.assertNotIn(",rw", " ".join(command))
+        self.assertEqual("completed", result["status"])
+
+    async def test_job_uses_configured_shared_runtime_directory(self):
+        started = await self.manager.start_nmap(
+            campaign_id=self.campaign["campaign_id"], target="lab.example.test",
+            idempotency_key="shared-runtime-root", token_info=MISSION,
+            profile="quick", ports=[443],
+        )
+        await self._wait_jobs()
+        self.assertTrue(self.runner.output_dirs[0].name.startswith(f"{started['job_id']}-"))
+        self.assertEqual(Path(self.runtime.name), self.runner.output_dirs[0].parent)
+
+    async def test_discovery_only_arguments_exclude_tcp_connect_scan(self):
+        arguments = build_nmap_arguments(
+            profile="quick", ports=[443], all_tcp=False, discovery_only=True,
+            service_detection=False, safe_scripts=False, timing=3, max_rate=100,
+            timeout=600, targets=["192.0.2.1"],
+        )
+        self.assertIn("-sn", arguments)
+        self.assertNotIn("-sT", arguments)
+        self.assertNotIn("-Pn", arguments)
+        self.assertNotIn("-p", arguments)
+        self.assertEqual("192.0.2.1", arguments[-1])
 
 
 if __name__ == "__main__":

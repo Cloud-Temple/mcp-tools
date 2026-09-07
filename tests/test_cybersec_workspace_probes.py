@@ -11,7 +11,7 @@ from src.mcp_cybersec.campaigns import CampaignService
 from src.mcp_cybersec.config import CybersecSettings
 from src.mcp_cybersec.identity import AuthorizationError
 from src.mcp_cybersec.models import ValidationError
-from src.mcp_cybersec.probes import HttpService
+from src.mcp_cybersec.probes import DockerHttpCommandRunner, HttpService
 from src.mcp_cybersec.scope import ScopeGuard
 from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore
 from src.mcp_cybersec.workspace import DockerShellRunner, EvidenceService, FilesService, ShellService
@@ -46,7 +46,9 @@ class FakeShellRunner:
 class CybersecWorkspaceProbesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.repository = CybersecRepository(MemoryObjectStore(), "cybersec-test")
-        self.settings = CybersecSettings()
+        self.runtime = TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+        self.settings = CybersecSettings(cybersec_runtime_host_dir=self.runtime.name)
         self.campaigns = CampaignService(self.repository, self.settings)
         async def resolver(host):
             return ["93.184.216.34"] if host == "lab.example.test" else ["203.0.113.10"]
@@ -134,7 +136,38 @@ class CybersecWorkspaceProbesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--cap-drop=ALL", command)
         self.assertIn("--security-opt=no-new-privileges:true", command)
         self.assertNotIn("/var/run/docker.sock", " ".join(command))
+        self.assertTrue(any(value.endswith(",dst=/workspace") for value in command))
+        self.assertNotIn(",rw", " ".join(command))
         self.assertTrue(result["network"] is False)
+
+    async def test_real_http_runner_uses_valid_readwrite_and_readonly_mounts(self):
+        captured = {}
+
+        class Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_subprocess(*args, **kwargs):
+            captured["command"] = args
+            captured["kwargs"] = kwargs
+            return Process()
+
+        runner = DockerHttpCommandRunner(self.settings)
+        with patch("src.mcp_cybersec.probes.asyncio.create_subprocess_exec", fake_subprocess):
+            result = await runner.run_once(
+                url="https://lab.example.test/", address="93.184.216.34", method="POST",
+                headers={}, body=b"payload", timeout=5,
+            )
+
+        command = captured["command"]
+        self.assertEqual("docker", command[0])
+        self.assertTrue(any(value.endswith(",dst=/output") for value in command))
+        self.assertTrue(any(value.endswith(",dst=/input/body.bin,readonly") for value in command))
+        self.assertNotIn(",rw", " ".join(command))
+        self.assertNotIn(",ro", " ".join(command))
+        self.assertEqual("success", result["status"])
 
     async def test_evidence_export_is_written_inside_workspace_only(self):
         evidence = EvidenceService(self.repository, self.campaigns, self.settings)
