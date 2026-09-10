@@ -1,0 +1,47 @@
+# =============================================================================
+# MCP Cybersec — service séparé v0.7.0
+# =============================================================================
+FROM python:3.11-slim@sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51c34de3f08cbb7
+
+LABEL maintainer="Cloud Temple"
+LABEL description="MCP Cybersec — évaluations actives sous mandat approuvé"
+LABEL version="0.7.0"
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI interne uniquement : l'API MCP n'expose aucune primitive Docker.
+ARG DOCKER_VERSION=29.7.2
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then ARCH="aarch64"; \
+    elif [ "$ARCH" = "amd64" ]; then ARCH="x86_64"; fi && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/docker-${DOCKER_VERSION}.tgz" \
+    | tar xz -C /tmp && mv /tmp/docker/docker /usr/local/bin/docker && rm -rf /tmp/docker
+
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock && pip check
+
+RUN groupadd -r mcp && useradd -r -g mcp -d /app -s /sbin/nologin mcp
+
+COPY VERSION ./
+COPY src/ ./src/
+# La CLI fait partie du même artefact de qualification que le serveur. Elle
+# appelle strictement le protocole MCP ; elle n'a aucun accès local aux stores.
+COPY scripts/mcp_cybersec_cli.py scripts/mcp_cybersec_cli.py
+COPY scripts/cli/ scripts/cli/
+
+RUN chown -R mcp:mcp /app
+
+EXPOSE 8051
+USER mcp
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:8051/health -o /dev/null 2>/dev/null
+
+ENTRYPOINT ["python", "-m", "src.mcp_cybersec.server"]

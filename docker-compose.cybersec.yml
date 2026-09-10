@@ -1,0 +1,131 @@
+# =============================================================================
+# mcp-cybersec v0.7.0 — environnement local séparé de mcp-tools
+#
+# Démarrage : docker compose -f docker-compose.cybersec.yml up --build
+# Aucun scanner ne démarre seul : seules les images sont construites. Les jobs
+# restent bloqués en S3 tant qu'une campagne n'est pas approuvée par un admin.
+# =============================================================================
+services:
+  cybersec-network-image:
+    build:
+      context: .
+      dockerfile: cybersec/network/Dockerfile
+    image: mcp-cybersec-network:0.7.0
+    container_name: mcp-cybersec-network-build
+    entrypoint: ["true"]
+    restart: "no"
+    # Ce conteneur one-shot ancre le bridge scanner, qui doit exister avant
+    # le premier job mais ne doit pas connecter le service MCP lui-même.
+    networks: [mcp-cybersec-scan-network]
+
+  cybersec-shell-image:
+    build:
+      context: .
+      dockerfile: cybersec/shell/Dockerfile
+    image: mcp-cybersec-shell:0.7.0
+    container_name: mcp-cybersec-shell-build
+    entrypoint: ["true"]
+    restart: "no"
+    networks: [mcp-cybersec-network]
+
+  cybersec-nmap-image:
+    build:
+      context: .
+      dockerfile: cybersec/nmap/Dockerfile
+    image: mcp-cybersec-nmap:0.7.0
+    container_name: mcp-cybersec-nmap-build
+    entrypoint: ["true"]
+    restart: "no"
+    networks: [mcp-cybersec-network]
+
+  cybersec-nuclei-image:
+    build:
+      context: .
+      dockerfile: cybersec/nuclei/Dockerfile
+    image: mcp-cybersec-nuclei:0.7.0
+    container_name: mcp-cybersec-nuclei-build
+    entrypoint: ["true"]
+    restart: "no"
+    networks: [mcp-cybersec-network]
+
+  mcp-cybersec:
+    build:
+      context: .
+      dockerfile: Dockerfile.cybersec
+    image: mcp-cybersec:0.7.0
+    container_name: mcp-cybersec-service
+    environment:
+      CYBERSEC_MCP_SERVER_NAME: mcp-cybersec
+      CYBERSEC_MCP_SERVER_HOST: 0.0.0.0
+      CYBERSEC_MCP_SERVER_PORT: 8051
+      CYBERSEC_ADMIN_BOOTSTRAP_KEY: ${CYBERSEC_ADMIN_BOOTSTRAP_KEY:?CYBERSEC_ADMIN_BOOTSTRAP_KEY requis}
+      CYBERSEC_S3_ENDPOINT_URL: ${CYBERSEC_S3_ENDPOINT_URL:?CYBERSEC_S3_ENDPOINT_URL requis}
+      CYBERSEC_S3_ACCESS_KEY_ID: ${CYBERSEC_S3_ACCESS_KEY_ID:?CYBERSEC_S3_ACCESS_KEY_ID requis}
+      CYBERSEC_S3_SECRET_ACCESS_KEY: ${CYBERSEC_S3_SECRET_ACCESS_KEY:?CYBERSEC_S3_SECRET_ACCESS_KEY requis}
+      CYBERSEC_S3_BUCKET_NAME: ${CYBERSEC_S3_BUCKET_NAME:-mcp-cybersec}
+      CYBERSEC_S3_REGION_NAME: ${CYBERSEC_S3_REGION_NAME:-fr1}
+      CYBERSEC_S3_PREFIX: ${CYBERSEC_S3_PREFIX:-mcp-cybersec}
+      CYBERSEC_S3_CONNECT_TIMEOUT_SECONDS: ${CYBERSEC_S3_CONNECT_TIMEOUT_SECONDS:-3}
+      CYBERSEC_S3_READ_TIMEOUT_SECONDS: ${CYBERSEC_S3_READ_TIMEOUT_SECONDS:-5}
+      CYBERSEC_S3_TOTAL_MAX_ATTEMPTS: ${CYBERSEC_S3_TOTAL_MAX_ATTEMPTS:-2}
+      CYBERSEC_RUNTIME_HOST_DIR: ${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}
+      CYBERSEC_SCANNER_NETWORK: mcp-cybersec-scan-network
+      # Recette locale uniquement : la validation de périmètre reste fail-closed
+      # tant qu'un CIDR explicite et un mandat laboratory=true ne sont pas fournis.
+      CYBERSEC_LAB_MODE: ${CYBERSEC_LAB_MODE:-false}
+      CYBERSEC_LAB_ALLOWED_CIDRS: ${CYBERSEC_LAB_ALLOWED_CIDRS:-}
+      ACTIVITY_MAX_EVENTS: ${CYBERSEC_ACTIVITY_MAX_EVENTS:-5000}
+      ACTIVITY_MAX_AGE_SECONDS: ${CYBERSEC_ACTIVITY_MAX_AGE_SECONDS:-86400}
+    volumes:
+      # Socket réservé au code interne aux images fixes ; aucun tool MCP ne
+      # le monte ni ne peut choisir image, réseau, volume ou commande.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Répertoire éphémère pré-provisionné (01777), monté au même chemin de
+      # part et d'autre pour les bind mounts Docker des runners fixes.
+      - ${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}:${CYBERSEC_RUNTIME_HOST_DIR:-/tmp/mcp-cybersec-runtime}
+    group_add:
+      - "${DOCKER_GID:-0}"
+    depends_on:
+      cybersec-network-image: { condition: service_completed_successfully }
+      cybersec-shell-image: { condition: service_completed_successfully }
+      cybersec-nmap-image: { condition: service_completed_successfully }
+      cybersec-nuclei-image: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8051/health -o /dev/null 2>/dev/null"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [mcp-cybersec-network]
+
+  cybersec-waf:
+    build: ./waf
+    container_name: mcp-cybersec-waf
+    ports:
+      - "${CYBERSEC_WAF_PORT:-8081}:8080"
+    environment:
+      SITE_ADDRESS: ${CYBERSEC_SITE_ADDRESS:-:8080}
+      BACKEND: mcp-cybersec:8051
+    volumes:
+      - ./cybersec/waf/Caddyfile:/etc/caddy/Caddyfile:ro
+      - cybersec_waf_data:/data
+      - cybersec_waf_config:/config
+    depends_on:
+      mcp-cybersec: { condition: service_started }
+    restart: unless-stopped
+    networks: [mcp-cybersec-network]
+
+volumes:
+  cybersec_waf_data:
+    name: mcp-cybersec-waf-data
+  cybersec_waf_config:
+    name: mcp-cybersec-waf-config
+
+networks:
+  mcp-cybersec-network:
+    name: mcp-cybersec-network
+    driver: bridge
+  mcp-cybersec-scan-network:
+    name: mcp-cybersec-scan-network
+    driver: bridge

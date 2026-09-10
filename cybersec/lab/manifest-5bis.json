@@ -1,0 +1,28 @@
+{
+  "laboratory": true,
+  "mandate_ref": "LAB-5BIS-LOCAL-0.7.0",
+  "client": "Cloud Temple — laboratoire local",
+  "owner": "local-lab-owner",
+  "source_address": "172.30.0.0/24",
+  "emergency_contact": "local-lab-stop",
+  "window": {
+    "starts_at": "2026-09-03T00:00:00+00:00",
+    "ends_at": "2026-12-31T23:59:59+00:00"
+  },
+  "targets": {
+    "domains": ["lab.target.test"],
+    "ips": [],
+    "cidrs": [],
+    "urls": ["http://lab.target.test/"],
+    "ports": [80]
+  },
+  "exclusions": {
+    "domains": [],
+    "ips": [],
+    "cidrs": [],
+    "urls": []
+  },
+  "allowed_test_classes": ["recon", "active_standard"],
+  "rate_limit": 5,
+  "concurrency": 1
+}

@@ -69,8 +69,8 @@ jobs:
         # L'issue #2 ne visait que l'import serveur ; le client casse aussi en
         # mcp 2.0.0, ce qu'un simple healthcheck ne verrait pas.
         run: |
-          docker run --rm mcp-tools:ci python -c "from mcp.server import MCPServer; from mcp.server.mcpserver import Context"
-          docker run --rm mcp-tools:ci python -c "from mcp import ClientSession; from mcp.client.streamable_http import streamable_http_client"
+          docker run --rm --entrypoint python mcp-tools:ci -c "from mcp.server import MCPServer; from mcp.server.mcpserver import Context"
+          docker run --rm --entrypoint python mcp-tools:ci -c "from mcp import ClientSession; from mcp.client.streamable_http import streamable_http_client"
           docker run --rm --entrypoint python mcp-tools:ci -m pip check
 
       - name: Démarrage et healthcheck
@@ -86,35 +86,34 @@ jobs:
           docker rm -f ci-svc
 
       - name: Recette E2E — sous-ensemble hermétique
-        # 132 assertions sur 9 outils, sans aucun secret externe.
-        # EXCLUS volontairement, et c'est documenté plutôt que masqué :
-        #   - token / admin  : exigent des identifiants S3 (Token Manager)
-        #   - perplexity(×2) : exigent une clé API facturée
-        #   - ssh            : les cas négatifs passent ici via les autres tests,
-        #                      les cas positifs exigent une cible SSH réelle
-        # Ces quatre-là restent dans la recette de release, exécutée à la main
-        # avec les secrets — voir README §4.
+        # Health/MCP, auth, date, calc sandboxé, WAF et parité CLI/admin,
+        # sans cible Internet, écriture S3 ni secret externe. La recette
+        # complète reste une qualification manuelle — voir README §4.
         run: |
           cp .env.example .env
-          sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=ci_e2e_$(openssl rand -hex 16)/" .env
+          CI_ADMIN_BOOTSTRAP_KEY="ci_e2e_$(openssl rand -hex 16)"
+          sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=${CI_ADMIN_BOOTSTRAP_KEY}/" .env
           python3 -m pip install --quiet -r requirements.lock
           python3 -m unittest discover -s tests -v
-          python3 scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
+          DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)" MCP_TOKEN="${CI_ADMIN_BOOTSTRAP_KEY}" \
+            python3 scripts/test_service.py --test date,calc,waf,cli-smoke,auth
 
       - name: Scan CVE des deux images
         # `pip-audit` n'audite QUE le Python : il ne voit ni la couche OS, ni la
         # stdlib Go embarquée dans le binaire Docker CLI statique. D'où ce scan.
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          command: cves
-          image: mcp-tools:ci
-          only-severity: critical,high
-          exit-code: false
+          scan-type: image
+          image-ref: mcp-tools:ci
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: "0"
 
       - name: Scan CVE sandbox
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          command: cves
-          image: mcp-tools-sandbox:ci
-          only-severity: critical,high
-          exit-code: false
+          scan-type: image
+          image-ref: mcp-tools-sandbox:ci
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: "0"

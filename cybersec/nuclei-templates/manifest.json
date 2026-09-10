@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "official": {
+    "repository": "https://github.com/projectdiscovery/nuclei-templates",
+    "revision": "v10.4.2",
+    "commit": "8de881615f58b3427f0424338779d28de68d2ee1",
+    "files": [
+      "http/technologies/tech-detect.yaml",
+      "http/misconfiguration/http-missing-security-headers.yaml"
+    ]
+  },
+  "internal": {
+    "reviewed_files": [
+      "internal/http-safe-reflection.yaml"
+    ],
+    "policy": "Les templates internes sont revus, versionnés dans ce dépôt et ne peuvent être fournis dynamiquement par un agent."
+  },
+  "runtime_policy": {
+    "dynamic_update": false,
+    "dynamic_template": false,
+    "redirects": false,
+    "oast": false,
+    "destructive_tags": false
+  }
+}

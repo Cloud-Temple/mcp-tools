@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MCP Cybersec — Administration</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0f0f23; --panel:#17172e; --line:#303057; --text:#ececf5; --muted:#a0a0bb; --accent:#41a890; --warn:#e7a843; --danger:#ed6b73; }
+    * { box-sizing:border-box } body { margin:0; padding:24px; background:var(--bg); color:var(--text); font:14px system-ui,-apple-system,sans-serif }
+    h1 { margin:0 0 18px; font-size:20px } .bar, .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px }
+    .bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center } input,button { border:1px solid var(--line); border-radius:5px; padding:8px; background:#101024; color:var(--text) } input { min-width:210px } button { cursor:pointer; background:var(--accent); color:#061b17; font-weight:650 } button.warn { background:var(--warn) } button.danger { background:var(--danger); color:#2d070a } button.secondary { background:#2d2d55; color:var(--text) }
+    table { border-collapse:collapse; width:100% } th,td { border-bottom:1px solid var(--line); padding:9px; text-align:left; vertical-align:top } th { color:var(--muted); font-weight:600 } .state { font-weight:700 } .prepared { color:var(--warn) } .approved,.running { color:var(--accent) } .cancelled,.failed,.partial,.expired { color:var(--danger) } pre { margin:0; max-height:340px; overflow:auto; white-space:pre-wrap; color:#d7d7eb } .muted { color:var(--muted) }
+  </style>
+</head>
+<body>
+  <h1>🛡️ MCP Cybersec — campagnes sous mandat</h1>
+  <div class="bar">
+    <input id="token" type="password" autocomplete="off" placeholder="Bearer admin (non conservé)">
+    <input id="tenant" placeholder="Filtre tenant (optionnel)">
+    <button onclick="loadCampaigns()">Charger les campagnes</button>
+    <button class="secondary" onclick="loadActivity()">Activité</button>
+    <span id="status" class="muted">Le bearer reste uniquement dans la mémoire de cette page.</span>
+  </div>
+  <div class="panel"><strong>Règle de sécurité :</strong> une campagne <code>prepared</code> n'émet aucun trafic. L'approbation fige le hash du mandat ; l'arrêt demande l'interruption des jobs actifs.</div>
+  <div class="panel"><table><thead><tr><th>Campagne</th><th>Tenant</th><th>État</th><th>Fenêtre</th><th>Profils</th><th>Actions</th></tr></thead><tbody id="campaigns"><tr><td colspan="6" class="muted">Chargez les campagnes.</td></tr></tbody></table></div>
+  <div class="panel"><strong>Détails / résultats</strong><pre id="details">Aucune sélection.</pre></div>
+  <script>
+    const $ = id => document.getElementById(id);
+    function headers(){ const token=$('token').value.trim(); return token ? {'Authorization':'Bearer '+token,'Content-Type':'application/json'} : {'Content-Type':'application/json'}; }
+    function tenantQ(){ const t=$('tenant').value.trim(); return t ? '?tenant_id='+encodeURIComponent(t) : ''; }
+    async function api(path, options={}){ const r=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}}); const v=await r.json().catch(()=>({error:'Réponse non JSON'})); if(!r.ok) throw new Error(v.message||v.error||('HTTP '+r.status)); return v; }
+    function show(v){ $('details').textContent=JSON.stringify(v,null,2); }
+    function state(s){ return '<span class="state '+String(s).replace(/[^a-z]/g,'')+'">'+s+'</span>'; }
+    async function loadCampaigns(){ try { $('status').textContent='Chargement…'; const v=await api('/admin/api/campaigns'+tenantQ()); const rows=(v.campaigns||[]).map(c=>'<tr><td>'+c.campaign_id+'</td><td>'+c.tenant_id+'</td><td>'+state(c.status)+'</td><td>'+c.window.starts_at+'<br>→ '+c.window.ends_at+'</td><td>'+c.allowed_test_classes.join(', ')+'</td><td><button class="secondary" onclick="details(\''+c.campaign_id+'\',\''+c.tenant_id+'\')">Voir</button> '+(c.status==='prepared'?'<button class="warn" onclick="approve(\''+c.campaign_id+'\',\''+c.tenant_id+'\')">Approuver</button> ':'')+' '+(['approved','running'].includes(c.status)?'<button class="danger" onclick="cancel(\''+c.campaign_id+'\',\''+c.tenant_id+'\')">Arrêter</button> ':'')+'</td></tr>').join(''); $('campaigns').innerHTML=rows||'<tr><td colspan="6" class="muted">Aucune campagne.</td></tr>'; $('status').textContent=(v.campaigns||[]).length+' campagne(s).'; } catch(e){$('status').textContent='Erreur : '+e.message;} }
+    async function details(id,t){ try{ show(await api('/admin/api/campaigns/'+encodeURIComponent(id)+'?tenant_id='+encodeURIComponent(t))); }catch(e){$('status').textContent='Erreur : '+e.message;} }
+    async function approve(id,t){ if(!confirm('Approuver définitivement le mandat affiché pour '+id+' ?')) return; try{show(await api('/admin/api/campaigns/'+encodeURIComponent(id)+'/approve',{method:'POST',body:JSON.stringify({tenant_id:t})})); await loadCampaigns();}catch(e){$('status').textContent='Erreur : '+e.message;} }
+    async function cancel(id,t){ const reason=prompt('Motif d’arrêt (optionnel)')||''; try{show(await api('/admin/api/campaigns/'+encodeURIComponent(id)+'/cancel',{method:'POST',body:JSON.stringify({tenant_id:t,reason})})); await loadCampaigns();}catch(e){$('status').textContent='Erreur : '+e.message;} }
+    async function loadActivity(){ try{show(await api('/admin/api/activity?limit=100'));}catch(e){$('status').textContent='Erreur : '+e.message;} }
+  </script>
+</body>
+</html>

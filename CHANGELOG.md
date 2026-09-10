@@ -4,6 +4,73 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-09-03
+
+Cette version introduit le service `mcp-cybersec`, publiable et déployable
+indépendamment du service historique `mcp-tools`.
+
+### Added
+- **`mcp-cybersec`, second service MCP déployable séparément** — image,
+  compose, WAF, port et réseaux propres. Le service historique `mcp-tools` et
+  son catalogue ne sont pas modifiés.
+- **Campagnes sous mandat** — création en état `prepared`, approbation
+  administrative avec snapshot immuable et hash, fenêtre temporelle,
+  capacités, limites de débit et arrêt d'urgence persistés dans S3.
+- **Outillage cyber borné (13 outils)** — `campaign`, `scope`, `network`,
+  `http`, `nmap`, `nuclei`, `evidence`, `shell`, `files`, `token` et les trois
+  outils système. Les jobs `nmap` et `nuclei` sont asynchrones, idempotents et
+  annulables.
+- **Console `/admin` et CLI Click cybersec** — suivi des campagnes, mandats,
+  jobs, preuves et tokens, avec journal d'activité corrélé réutilisant le
+  socle observabilité déjà qualifié.
+- **Recette laboratoire locale** — overlay Compose isolé, cible privée sans
+  port exposé, manifeste `laboratory=true` et templates Nuclei officiels
+  épinglés avec leur provenance.
+
+### Fixed
+- **Runners Docker exécutables** — syntaxe des bind mounts corrigée, répertoire
+  runtime partagé avec le démon Docker, bridge scanner créé avant les jobs et
+  mode découverte Nmap limité à `-sn` sans options incompatibles.
+- **Verdict `tools/list`** — le probe SSE borné accepte désormais le catalogue
+  Cybersec de 11,6 Ko ; un `tools/list` effectivement remis à l'ASGI n'est plus
+  classé à tort `response_missing` dans `/admin` et la CLI.
+- **Bornes de mandat exécutoires** — les ports, chemins URL, classes de test,
+  débits Nmap et timeouts globaux sont maintenant refusés ou bornés avant le
+  trafic ; Nuclei exige une URL explicite pour conserver port et chemin.
+- **Publication d'une version déjà préparée** — le script de release tague le
+  commit courant quand `VERSION` et les labels portent déjà la version cible,
+  sans tenter de fabriquer un commit vide.
+- **Probe d'import CI** — les vérifications Python remplacent explicitement
+  l'entrypoint serveur de l'image afin de terminer au lieu de laisser le job
+  GitHub Actions bloqué sur un serveur actif ; la recette MCP reçoit la même
+  clé éphémère que le serveur Docker au lieu du placeholder de développement.
+- **Recette CI réellement hermétique** — le smoke CLI vérifie health, catalogue,
+  parité `/admin`, activité et shell interactif sans cible Internet ni mutation
+  S3 ; la recette complète reste réservée à la qualification manuelle.
+- **Scan d'images exécutable en CI** — Trivy remplace Docker Scout, qui
+  s'arrêtait avant analyse faute d'éligibilité du compte GitHub Actions ; les
+  vulnérabilités HIGH/CRITICAL des images service et sandbox sont rapportées.
+
+### Security
+- **Isolation stricte** — tenant obligatoire pour les tokens de mission,
+  préfixe S3 par tenant/campagne, accès `files` limité au workspace de sa
+  campagne, aucun accès agent au bucket, aux secrets ou au socket Docker.
+- **Contrôle de périmètre systématique** — validation DNS/IP/URL, refus des
+  plages privées, loopback et metadata, puis revalidation avant les actions
+  réseau et les redirections HTTP. Nuclei reçoit les IP déjà validées (avec
+  Host/SNI contrôlé), ce qui ferme la fenêtre de DNS rebinding. L'exception
+  laboratoire exige les trois conditions explicites : mode local, CIDR local
+  et mandat approuvé.
+- **Shell sans réseau** — le shell de campagne est lancé avec
+  `--network=none`, racine en lecture seule et ressources bornées. Les accès
+  réseau passent uniquement par les outils à mandat (`network`, `http`,
+  `nmap`, `nuclei`). Les artefacts de sortie contenant un lien symbolique ou
+  sortant du workspace sont refusés avant toute écriture S3.
+- **Secrets séparés** — seules les variables `CYBERSEC_*`, prévues pour une
+  injection Vault, sont acceptées. Les identifiants, bucket et tokens de
+  `mcp-tools` ne sont jamais repris, et le harnais E2E n'affiche plus aucun
+  fragment de bearer dans ses journaux.
+
 ## [0.6.1] — 2026-08-29
 
 ### Added

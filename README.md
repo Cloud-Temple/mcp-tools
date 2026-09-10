@@ -156,6 +156,60 @@ Contrôler les gardes (bornes, cohérence du lock, alignement `mcp` / `mcp-types
 python3 scripts/test_service.py --test reproducibility --no-docker
 ```
 
+## MCP Cybersec : service distinct en préparation
+
+`mcp-cybersec` est une seconde boîte à outils MCP, séparée de
+`mcp-tools`. Elle sert aux évaluations de sécurité **sous mandat approuvé** :
+une campagne est créée en `prepared`, son manifeste est figé et hashé à
+l'approbation par un administrateur, puis chaque action réseau est recontrôlée
+par rapport à ce mandat.
+
+Le service possède son image, son WAF, son port (`8081` par défaut), ses
+réseaux et sa racine S3 propres. Il ne réutilise pas les tokens, secrets ou
+bucket du service historique. Les variables `CYBERSEC_*` sont injectées par
+Vault au runtime ; `.env.example` ne décrit que leurs noms et ne contient pas
+de valeur utilisable.
+
+| Domaine | Outils MCP | Règle de sécurité |
+| --- | --- | --- |
+| Pilotage | `campaign`, `scope`, `token`, `system_*` | tenant, mandat et journal corrélé |
+| Réseau contrôlé | `network`, `http`, `nmap`, `nuclei` | périmètre et DNS revalidés avant chaque action |
+| Preuves | `evidence`, `files` | S3 limité au tenant, à la campagne et au workspace |
+| Analyse locale | `shell` | conteneur éphémère sans réseau, sans socket ni secret |
+
+Le shell n'a volontairement **pas** d'accès réseau. Le donner au shell
+contournerait le contrôle de périmètre, l'approbation et les journaux des outils
+réseau. Un besoin réseau doit passer par `network`, `http`, `nmap` ou `nuclei`,
+qui portent tous un `campaign_id` et appliquent le mandat.
+
+### Lancement de la recette locale
+
+La composition cybersec ne démarre aucun scan : elle ne fait que construire les
+images et démarrer le service. Utiliser exclusivement une identité S3 de
+recette dédiée et un `CYBERSEC_ADMIN_BOOTSTRAP_KEY` non par défaut, injectés par
+Vault ou un fichier d'environnement local non suivi.
+
+```bash
+install -d -m 1777 /tmp/mcp-cybersec-runtime
+docker compose -f docker-compose.cybersec.yml up --build
+curl http://localhost:8081/health
+python scripts/mcp_cybersec_cli.py --url http://localhost:8081 about
+```
+
+`CYBERSEC_RUNTIME_HOST_DIR` doit être un répertoire temporaire dédié,
+préprovisionné en mode `01777` et monté au même chemin dans le service. Il est
+nécessaire aux bind mounts des runners Docker ; il ne porte aucune donnée
+durable, les preuves restent dans S3.
+
+L'overlay `docker-compose.cybersec.lab.yml` ajoute une cible privée sans port
+exposé, dans `172.30.0.0/24`. Il ne doit être utilisé qu'après un GO humain de
+recette, avec le manifeste `cybersec/lab/manifest-5bis.json`, des credentials
+S3 de test et une campagne portant `laboratory=true`. Il n'autorise ni cible
+Internet, ni réseau partagé.
+
+Les détails d'architecture, le runbook d'arrêt et le gabarit de rapport sont
+dans [`DESIGN/mcp-cybersec/`](DESIGN/mcp-cybersec/).
+
 ## Architecture
 
 ```

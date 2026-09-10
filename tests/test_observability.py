@@ -107,6 +107,37 @@ class ActivityContractTests(unittest.TestCase):
         self.assertEqual("mcp_terminal_emitted", call["transport_state"])
         self.assertIn("mcp.response_terminal_observed", {event["event"] for event in call["events"]})
 
+    def test_large_tools_list_sse_response_is_terminal(self):
+        payload = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 43,
+            "method": "tools/list",
+        }).encode()
+        response = (
+            b"event: message\r\ndata: "
+            + json.dumps({
+                "jsonrpc": "2.0",
+                "id": 43,
+                "result": {"tools": [{"name": "tool", "description": "x" * 10_000}]},
+            }).encode()
+            + b"\r\n\r\n"
+        )
+
+        async def app(scope, receive, send):
+            await receive()
+            await send({
+                "type": "http.response.start", "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            })
+            await send({"type": "http.response.body", "body": response})
+
+        self._run_asgi(app, payload)
+        call = observability.get_activity_snapshot()["calls"][0]
+        self.assertGreater(call["response_bytes"], 8_192)
+        self.assertEqual("transport_completed", call["terminal_state"])
+        self.assertTrue(call["response_terminal_observed"])
+        self.assertEqual("mcp_terminal_emitted", call["transport_state"])
+
     def test_targeted_lookup_keeps_the_full_timeline(self):
         token = observability._activity_context.set({"trace_id": "tr_a", "call_id": "call-a"})
         try:
