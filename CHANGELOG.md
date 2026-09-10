@@ -53,13 +53,6 @@ ni taguée ni déployée à ce stade.
   injection Vault, sont acceptées. Les identifiants, bucket et tokens de
   `mcp-tools` ne sont jamais repris.
 
-### Known issues
-- **Connectivité S3 de recette**
-  ([#11](https://github.com/Cloud-Temple/mcp-tools/issues/11)) — des handshakes
-  TLS vers l'endpoint S3 expirent de façon intermittente depuis Docker comme
-  depuis l'hôte. Le runtime reste borné et fail-closed, mais la stabilité du
-  chemin S3 doit être démontrée avant publication ou déploiement.
-
 ## [0.6.1] — 2026-08-29
 
 ### Added
