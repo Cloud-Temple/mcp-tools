@@ -27,6 +27,14 @@ ni taguée ni déployée à ce stade.
   port exposé, manifeste `laboratory=true` et templates Nuclei officiels
   épinglés avec leur provenance.
 
+### Fixed
+- **Runners Docker exécutables** — syntaxe des bind mounts corrigée, répertoire
+  runtime partagé avec le démon Docker, bridge scanner créé avant les jobs et
+  mode découverte Nmap limité à `-sn` sans options incompatibles.
+- **Verdict `tools/list`** — le probe SSE borné accepte désormais le catalogue
+  Cybersec de 11,6 Ko ; un `tools/list` effectivement remis à l'ASGI n'est plus
+  classé à tort `response_missing` dans `/admin` et la CLI.
+
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,
   préfixe S3 par tenant/campagne, accès `files` limité au workspace de sa
@@ -44,6 +52,13 @@ ni taguée ni déployée à ce stade.
 - **Secrets séparés** — seules les variables `CYBERSEC_*`, prévues pour une
   injection Vault, sont acceptées. Les identifiants, bucket et tokens de
   `mcp-tools` ne sont jamais repris.
+
+### Known issues
+- **Connectivité S3 de recette**
+  ([#11](https://github.com/Cloud-Temple/mcp-tools/issues/11)) — des handshakes
+  TLS vers l'endpoint S3 expirent de façon intermittente depuis Docker comme
+  depuis l'hôte. Le runtime reste borné et fail-closed, mais la stabilité du
+  chemin S3 doit être démontrée avant publication ou déploiement.
 
 ## [0.6.1] — 2026-08-29
 
