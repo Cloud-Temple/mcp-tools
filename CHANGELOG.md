@@ -40,6 +40,9 @@ indépendamment du service historique `mcp-tools`.
 - **Publication d'une version déjà préparée** — le script de release tague le
   commit courant quand `VERSION` et les labels portent déjà la version cible,
   sans tenter de fabriquer un commit vide.
+- **Probe d'import CI** — les vérifications Python remplacent explicitement
+  l'entrypoint serveur de l'image afin de terminer au lieu de laisser le job
+  GitHub Actions bloqué sur un serveur actif.
 
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,
