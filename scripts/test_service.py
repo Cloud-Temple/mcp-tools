@@ -1846,8 +1846,8 @@ async def test_13_waf():
 # 14. CLI Click — Tests complets via CliRunner
 # =============================================================================
 
-async def test_14_cli():
-    """Test 14: CLI Click — Toutes les commandes via subprocess (E2E réel)"""
+async def test_14_cli(smoke_only: bool = False):
+    """Test 14: CLI Click — smoke hermétique ou recette complète."""
     print("\n🐚 TEST 14 — CLI Click (subprocess)")
     print("=" * 50)
 
@@ -1957,6 +1957,9 @@ async def test_14_cli():
         record("cli shell interactif : activity disponible", ok, f"exit={rc}")
     except Exception as e:
         record("cli shell interactif : activity disponible", False, str(e))
+
+    if smoke_only:
+        return
 
     # ── 14e. run-shell "echo hello_cli_test" ──
     try:
@@ -2166,6 +2169,11 @@ async def test_14_cli():
             record(f"cli {cmd_name} --help", False, str(e))
 
 
+async def test_14_cli_smoke():
+    """CLI sans trafic externe ni mutation S3, adaptée à la CI."""
+    await test_14_cli(smoke_only=True)
+
+
 def _docker_exec(argv, timeout=60):
     """Exécute une commande dans le conteneur applicatif.
 
@@ -2329,6 +2337,7 @@ TEST_REGISTRY = {
     "admin":           test_12_admin,
     "waf":             test_13_waf,
     "cli":             test_14_cli,
+    "cli-smoke":       test_14_cli_smoke,
     "reproducibility": test_15_reproducibility,
 }
 

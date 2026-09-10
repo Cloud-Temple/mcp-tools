@@ -44,6 +44,9 @@ indépendamment du service historique `mcp-tools`.
   l'entrypoint serveur de l'image afin de terminer au lieu de laisser le job
   GitHub Actions bloqué sur un serveur actif ; la recette MCP reçoit la même
   clé éphémère que le serveur Docker au lieu du placeholder de développement.
+- **Recette CI réellement hermétique** — le smoke CLI vérifie health, catalogue,
+  parité `/admin`, activité et shell interactif sans cible Internet ni mutation
+  S3 ; la recette complète reste réservée à la qualification manuelle.
 
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,
