@@ -62,7 +62,8 @@ indépendamment du service historique `mcp-tools`.
   sortant du workspace sont refusés avant toute écriture S3.
 - **Secrets séparés** — seules les variables `CYBERSEC_*`, prévues pour une
   injection Vault, sont acceptées. Les identifiants, bucket et tokens de
-  `mcp-tools` ne sont jamais repris.
+  `mcp-tools` ne sont jamais repris, et le harnais E2E n'affiche plus aucun
+  fragment de bearer dans ses journaux.
 
 ## [0.6.1] — 2026-08-29
 

@@ -2341,7 +2341,7 @@ async def run_all_tests(only: str = None):
     print("=" * 60)
     print("🧪 TEST END-TO-END — MCP Tools")
     print(f"   Serveur  : {BASE_URL}")
-    print(f"   Token    : {'***' + TOKEN[-8:] if len(TOKEN) > 8 else '***'}")
+    print("   Token    : ***")
     print(f"   Date     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if only:
         print(f"   Test     : {only}")
