@@ -13,7 +13,7 @@ from src.mcp_cybersec.identity import AuthorizationError
 from src.mcp_cybersec.models import ValidationError
 from src.mcp_cybersec.probes import DockerHttpCommandRunner, HttpService
 from src.mcp_cybersec.scope import ScopeGuard
-from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore
+from src.mcp_cybersec.storage import CybersecRepository, MemoryObjectStore, ObjectNotFound
 from src.mcp_cybersec.workspace import DockerShellRunner, EvidenceService, FilesService, ShellService
 
 
@@ -108,6 +108,35 @@ class CybersecWorkspaceProbesTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["network"])
         output = await files.run(campaign_id=self.campaign["campaign_id"], token_info=MISSION, operation="read", path="processed.txt")
         self.assertEqual("HELLO", output["content"])
+
+    async def test_shell_refuses_symlink_output_outside_workspace(self):
+        witness = Path(self.runtime.name) / "outside.txt"
+        witness.write_text("harmless witness")
+
+        class SymlinkRunner:
+            async def run(self, *, command, shell, workspace: Path, timeout):
+                (workspace / "leak.txt").symlink_to(witness)
+                return {"status": "success", "returncode": 0, "stdout": "", "stderr": ""}
+
+        shell = ShellService(self.repository, self.campaigns, self.settings, SymlinkRunner())
+        with self.assertRaises(ValidationError):
+            await shell.run(
+                campaign_id=self.campaign["campaign_id"], token_info=MISSION,
+                command="ln -s outside leak.txt", output_paths=["leak.txt"],
+            )
+        with self.assertRaises(ObjectNotFound):
+            await self.repository.read_workspace("tenant-a", self.campaign["campaign_id"], "leak.txt")
+
+    async def test_http_rejects_port_outside_mandate_before_runner(self):
+        await self._approved()
+        runner = FakeHttpRunner()
+        service = HttpService(self.repository, self.campaigns, self.scope, self.settings, runner)
+        with self.assertRaises(AuthorizationError):
+            await service.request(
+                campaign_id=self.campaign["campaign_id"], token_info=MISSION,
+                url="https://lab.example.test:8080/",
+            )
+        self.assertEqual([], runner.calls)
 
     async def test_real_shell_runner_forces_network_none_and_no_docker_socket(self):
         """Le chemin runtime ne peut pas dériver vers un shell réseau."""

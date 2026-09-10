@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.7.0] — 2026-09-03
 
-Cette version est préparée sur la branche `codex/mcp-cybersec-0.7.0`. Elle n'est
-ni taguée ni déployée à ce stade.
+Cette version introduit le service `mcp-cybersec`, publiable et déployable
+indépendamment du service historique `mcp-tools`.
 
 ### Added
 - **`mcp-cybersec`, second service MCP déployable séparément** — image,
@@ -34,6 +34,12 @@ ni taguée ni déployée à ce stade.
 - **Verdict `tools/list`** — le probe SSE borné accepte désormais le catalogue
   Cybersec de 11,6 Ko ; un `tools/list` effectivement remis à l'ASGI n'est plus
   classé à tort `response_missing` dans `/admin` et la CLI.
+- **Bornes de mandat exécutoires** — les ports, chemins URL, classes de test,
+  débits Nmap et timeouts globaux sont maintenant refusés ou bornés avant le
+  trafic ; Nuclei exige une URL explicite pour conserver port et chemin.
+- **Publication d'une version déjà préparée** — le script de release tague le
+  commit courant quand `VERSION` et les labels portent déjà la version cible,
+  sans tenter de fabriquer un commit vide.
 
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,
@@ -48,7 +54,8 @@ ni taguée ni déployée à ce stade.
 - **Shell sans réseau** — le shell de campagne est lancé avec
   `--network=none`, racine en lecture seule et ressources bornées. Les accès
   réseau passent uniquement par les outils à mandat (`network`, `http`,
-  `nmap`, `nuclei`).
+  `nmap`, `nuclei`). Les artefacts de sortie contenant un lien symbolique ou
+  sortant du workspace sont refusés avant toute écriture S3.
 - **Secrets séparés** — seules les variables `CYBERSEC_*`, prévues pour une
   injection Vault, sont acceptées. Les identifiants, bucket et tokens de
   `mcp-tools` ne sont jamais repris.

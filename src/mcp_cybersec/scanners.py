@@ -213,7 +213,7 @@ def build_pinned_nuclei_targets(*, target: str, addresses: list[str]) -> tuple[l
     """Remplace le DNS scanner par les IP déjà autorisées par ``ScopeGuard``.
 
     Nuclei résoudrait autrement à nouveau un hostname au moment de la requête.
-    Pour une URL/domain, les IP sont donc injectées dans la cible tandis que le
+    Pour une URL, les IP sont donc injectées dans la cible tandis que le
     nom approuvé est conservé exclusivement en Host/SNI. Les templates restent
     sans redirection et le job revalide le scope pendant son exécution.
     """

@@ -128,6 +128,66 @@ class CybersecFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(decision["allowed"])
         self.assertEqual("URL absente du mandat", decision["reason"])
 
+    async def test_url_only_scope_does_not_authorize_bare_host(self):
+        campaign = await self._approve(
+            await self._create(manifest(urls=["https://lab.example.test/allowed"], domains=[]))
+        )
+
+        async def resolver(_host):
+            return ["93.184.216.34"]
+
+        guard = ScopeGuard(self.service, resolver=resolver)
+        with self.assertRaises(AuthorizationError):
+            await guard.check(
+                campaign["campaign_id"], "lab.example.test", MISSION,
+                required_test_class="recon",
+            )
+
+    async def test_url_dot_segments_are_refused(self):
+        campaign = await self._approve(
+            await self._create(manifest(urls=["https://lab.example.test/allowed"], domains=[]))
+        )
+
+        async def resolver(_host):
+            return ["93.184.216.34"]
+
+        guard = ScopeGuard(self.service, resolver=resolver)
+        for candidate in (
+            "https://lab.example.test/allowed/../admin",
+            "https://lab.example.test/allowed/%2e%2e/admin",
+        ):
+            with self.subTest(candidate=candidate), self.assertRaises(ValidationError):
+                await guard.check(
+                    campaign["campaign_id"], candidate, MISSION,
+                    required_test_class="recon", url=candidate,
+                )
+
+    async def test_url_port_must_be_in_the_mandate(self):
+        campaign = await self._approve(await self._create())
+
+        async def resolver(_host):
+            return ["93.184.216.34"]
+
+        guard = ScopeGuard(self.service, resolver=resolver)
+        with self.assertRaises(AuthorizationError):
+            await guard.check(
+                campaign["campaign_id"], "https://lab.example.test:8080/", MISSION,
+                required_test_class="recon", url="https://lab.example.test:8080/",
+            )
+
+    async def test_network_port_must_be_in_the_mandate(self):
+        campaign = await self._approve(await self._create())
+
+        async def resolver(_host):
+            return ["93.184.216.34"]
+
+        guard = ScopeGuard(self.service, resolver=resolver)
+        with self.assertRaises(AuthorizationError):
+            await guard.check(
+                campaign["campaign_id"], "lab.example.test", MISSION,
+                required_test_class="recon", port=8080,
+            )
+
     async def test_ineligible_profile_is_refused(self):
         campaign = await self._approve(await self._create())
         with self.assertRaises(AuthorizationError):

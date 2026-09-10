@@ -174,7 +174,7 @@ def register_all_tools(mcp: MCPServer) -> None:
     @traced_tool("nuclei")
     async def nuclei(
         campaign_id: Annotated[str, Field(description="Campagne approuvée")],
-        target: Annotated[str, Field(description="URL, domaine ou IP exactement mandaté")],
+        target: Annotated[str, Field(description="URL HTTP(S) exactement mandatée")],
         idempotency_key: Annotated[str, Field(description="Clé stable de lancement ; même clé => même job")],
         profile: Annotated[str, Field(default="recon", description="recon, active_standard ou active_extended")]= "recon",
         template_ids: Annotated[Optional[list[str]], Field(default=None, description="IDs issus du catalogue nuclei versionné uniquement")]=None,

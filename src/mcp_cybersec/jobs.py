@@ -69,6 +69,8 @@ class ScanJobManager:
         required_class = _NMAP_PROFILE_CLASS.get(profile)
         if required_class is None:
             raise ValidationError("Profil nmap invalide.")
+        if safe_scripts:
+            required_class = "active_standard"
         decision = await self.scope.check(
             campaign_id, target, token_info, required_test_class=required_class
         )
@@ -87,7 +89,7 @@ class ScanJobManager:
             service_detection=service_detection,
             safe_scripts=safe_scripts,
             timing=timing,
-            max_rate=max_rate,
+            max_rate=min(max_rate, campaign["rate_limit"]),
             timeout=min(timeout, self.settings.cybersec_max_job_timeout),
             targets=decision["addresses"],
         )
@@ -119,6 +121,8 @@ class ScanJobManager:
         concurrency: int = 2,
         timeout: int = 600,
     ) -> dict:
+        if "://" not in target:
+            raise ValidationError("Une URL HTTP(S) explicite est requise pour nuclei.")
         decision = await self.scope.check(
             campaign_id,
             target,
@@ -258,13 +262,22 @@ class ScanJobManager:
             runtime_root = Path(self.settings.cybersec_runtime_host_dir)
             runtime_root.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix=f"{job['job_id']}-", dir=runtime_root) as directory:
-                outcome = await self.runner.run(
-                    job["tool"], job["job_id"], job["arguments"], Path(directory), should_continue
+                outcome = await asyncio.wait_for(
+                    self.runner.run(
+                        job["tool"], job["job_id"], job["arguments"], Path(directory), should_continue
+                    ),
+                    timeout=job["timeout"],
                 )
             job["status"] = outcome.get("status", "failed")
             job["returncode"] = outcome.get("returncode")
             job["finished_at"] = iso_now()
             await self._persist_outcome(job, outcome)
+        except asyncio.TimeoutError:
+            await self.runner.cancel(job["job_id"])
+            job["status"] = "interrupted"
+            job["finished_at"] = iso_now()
+            job["interruption_reason"] = "timeout"
+            await self.repository.save_job(job)
         except asyncio.CancelledError:
             await self.runner.cancel(job["job_id"])
             job["status"] = "interrupted"

@@ -116,7 +116,8 @@ class NetworkService:
         if not 1 <= count <= 5 or not 1 <= max_hops <= 30:
             raise ValidationError("Bornes de sonde réseau invalides.")
         decision = await self.scope.check(
-            campaign_id, target, token_info, required_test_class="recon"
+            campaign_id, target, token_info, required_test_class="recon",
+            port=port if operation in {"tcp", "tls"} else None,
         )
         if operation == "dns":
             result = {"status": "success", "operation": operation, "host": decision["host"], "addresses": decision["addresses"]}

@@ -124,14 +124,25 @@ class ShellService:
                 destination.write_bytes(body)
             result = await self.runner.run(command=command, shell=shell, workspace=workspace, timeout=timeout)
             written = []
+            workspace_root = workspace.resolve()
             for path in output_paths:
                 output = workspace / path
-                if not output.is_file():
+                current = workspace
+                if any((current := current / part).is_symlink() for part in Path(path).parts):
+                    raise ValidationError(f"Lien symbolique interdit dans un artefact shell : {path}.")
+                try:
+                    resolved_output = output.resolve(strict=True)
+                    resolved_output.relative_to(workspace_root)
+                except FileNotFoundError:
                     continue
-                size = output.stat().st_size
+                except ValueError as exc:
+                    raise ValidationError(f"Artefact shell hors workspace : {path}.") from exc
+                if not resolved_output.is_file():
+                    continue
+                size = resolved_output.stat().st_size
                 if size > self.settings.cybersec_shell_max_artifact_bytes:
                     raise ValidationError(f"Artefact shell trop volumineux : {path}.")
-                await self.repository.write_workspace(campaign["tenant_id"], campaign_id, path, output.read_bytes())
+                await self.repository.write_workspace(campaign["tenant_id"], campaign_id, path, resolved_output.read_bytes())
                 written.append({"path": path, "size": size})
         # La commande elle-même peut contenir un secret : seul son empreinte
         # est traçable. Aucun script n'est écrit dans la preuve ou les logs.

@@ -98,11 +98,13 @@ fi
 # --- Publication atomique ----------------------------------------------------
 etape "Commit, tag et publication"
 git add VERSION "${DOCKERFILES[@]}"
-git commit -m "v${VERSION_CIBLE}
+if git diff --cached --quiet; then
+    echo "  ok  VERSION et labels déjà préparés dans HEAD ; aucun commit vide créé"
+else
+    git commit -m "v${VERSION_CIBLE}
 
-$(sed -n "/^## \[${VERSION_CIBLE}\]/,/^## \[/p" CHANGELOG.md | sed '1d;$d' | head -40)
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+$(sed -n "/^## \[${VERSION_CIBLE}\]/,/^## \[/p" CHANGELOG.md | sed '1d;$d' | head -40)"
+fi
 git push origin main
 
 git tag -a "v${VERSION_CIBLE}" -m "v${VERSION_CIBLE}"

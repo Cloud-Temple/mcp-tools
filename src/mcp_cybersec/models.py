@@ -10,7 +10,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 class ValidationError(ValueError):
@@ -97,10 +97,19 @@ def normalize_url(value: str) -> str:
     if parsed.username or parsed.password:
         raise ValidationError("Les identifiants dans une URL sont interdits.")
     host = normalize_host(parsed.hostname)
-    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+    try:
+        explicit_port = parsed.port
+    except ValueError as exc:
+        raise ValidationError("Port URL invalide.") from exc
+    if explicit_port is not None and not 1 <= explicit_port <= 65535:
         raise ValidationError("Port URL invalide.")
-    port = f":{parsed.port}" if parsed.port else ""
+    port = f":{explicit_port}" if explicit_port else ""
     path = parsed.path or "/"
+    decoded_path = path
+    for _ in range(3):
+        decoded_path = unquote(decoded_path)
+    if "\\" in decoded_path or any(part in {".", ".."} for part in decoded_path.split("/")):
+        raise ValidationError("Les segments de chemin URL ambigus ou traversants sont interdits.")
     return f"{parsed.scheme}://{host}{port}{path}" + (f"?{parsed.query}" if parsed.query else "")
 
 

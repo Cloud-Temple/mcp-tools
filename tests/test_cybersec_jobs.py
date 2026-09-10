@@ -11,6 +11,7 @@ from unittest.mock import patch
 from src.mcp_cybersec.campaigns import CampaignService
 from src.mcp_cybersec.config import CybersecSettings
 from src.mcp_cybersec.jobs import ScanJobManager
+from src.mcp_cybersec.identity import AuthorizationError
 from src.mcp_cybersec.models import ValidationError
 from src.mcp_cybersec.scanners import DockerScannerRunner, build_nmap_arguments
 from src.mcp_cybersec.scope import ScopeGuard
@@ -99,6 +100,7 @@ class CybersecJobTests(unittest.IsolatedAsyncioTestCase):
             "rate_limit": 20,
             "concurrency": 2,
         }
+        self.raw = raw
         self.campaign = await self.campaigns.create(raw, MISSION)
         self.campaign = await self.campaigns.approve(self.campaign["campaign_id"], ADMIN, admin_tenant_id="tenant-a")
 
@@ -133,10 +135,53 @@ class CybersecJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_nuclei_rejects_unversioned_template(self):
         with self.assertRaises(ValidationError):
             await self.manager.start_nuclei(
-                campaign_id=self.campaign["campaign_id"], target="lab.example.test",
+                campaign_id=self.campaign["campaign_id"], target="https://lab.example.test/",
                 idempotency_key="nuclei-unknown", token_info=MISSION,
                 profile="recon", template_ids=["agent-supplied-template"],
             )
+
+    async def test_nuclei_requires_an_explicit_url(self):
+        with self.assertRaises(ValidationError):
+            await self.manager.start_nuclei(
+                campaign_id=self.campaign["campaign_id"], target="lab.example.test",
+                idempotency_key="nuclei-bare-host", token_info=MISSION,
+                profile="recon",
+            )
+
+    async def test_nmap_safe_scripts_require_active_standard(self):
+        raw = {**self.raw, "campaign_id": "camp_recon_only", "allowed_test_classes": ["recon"]}
+        campaign = await self.campaigns.create(raw, MISSION)
+        campaign = await self.campaigns.approve(campaign["campaign_id"], ADMIN, admin_tenant_id="tenant-a")
+        with self.assertRaises(AuthorizationError):
+            await self.manager.start_nmap(
+                campaign_id=campaign["campaign_id"], target="lab.example.test",
+                idempotency_key="safe-scripts-class", token_info=MISSION,
+                profile="quick", ports=[443], safe_scripts=True,
+            )
+
+    async def test_nmap_rate_is_bounded_by_the_mandate(self):
+        await self.manager.start_nmap(
+            campaign_id=self.campaign["campaign_id"], target="lab.example.test",
+            idempotency_key="bounded-rate", token_info=MISSION,
+            profile="quick", ports=[443], max_rate=10_000,
+        )
+        await self._wait_jobs()
+        arguments = self.runner.calls[0][2]
+        self.assertEqual("20", arguments[arguments.index("--max-rate") + 1])
+
+    async def test_job_timeout_stops_runner_and_persists_interruption(self):
+        self.runner = FakeRunner(wait=True)
+        self.manager.runner = self.runner
+        started = await self.manager.start_nuclei(
+            campaign_id=self.campaign["campaign_id"], target="https://lab.example.test/",
+            idempotency_key="global-timeout", token_info=MISSION,
+            profile="recon", timeout=5,
+        )
+        await self._wait_jobs()
+        job = await self.repository.get_job("tenant-a", self.campaign["campaign_id"], started["job_id"])
+        self.assertEqual("interrupted", job["status"])
+        self.assertEqual("timeout", job["interruption_reason"])
+        self.assertIn(started["job_id"], self.runner.cancelled)
 
     async def test_nuclei_uses_scope_validated_ips_and_preserves_approved_host(self):
         started = await self.manager.start_nuclei(

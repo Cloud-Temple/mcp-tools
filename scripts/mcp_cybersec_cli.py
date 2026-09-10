@@ -240,7 +240,7 @@ def nmap(ctx: click.Context, campaign_id: str, target: str, idempotency_key: str
 
 @cli.command("nuclei")
 @click.argument("campaign_id")
-@click.argument("target")
+@click.argument("target", metavar="URL")
 @click.option("--idempotency-key", required=True)
 @click.option("--profile", type=click.Choice(["recon", "active_standard", "active_extended"]), default="recon")
 @click.option("--template-ids", help="Tableau JSON d'IDs versionnés")
