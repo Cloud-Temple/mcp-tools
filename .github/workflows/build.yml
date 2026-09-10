@@ -96,10 +96,11 @@ jobs:
         # avec les secrets — voir README §4.
         run: |
           cp .env.example .env
-          sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=ci_e2e_$(openssl rand -hex 16)/" .env
+          CI_ADMIN_BOOTSTRAP_KEY="ci_e2e_$(openssl rand -hex 16)"
+          sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=${CI_ADMIN_BOOTSTRAP_KEY}/" .env
           python3 -m pip install --quiet -r requirements.lock
           python3 -m unittest discover -s tests -v
-          python3 scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
+          MCP_TOKEN="${CI_ADMIN_BOOTSTRAP_KEY}" python3 scripts/test_service.py --test shell,network,http,date,calc,files,waf,cli,auth
 
       - name: Scan CVE des deux images
         # `pip-audit` n'audite QUE le Python : il ne voit ni la couche OS, ni la

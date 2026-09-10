@@ -42,7 +42,8 @@ indépendamment du service historique `mcp-tools`.
   sans tenter de fabriquer un commit vide.
 - **Probe d'import CI** — les vérifications Python remplacent explicitement
   l'entrypoint serveur de l'image afin de terminer au lieu de laisser le job
-  GitHub Actions bloqué sur un serveur actif.
+  GitHub Actions bloqué sur un serveur actif ; la recette MCP reçoit la même
+  clé éphémère que le serveur Docker au lieu du placeholder de développement.
 
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,
