@@ -47,6 +47,9 @@ indépendamment du service historique `mcp-tools`.
 - **Recette CI réellement hermétique** — le smoke CLI vérifie health, catalogue,
   parité `/admin`, activité et shell interactif sans cible Internet ni mutation
   S3 ; la recette complète reste réservée à la qualification manuelle.
+- **Scan d'images exécutable en CI** — Trivy remplace Docker Scout, qui
+  s'arrêtait avant analyse faute d'éligibilité du compte GitHub Actions ; les
+  vulnérabilités HIGH/CRITICAL des images service et sandbox sont rapportées.
 
 ### Security
 - **Isolation stricte** — tenant obligatoire pour les tokens de mission,

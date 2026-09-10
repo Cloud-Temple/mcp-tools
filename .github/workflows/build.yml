@@ -101,17 +101,19 @@ jobs:
       - name: Scan CVE des deux images
         # `pip-audit` n'audite QUE le Python : il ne voit ni la couche OS, ni la
         # stdlib Go embarquée dans le binaire Docker CLI statique. D'où ce scan.
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          command: cves
-          image: mcp-tools:ci
-          only-severity: critical,high
-          exit-code: false
+          scan-type: image
+          image-ref: mcp-tools:ci
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: "0"
 
       - name: Scan CVE sandbox
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          command: cves
-          image: mcp-tools-sandbox:ci
-          only-severity: critical,high
-          exit-code: false
+          scan-type: image
+          image-ref: mcp-tools-sandbox:ci
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: "0"
