@@ -16,8 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   La v1.1.0 ajoute la conduite à tenir quand l'espace mémoire configuré n'existe
   pas encore sur le serveur : il se crée, de façon bornée, au lieu d'arrêter le
-  travail au démarrage. C'est le cas de ce dépôt, dont l'espace `mcp-tools`
-  reste à créer.
+  travail au démarrage.
 
   Configuration du dépôt dans `AGENTIC_RULES/project.config.yml` : espace
   mémoire `mcp-tools` sur `my-live-memory`, langue publique `fr`, relecteur
