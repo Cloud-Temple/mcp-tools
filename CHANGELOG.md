@@ -7,12 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.7.1] — 2026-09-16
 
 ### Added
-- **Corpus de règles agentiques `Cloud-Temple/agentic-rules` v1.0.0**, vendoré
-  à la racine avec son empreinte de provenance (tag `v1.0.0`, commit
-  `d854b76`) et un job de conformité qui compare les douze fichiers distribués
+- **Corpus de règles agentiques `Cloud-Temple/agentic-rules` v1.1.0**, vendoré
+  à la racine avec son empreinte de provenance (tag `v1.1.0`, commit
+  `db3c642`) et un job de conformité qui compare les douze fichiers distribués
   à l'octet près. Le dépôt n'avait jusqu'ici aucune règle : ni `AGENTS.md`, ni
   `CLAUDE.md`, ni `QWEN.md`. Un agent y travaillait sans prérequis mémoire,
   sans règle de revue indépendante et sans workflow Git.
+
+  La v1.1.0 ajoute la conduite à tenir quand l'espace mémoire configuré n'existe
+  pas encore sur le serveur : il se crée, de façon bornée, au lieu d'arrêter le
+  travail au démarrage. C'est le cas de ce dépôt, dont l'espace `mcp-tools`
+  reste à créer.
 
   Configuration du dépôt dans `AGENTIC_RULES/project.config.yml` : espace
   mémoire `mcp-tools` sur `my-live-memory`, langue publique `fr`, relecteur
