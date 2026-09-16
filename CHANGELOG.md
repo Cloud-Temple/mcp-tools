@@ -4,6 +4,23 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] — 2026-09-16
+
+### Added
+- **Corpus de règles agentiques `Cloud-Temple/agentic-rules` v1.0.0**, vendoré
+  à la racine avec son empreinte de provenance (tag `v1.0.0`, commit
+  `d854b76`) et un job de conformité qui compare les douze fichiers distribués
+  à l'octet près. Le dépôt n'avait jusqu'ici aucune règle : ni `AGENTS.md`, ni
+  `CLAUDE.md`, ni `QWEN.md`. Un agent y travaillait sans prérequis mémoire,
+  sans règle de revue indépendante et sans workflow Git.
+
+  Configuration du dépôt dans `AGENTIC_RULES/project.config.yml` : espace
+  mémoire `mcp-tools` sur `my-live-memory`, langue publique `fr`, relecteur
+  `codex`, Graph Memory désactivé.
+
+  Aucune dépendance ajoutée et aucun effet sur les images : les deux Dockerfile
+  ne copient que leurs entrées explicites, jamais le contexte de build.
+
 ## [0.7.0] — 2026-09-03
 
 Cette version introduit le service `mcp-cybersec`, publiable et déployable
