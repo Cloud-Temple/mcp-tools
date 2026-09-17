@@ -12,6 +12,7 @@ import mimetypes
 from pathlib import Path
 
 from .api import handle_admin_api
+from ..auth.token_store import TokenStoreUnavailable
 
 # Répertoire des fichiers statiques
 STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -32,7 +33,28 @@ class AdminMiddleware:
 
         # ── /admin/api/* → API REST ──
         if path.startswith("/admin/api/"):
-            return await handle_admin_api(scope, receive, send, self.mcp_instance)
+            # Point de capture unique pour le magasin de tokens. Le validateur
+            # d'entrée ET les six handlers de tokens peuvent lever : les
+            # envelopper un par un laisserait tôt ou tard un chemin découvert.
+            #
+            # Le drapeau existe parce qu'ASGI interdit un second
+            # `http.response.start`. Si la réponse a déjà commencé, la levée
+            # remonte telle quelle plutôt que de produire un message mal formé.
+            reponse_commencee = {"oui": False}
+
+            async def _send_suivi(message):
+                if message.get("type") == "http.response.start":
+                    reponse_commencee["oui"] = True
+                await send(message)
+
+            try:
+                return await handle_admin_api(
+                    scope, receive, _send_suivi, self.mcp_instance
+                )
+            except TokenStoreUnavailable:
+                if reponse_commencee["oui"]:
+                    raise
+                return await self._send_503(send)
 
         # ── /admin → SPA HTML ──
         if path in ("/admin", "/admin/"):
@@ -75,6 +97,25 @@ class AdminMiddleware:
                 (b"content-type", content_type.encode()),
                 (b"content-length", str(len(body)).encode()),
                 (b"cache-control", b"no-cache"),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def _send_503(self, send):
+        """Le magasin de tokens est injoignable : l'accès n'est pas vérifiable.
+
+        503 et pas 401 : un 401 affirmerait que le token est invalide, ce que
+        personne ne sait. La cause exacte reste sur la sortie d'erreur du
+        serveur, elle ne part pas dans la réponse.
+        """
+        body = b'{"status": "error", "message": "Magasin de tokens indisponible"}'
+        await send({
+            "type": "http.response.start",
+            "status": 503,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"retry-after", b"30"),
             ],
         })
         await send({"type": "http.response.body", "body": body})

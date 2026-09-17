@@ -24,6 +24,7 @@ from typing import Annotated, Optional, List
 from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access, current_token_info
+from ..auth.token_store import TokenStoreUnavailable
 from ..observability import traced_tool
 
 
@@ -136,6 +137,15 @@ def register(mcp: MCPServer) -> None:
                 return store.revoke(client_name)
 
             return {"status": "error", "message": f"Opération '{operation}' non implémentée."}
+
+        except TokenStoreUnavailable as e:
+            # Distinct du fourre-tout ci-dessous, et volontairement : « le
+            # magasin est injoignable » et « l'opération a échoué » appellent
+            # deux gestes différents de l'exploitant.
+            return {
+                "status": "unavailable",
+                "message": f"Magasin de tokens indisponible : {e}",
+            }
 
         except Exception as e:
             return {"status": "error", "message": str(e)}

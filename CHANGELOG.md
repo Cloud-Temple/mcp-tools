@@ -4,6 +4,126 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-09-17
+
+### Sécurité
+
+Le magasin de tokens échouait en OUVERT. Cette version le ferme, traite les
+douze chemins par lesquels une panne, une corruption ou une course rendait un
+accès accordé ou un succès annoncé à tort, et met la suite de tests sous un
+job de CI qui lui est propre.
+
+Le défaut central : quand S3 devenait injoignable après un démarrage normal,
+`initialize()` imprimait un avertissement et rendait la main sans toucher au
+cache. Un token révoqué restait donc accepté aussi longtemps que durait la
+panne. L'administrateur voyait une révocation réussie, le token continuait de
+fonctionner.
+
+#### Comportement en panne
+
+- Le cache déjà chargé reste servi pendant `TOKEN_STORE_CACHE_TTL +
+  TOKEN_STORE_STALE_GRACE`, puis l'accès est refusé. Couper net à la première
+  micro-coupure casserait le service ; ne jamais couper ignore les révocations.
+- `validate_token` lève `TokenStoreUnavailable`. Le middleware MCP et le
+  routeur admin rendent **503**, pas 401 : ne pas pouvoir vérifier un accès
+  n'est pas la même chose que le refuser, et un 401 pousserait le client à
+  remplacer un token parfaitement valide.
+- Un délai d'attente croissant, de 1 à 60 secondes, remplace la retentative à
+  chaque requête entrante. `_cache_loaded_at` n'étant pas rafraîchi sur échec,
+  la condition de rechargement restait vraie en permanence : une panne S3
+  produisait un appel S3 par requête.
+- Le magasin se répare seul quand S3 revient. `_maybe_refresh_cache` ne dépend
+  plus de `_s3_available`, drapeau qui restait faux à vie lorsque S3 était
+  injoignable au démarrage : il fallait redémarrer le service.
+- Trois réglages : `TOKEN_STORE_CACHE_TTL`, `TOKEN_STORE_STALE_GRACE`,
+  `TOKEN_STORE_FAIL_MODE`. Un TTL nul interdit de servir depuis le cache et
+  l'emporte sur `fail_open` : entre deux réglages qui se contredisent, le plus
+  restrictif gagne.
+- La clé bootstrap reste comparée avant toute consultation de S3. C'est une
+  décision assumée, pas un oubli : sans elle, la console et le diagnostic
+  deviendraient inaccessibles pendant une panne.
+
+#### Intégrité du chargement
+
+- Un échec de lecture n'est plus confondu avec un magasin vide. Le cache était
+  vidé AVANT la boucle de lecture, dont le corps avalait toute erreur : quand
+  le listing répondait mais que les lectures échouaient, le service affichait
+  « 0 token(s) chargés » comme une réussite pendant que tout le monde recevait
+  401. Le cache n'est désormais remplacé qu'après une lecture complète.
+- Le nom de l'objet est confronté au champ `token_hash` qu'il contient, et les
+  permissions doivent être une liste de chaînes. Une entrée qui ne le vérifie
+  pas est écartée et signalée, au lieu d'entrer avec `["access"]` par défaut.
+- Un objet disparu entre le listing et la lecture est traité comme une
+  révocation concurrente, pas comme une panne.
+- `list_objects_v2` est paginé. Au-delà de mille tokens, les suivants
+  disparaissaient du cache sans aucun signal.
+
+#### Mutations
+
+- `update()` travaille sur une copie. `target_data = data` était une référence
+  dans le cache : les permissions étaient élevées AVANT l'appel S3, et sur
+  échec la méthode rendait une erreur pendant que l'élévation était déjà
+  active en mémoire.
+- La migration des permissions legacy `read`/`write` n'applique le changement
+  en mémoire qu'une fois l'écriture S3 acceptée, et se déroule avant que le
+  chargement ne soit déclaré réussi.
+- `revoke()` refuse quand S3 est indisponible au lieu de supprimer du seul
+  cache local et d'annoncer un succès. Une suppression dont le sort reste
+  indéterminé inscrit le token à un registre de révocations incertaines :
+  cette instance le refuse, et aucun rechargement ne le réintroduit tant que
+  S3 n'a pas confirmé son absence. Le résultat rendu est une erreur explicite,
+  pas un succès.
+- `create()` rafraîchit le cache avant de vérifier l'unicité de `client_name`.
+  Un token créé par une autre instance restait invisible jusqu'au TTL, et
+  l'invariant tombait.
+- Une date d'expiration illisible ferme la porte. `except Exception: pass`
+  laissait ensuite le token être ACCEPTÉ : la seule protection contre un token
+  périmé disparaissait dès que sa date était corrompue. La console signale
+  désormais ces entrées par `date_invalide` au lieu de les afficher valides.
+
+#### Ce que cette version ne résout pas
+
+La cohérence entre instances. Chaque processus a son propre cache et son
+propre registre de révocations incertaines ; une révocation faite sur une
+instance ne parvient aux autres qu'au rechargement suivant de leur cache. Un
+objet S3 par token évite en revanche le lost-update des magasins à fichier
+unique : deux mutations portant sur des tokens différents ne se marchent
+jamais dessus.
+
+### CI
+
+- Nouveau job `suite-unitaire`, sans Docker. La suite était exécutée par
+  `python3 -m unittest discover` **à l'intérieur** du job `build-image`, donc
+  après deux builds d'image, un démarrage de conteneur et un healthcheck : elle
+  se taisait exactement quand autre chose était cassé. Elle en sort.
+- Deux planchers de collecte. Un `collect_ignore`, un renommage ou un import
+  cassé retirent des tests de la collecte sans produire un seul échec : la
+  suite passe au vert en testant moins. Le plancher global voit
+  `collect_ignore` ; le plancher par fichier ne le voit pas, parce que nommer
+  un fichier le contourne, mais il voit la suppression et le renommage. Les
+  deux sont nécessaires.
+- `pytest.ini` avec `--strict-markers` et un délai de 60 secondes par test.
+- `requirements-dev.txt` fige le harnais de test. Il n'est pas installé par
+  l'image.
+
+### Tests
+
+42 tests ajoutés sur le magasin de tokens, 95 au total. Chaque correctif est
+prouvé par mutation : remettre le comportement d'origine fait tomber au moins
+une assertion. 20 mutations, 20 détectées, deux passes identiques. La table
+figure dans la description de la PR.
+
+Le comportement en panne est aussi vérifié hors harnais, sur le service réel
+contre un vrai S3 qu'on éteint : token accepté, S3 coupé, le même token reçoit
+503 pendant que la clé bootstrap et `/health` restent joignables, puis S3
+revient et le token repasse sans redémarrage. Le même scénario joué contre le
+code d'origine rend 200 tout du long.
+
+Deux tests le disent explicitement : celui de la clé bootstrap et celui du
+verrou réentrant épinglent des décisions de conception qui n'ont pas changé.
+Ils passeraient aussi contre l'ancien code, ils servent de garde et non de
+preuve.
+
 ## [0.7.1] — 2026-09-16
 
 ### Added

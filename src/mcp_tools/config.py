@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     s3_bucket_name: str = "mcp-tools"
     s3_region_name: str = "fr1"
 
+    # --- Magasin de tokens : comportement en panne ---
+    # Le magasin échoue en FERMÉ. Ces trois réglages bornent ce qu'il accepte
+    # de servir quand S3 devient injoignable.
+    #
+    #   cache_ttl    : au-delà, le cache est rechargé. 0 interdit de servir
+    #                  depuis le cache, y compris pendant une panne, et
+    #                  l'emporte sur fail_open.
+    #   stale_grace  : durée pendant laquelle un cache déjà périmé reste servi
+    #                  malgré la panne, avant refus.
+    #   fail_mode    : fail_open lève la fenêtre ci-dessus, au prix explicite
+    #                  de révocations ignorées tant que la panne dure.
+    token_store_cache_ttl: int = 300
+    token_store_stale_grace: int = 300
+    token_store_fail_mode: str = "fail_close"
+
     # --- Perplexity ---
     perplexity_api_key: str = ""
     perplexity_model: str = "sonar-reasoning-pro"

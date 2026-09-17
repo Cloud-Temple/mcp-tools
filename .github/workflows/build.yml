@@ -53,6 +53,60 @@ jobs:
         # elles sont couvertes par le job build-image.
         run: python3 scripts/test_service.py --test reproducibility --no-docker
 
+  suite-unitaire:
+    name: Suite unitaire
+    runs-on: ubuntu-latest
+    # Un test qui pend ne doit pas immobiliser un runner jusqu'à la limite par
+    # défaut. `pytest-timeout` borne chaque test, ceci borne le job.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        # Le lock donne les versions de production, requirements-dev.txt le
+        # harnais. Rien n'est réépinglé ici : deux sources de vérité pour une
+        # version de pytest finissent toujours par diverger.
+        run: |
+          python -m pip install --quiet -r requirements.lock
+          python -m pip install --quiet -r requirements-dev.txt
+
+      - name: Vérifier que la suite n'a pas rétréci
+        # Un `collect_ignore`, un renommage de fichier ou un import cassé
+        # retirent des tests de la collecte SANS produire un seul échec : la
+        # suite passe au vert en testant moins. Seul un plancher le voit.
+        # Ce garde ne couvre PAS un `pytest.mark.skip` massif, qui reste
+        # visible dans le résumé d'exécution.
+        run: |
+          plancher=95
+          n="$(python -m pytest tests -q --collect-only 2>/dev/null | grep -c '::' || true)"
+          printf 'tests collectés : %s, plancher %s\n' "$n" "$plancher"
+          if [ "$n" -lt "$plancher" ]; then
+            echo "la suite a rétréci : des tests ont quitté la collecte sans qu aucun échec ne le dise"
+            exit 1
+          fi
+
+      - name: Vérifier que le magasin de tokens reste couvert
+        # Complémentaire du plancher global, pas redondant, et la frontière
+        # est mesurée : nommer le fichier contourne `collect_ignore`, donc ce
+        # garde-ci NE voit PAS une exclusion par conftest. Il voit la
+        # suppression et le renommage du fichier, que le plancher global
+        # manquerait si des tests étaient ajoutés ailleurs au même moment.
+        # Le plancher global, lui, voit `collect_ignore`. Il faut les deux.
+        run: |
+          plancher=42
+          n="$(python -m pytest tests/test_token_store.py -q --collect-only 2>/dev/null | grep -c '::' || true)"
+          printf 'tests du magasin de tokens : %s, plancher %s\n' "$n" "$plancher"
+          if [ "$n" -lt "$plancher" ]; then
+            echo "les tests du magasin de tokens ont disparu de la collecte"
+            exit 1
+          fi
+
+      - name: Lancer la suite
+        run: python -m pytest tests -q
+
   build-image:
     name: Build frais, démarrage, scan
     runs-on: ubuntu-latest
@@ -94,7 +148,6 @@ jobs:
           CI_ADMIN_BOOTSTRAP_KEY="ci_e2e_$(openssl rand -hex 16)"
           sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=${CI_ADMIN_BOOTSTRAP_KEY}/" .env
           python3 -m pip install --quiet -r requirements.lock
-          python3 -m unittest discover -s tests -v
           DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)" MCP_TOKEN="${CI_ADMIN_BOOTSTRAP_KEY}" \
             python3 scripts/test_service.py --test date,calc,waf,cli-smoke,auth
 

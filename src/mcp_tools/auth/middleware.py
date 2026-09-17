@@ -11,6 +11,7 @@ import sys
 from typing import Optional
 
 from .context import current_token_info
+from .token_store import TokenStoreUnavailable
 from ..config import get_settings
 from ..observability import bind_activity, get_activity_context, record_activity
 
@@ -50,7 +51,22 @@ class AuthMiddleware:
         token_info = None
 
         if token:
-            token_info = self._validate_token(token)
+            try:
+                token_info = self._validate_token(token)
+            except TokenStoreUnavailable:
+                # Ne pas pouvoir vérifier un accès n'est pas la même chose
+                # que le refuser. Un 401 ferait croire à un token invalide et
+                # pousserait le client à en demander un autre ; un 500 ne dirait
+                # rien du tout. Sans ce bloc, la levée du magasin remontait en
+                # erreur ASGI non traitée.
+                if path == "/mcp":
+                    record_activity(
+                        "auth.unverifiable", level="error",
+                        message="Authentification MCP non vérifiable",
+                        details={"reason": "token_store_unavailable"},
+                    )
+                await self._send_error(send, 503, "Magasin de tokens indisponible")
+                return
 
         if token_info is None:
             if path == "/mcp":
