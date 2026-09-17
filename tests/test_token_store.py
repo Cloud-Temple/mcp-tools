@@ -1042,6 +1042,37 @@ class ContratHttp(MagasinMixin, unittest.IsolatedAsyncioTestCase):
         statut, _ = await self._via_auth("Bearer cle-bootstrap-de-test")
         self.assertEqual(statut, 200)
 
+    async def test_sans_s3_configure_un_mauvais_token_rend_401_et_non_503(self):
+        """Les deux états ne se confondent pas, et la distinction est fine.
+
+        S3 configuré mais injoignable : on ne PEUT PAS vérifier, donc 503.
+        S3 pas configuré du tout : il n'y a rien contre quoi vérifier, le
+        magasin le sait, et le refus est la réponse juste, donc 401.
+
+        La recette e2e du dépôt a buté là-dessus : elle se disait hermétique
+        tout en laissant `.env.example` pointer sur le stockage de production
+        avec des identifiants factices. Le magasin avalait l'échec, donc rien
+        ne le signalait.
+        """
+        store = self.monter({}, s3_endpoint_url="", s3_access_key_id="")
+        store.initialize()
+        self._brancher(store)
+
+        statut, _ = await self._via_auth("Bearer inconnu")
+        self.assertEqual(statut, 401)
+
+        statut, _ = await self._via_auth(None)
+        self.assertEqual(statut, 401)
+
+        # Et aucun appel S3 n'est tenté. Sans cette assertion le test
+        # passerait aussi bien si la garde disparaissait, puisqu'un magasin
+        # vide rend 401 de toute façon : il ne prouverait que le résultat,
+        # pas le chemin.
+        self.assertEqual(
+            self.s3.appels["list"], 0,
+            "un service sans S3 configuré ne doit adresser aucune requête à S3",
+        )
+
     async def test_l_api_admin_rend_503_quand_le_magasin_est_injoignable(self):
         """Le routeur admin a son propre point de capture.
 

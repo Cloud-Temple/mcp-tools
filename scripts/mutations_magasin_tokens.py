@@ -296,6 +296,13 @@ MUTATIONS = [
          apres="""                old = actuel.get("tool_ids", [])
                 copie["tool_ids"] = tool_ids
                 changes.append(f"tool_ids: {len(old)} → {len(tool_ids)} outils")"""),
+    dict(id="M24", fichier=TS,
+         titre="un magasin sans S3 configure interroge quand meme S3",
+         avant="""        if not self.s3_configured:
+            return
+
+        with self._lock:""",
+         apres="""        with self._lock:"""),
 ]
 
 

@@ -45,6 +45,24 @@ fonctionner.
   décision assumée, pas un oubli : sans elle, la console et le diagnostic
   deviendraient inaccessibles pendant une panne.
 
+**Conséquence d'exploitation à connaître avant de déployer.** Un service dont
+S3 est *configuré mais injoignable* rend désormais 503 à tout porteur de token,
+là où il rendait 401. Aucun accès n'était accordé dans un cas comme dans
+l'autre ; ce qui change est le signal. Le 503 nomme la vraie cause au lieu de
+faire croire à un token invalide, mais une sonde qui attendait 401 sur une
+requête non authentifiée verra passer des 503, et un client qui réessaie sur
+503 réessaiera tant que la configuration reste fausse. Un service dont S3
+n'est *pas configuré du tout* continue de rendre 401 : le magasin sait alors
+qu'il n'a rien à consulter, et le refus est la réponse juste.
+
+Cette distinction a fait tomber la recette e2e du dépôt, et pour une bonne
+raison. L'étape se disait « sans cible Internet, écriture S3 ni secret
+externe », mais `.env.example` porte `S3_ENDPOINT_URL=https://s3.fr1.cloud-temple.com`
+avec des identifiants factices : le service tentait donc une requête
+authentifiée vers le stockage de production depuis un runner public, et le
+magasin avalait l'échec, si bien que rien ne le signalait. La recette coupe
+maintenant la cible pour de bon et redevient ce qu'elle annonce.
+
 #### Intégrité du chargement
 
 - Un échec de lecture n'est plus confondu avec un magasin vide. Le cache était
@@ -138,9 +156,9 @@ dessus.
 
 ### Tests
 
-48 tests ajoutés sur le magasin de tokens, 101 au total. Chaque correctif est
+49 tests ajoutés sur le magasin de tokens, 102 au total. Chaque correctif est
 prouvé par mutation : remettre le comportement d'origine fait tomber au moins
-une assertion. 23 mutations, 23 détectées, deux passes identiques, et la table
+une assertion. 24 mutations, 24 détectées, deux passes identiques, et la table
 est rejouée par la CI à chaque changement.
 
 Le comportement en panne est aussi vérifié hors harnais, sur le service réel
