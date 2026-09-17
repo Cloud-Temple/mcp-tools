@@ -1,0 +1,21 @@
+# =============================================================================
+# MCP Tools — Dépendances de TEST
+# =============================================================================
+#
+# ⚠️ Ce fichier n'est PAS installé par l'image. Le Dockerfile installe
+# `requirements.lock` et rien d'autre : embarquer un harnais de test dans
+# l'image de production l'alourdirait et élargirait sa surface d'attaque pour
+# rien.
+#
+# Il est installé par le job `suite-unitaire` de `.github/workflows/build.yml`.
+# Les versions sont figées à l'identique : une suite qui passe en CI et échoue
+# en local à cause d'une mineure de pytest ne prouve plus rien.
+#
+# `pytest-asyncio` n'y figure pas volontairement. Les tests asynchrones passent
+# par `unittest.IsolatedAsyncioTestCase`, qui relève de la bibliothèque
+# standard. Déclarer une dépendance dont rien ne dépend est une affirmation
+# fausse de plus dans un fichier que personne ne relit.
+# =============================================================================
+
+pytest==9.1.1
+pytest-timeout==2.4.0

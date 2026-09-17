@@ -53,6 +53,74 @@ jobs:
         # elles sont couvertes par le job build-image.
         run: python3 scripts/test_service.py --test reproducibility --no-docker
 
+  suite-unitaire:
+    name: Suite unitaire
+    runs-on: ubuntu-latest
+    # Un test qui pend ne doit pas immobiliser un runner jusqu'à la limite par
+    # défaut. `pytest-timeout` borne chaque test, ceci borne le job.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        # Le lock donne les versions de production, requirements-dev.txt le
+        # harnais. Rien n'est réépinglé ici : deux sources de vérité pour une
+        # version de pytest finissent toujours par diverger.
+        run: |
+          python -m pip install --quiet -r requirements.lock
+          python -m pip install --quiet -r requirements-dev.txt
+
+      - name: Vérifier que la suite n'a pas rétréci
+        # Un `collect_ignore`, un renommage de fichier ou un import cassé
+        # retirent des tests de la collecte SANS produire un seul échec : la
+        # suite passe au vert en testant moins. Seul un plancher le voit.
+        # Ce garde ne couvre PAS un `pytest.mark.skip` massif, qui reste
+        # visible dans le résumé d'exécution.
+        run: |
+          plancher=102
+          n="$(python -m pytest tests -q --collect-only 2>/dev/null | grep -c '::' || true)"
+          printf 'tests collectés : %s, plancher %s\n' "$n" "$plancher"
+          if [ "$n" -lt "$plancher" ]; then
+            echo "la suite a rétréci : des tests ont quitté la collecte sans qu aucun échec ne le dise"
+            exit 1
+          fi
+
+      - name: Vérifier que le magasin de tokens reste couvert
+        # Complémentaire du plancher global, pas redondant, et la frontière
+        # est mesurée : nommer le fichier contourne `collect_ignore`, donc ce
+        # garde-ci NE voit PAS une exclusion par conftest. Il voit la
+        # suppression et le renommage du fichier, que le plancher global
+        # manquerait si des tests étaient ajoutés ailleurs au même moment.
+        # Le plancher global, lui, voit `collect_ignore`. Il faut les deux.
+        run: |
+          plancher=49
+          n="$(python -m pytest tests/test_token_store.py -q --collect-only 2>/dev/null | grep -c '::' || true)"
+          printf 'tests du magasin de tokens : %s, plancher %s\n' "$n" "$plancher"
+          if [ "$n" -lt "$plancher" ]; then
+            echo "les tests du magasin de tokens ont disparu de la collecte"
+            exit 1
+          fi
+
+      - name: Lancer la suite
+        run: python -m pytest tests -q
+
+      - name: Table de mutations du magasin de tokens
+        # Ce que les deux planchers ci-dessus NE voient pas : un test qu'on
+        # vide de son corps en gardant son nom. La collecte ne bouge pas,
+        # `pytest` reste vert, et la protection a disparu. Une relecture l'a
+        # démontré en remettant un défaut de sécurité en place sans qu'aucun
+        # garde ne réagisse.
+        #
+        # Ce script remet chaque correctif dans son état d'origine et exige
+        # qu'au moins un test tombe. Il répond donc à la question que le
+        # comptage ne pose pas : les assertions protègent-elles encore ?
+        # Vingt-trois secondes, pour une garantie qui tenait jusqu'ici d'une
+        # mesure faite une fois à la main.
+        run: python scripts/mutations_magasin_tokens.py
+
   build-image:
     name: Build frais, démarrage, scan
     runs-on: ubuntu-latest
@@ -93,8 +161,21 @@ jobs:
           cp .env.example .env
           CI_ADMIN_BOOTSTRAP_KEY="ci_e2e_$(openssl rand -hex 16)"
           sed -i "s/^ADMIN_BOOTSTRAP_KEY=.*/ADMIN_BOOTSTRAP_KEY=${CI_ADMIN_BOOTSTRAP_KEY}/" .env
+          # Cette étape se dit hermétique ; elle ne l'était pas. `.env.example`
+          # porte S3_ENDPOINT_URL=https://s3.fr1.cloud-temple.com avec des
+          # identifiants factices, donc le service tentait une requête
+          # authentifiée vers le stockage de production depuis un runner
+          # public. Le magasin de tokens avalait l'échec, si bien que rien ne
+          # le signalait. Il ne l'avale plus : on coupe la cible pour de bon.
+          #
+          # Effet de bord voulu : sans S3 configuré, le magasin sait qu'il n'a
+          # rien à consulter et un mauvais token reçoit 401. Avec un S3
+          # configuré mais injoignable, il rendrait 503, ce qui est la réponse
+          # honnête mais pas ce que cette recette veut exercer.
+          sed -i "s|^S3_ENDPOINT_URL=.*|S3_ENDPOINT_URL=|" .env
+          sed -i "s|^S3_ACCESS_KEY_ID=.*|S3_ACCESS_KEY_ID=|" .env
+          sed -i "s|^S3_SECRET_ACCESS_KEY=.*|S3_SECRET_ACCESS_KEY=|" .env
           python3 -m pip install --quiet -r requirements.lock
-          python3 -m unittest discover -s tests -v
           DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)" MCP_TOKEN="${CI_ADMIN_BOOTSTRAP_KEY}" \
             python3 scripts/test_service.py --test date,calc,waf,cli-smoke,auth
 
