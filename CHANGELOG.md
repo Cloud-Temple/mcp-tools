@@ -8,10 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Sécurité
 
-Le magasin de tokens échouait en OUVERT. Cette version le ferme, traite les
-douze chemins par lesquels une panne, une corruption ou une course rendait un
-accès accordé ou un succès annoncé à tort, et met la suite de tests sous un
-job de CI qui lui est propre.
+Le magasin de tokens échouait en OUVERT. Cette version le ferme, reprend chaque
+chemin par lequel une panne, une corruption ou une course rendait un accès
+accordé ou un succès annoncé à tort, et met la suite de tests sous un job de CI
+qui lui est propre. Les chemins sont énumérés ci-dessous plutôt que comptés :
+le découpage dépend de la granularité et un chiffre rond donnerait à cette
+section une autorité que les comptages de tests, eux, ont vraiment.
 
 Le défaut central : quand S3 devenait injoignable après un démarrage normal,
 `initialize()` imprimait un avertissement et rendait la main sans toucher au
@@ -57,6 +59,15 @@ fonctionner.
   révocation concurrente, pas comme une panne.
 - `list_objects_v2` est paginé. Au-delà de mille tokens, les suivants
   disparaissaient du cache sans aucun signal.
+- `tool_ids` est typé au même titre que `permissions`, **aux deux bouts**.
+  `check_tool_access` teste l'appartenance par `in` : sur une liste c'est une
+  appartenance, sur une chaîne c'est une sous-chaîne. Un `tool_ids` arrivé sous
+  forme de chaîne faisait donc basculer le contrôle d'accès aux outils sans
+  qu'aucune erreur ne soit levée. Le contrôle vaut désormais au chargement ET à
+  l'écriture : `create()` et `update()` déposaient dans le cache des valeurs
+  venues telles quelles du corps JSON de `POST /admin/api/tokens`, si bien
+  qu'un contrôle au seul chargement n'aurait tenu que jusqu'au rechargement
+  suivant.
 
 #### Mutations
 
@@ -83,12 +94,23 @@ fonctionner.
 
 #### Ce que cette version ne résout pas
 
-La cohérence entre instances. Chaque processus a son propre cache et son
-propre registre de révocations incertaines ; une révocation faite sur une
-instance ne parvient aux autres qu'au rechargement suivant de leur cache. Un
-objet S3 par token évite en revanche le lost-update des magasins à fichier
-unique : deux mutations portant sur des tokens différents ne se marchent
-jamais dessus.
+**La cohérence entre instances.** Chaque processus a son propre cache ; une
+révocation faite sur une instance ne parvient aux autres qu'au rechargement
+suivant de leur cache.
+
+**La durabilité du registre de révocations incertaines.** Il vit en mémoire. Si
+le processus redémarre avant que la révocation ait été rejouée, et que l'objet
+est réellement resté en S3 parce que le `DELETE` avait échoué côté serveur, le
+rechargement au démarrage le récupère et le token redevient valide. Le cas est
+banal en conteneurs. Le message rendu à l'administrateur le dit maintenant
+explicitement et demande de vérifier par une lecture. Fermer le trou demande
+une marque de révocation persistée en S3, donc une écriture qui peut échouer
+pour la même raison que le `DELETE` : c'est un chantier séparé, tracé comme
+tel.
+
+Un objet S3 par token évite en revanche le lost-update des magasins à fichier
+unique : deux mutations portant sur des tokens différents ne se marchent jamais
+dessus.
 
 ### CI
 
@@ -102,22 +124,33 @@ jamais dessus.
   `collect_ignore` ; le plancher par fichier ne le voit pas, parce que nommer
   un fichier le contourne, mais il voit la suppression et le renommage. Les
   deux sont nécessaires.
+- La table de mutations tourne en CI (`scripts/mutations_magasin_tokens.py`,
+  23 secondes). Les planchers comptent des tests collectés, pas des assertions
+  vivantes : vider le corps d'un test en gardant son nom laisse les deux
+  planchers verts et `pytest` au vert, protection en moins. La relecture
+  indépendante l'a démontré en remettant un défaut en place sans qu'aucun garde
+  ne réagisse. Le script remet chaque correctif dans son état d'origine et
+  exige qu'au moins un test tombe. Une ancre qui ne s'applique plus fait
+  échouer le job, et c'est voulu : un correctif qu'on déplace se réexamine.
 - `pytest.ini` avec `--strict-markers` et un délai de 60 secondes par test.
 - `requirements-dev.txt` fige le harnais de test. Il n'est pas installé par
   l'image.
 
 ### Tests
 
-42 tests ajoutés sur le magasin de tokens, 95 au total. Chaque correctif est
+48 tests ajoutés sur le magasin de tokens, 101 au total. Chaque correctif est
 prouvé par mutation : remettre le comportement d'origine fait tomber au moins
-une assertion. 20 mutations, 20 détectées, deux passes identiques. La table
-figure dans la description de la PR.
+une assertion. 23 mutations, 23 détectées, deux passes identiques, et la table
+est rejouée par la CI à chaque changement.
 
 Le comportement en panne est aussi vérifié hors harnais, sur le service réel
-contre un vrai S3 qu'on éteint : token accepté, S3 coupé, le même token reçoit
-503 pendant que la clé bootstrap et `/health` restent joignables, puis S3
-revient et le token repasse sans redémarrage. Le même scénario joué contre le
-code d'origine rend 200 tout du long.
+contre un vrai S3 qu'on éteint. La recette est dans le dépôt et se rejoue :
+`./scripts/e2e_panne_s3.sh`. Token accepté, S3 coupé, le même token reçoit 503
+pendant que la clé bootstrap et `/health` restent joignables et qu'une
+révocation est refusée au lieu d'être simulée, puis S3 revient et le token
+repasse sans redémarrage. Comme la recette de `scripts/test_service.py`, elle
+relève de la qualification manuelle : elle tire une image externe et construit
+l'image du service.
 
 Deux tests le disent explicitement : celui de la clé bootstrap et celui du
 verrou réentrant épinglent des décisions de conception qui n'ont pas changé.

@@ -80,7 +80,7 @@ jobs:
         # Ce garde ne couvre PAS un `pytest.mark.skip` massif, qui reste
         # visible dans le résumé d'exécution.
         run: |
-          plancher=95
+          plancher=101
           n="$(python -m pytest tests -q --collect-only 2>/dev/null | grep -c '::' || true)"
           printf 'tests collectés : %s, plancher %s\n' "$n" "$plancher"
           if [ "$n" -lt "$plancher" ]; then
@@ -96,7 +96,7 @@ jobs:
         # manquerait si des tests étaient ajoutés ailleurs au même moment.
         # Le plancher global, lui, voit `collect_ignore`. Il faut les deux.
         run: |
-          plancher=42
+          plancher=48
           n="$(python -m pytest tests/test_token_store.py -q --collect-only 2>/dev/null | grep -c '::' || true)"
           printf 'tests du magasin de tokens : %s, plancher %s\n' "$n" "$plancher"
           if [ "$n" -lt "$plancher" ]; then
@@ -106,6 +106,20 @@ jobs:
 
       - name: Lancer la suite
         run: python -m pytest tests -q
+
+      - name: Table de mutations du magasin de tokens
+        # Ce que les deux planchers ci-dessus NE voient pas : un test qu'on
+        # vide de son corps en gardant son nom. La collecte ne bouge pas,
+        # `pytest` reste vert, et la protection a disparu. Une relecture l'a
+        # démontré en remettant un défaut de sécurité en place sans qu'aucun
+        # garde ne réagisse.
+        #
+        # Ce script remet chaque correctif dans son état d'origine et exige
+        # qu'au moins un test tombe. Il répond donc à la question que le
+        # comptage ne pose pas : les assertions protègent-elles encore ?
+        # Vingt-trois secondes, pour une garantie qui tenait jusqu'ici d'une
+        # mesure faite une fois à la main.
+        run: python scripts/mutations_magasin_tokens.py
 
   build-image:
     name: Build frais, démarrage, scan

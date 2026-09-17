@@ -29,12 +29,25 @@ au contraire de servir depuis le cache, et l'emporte sur `fail_open`.
 
 Ce que ce magasin ne résout pas
 -------------------------------
-La cohérence ENTRE instances. Chaque processus a son propre cache et son propre
-registre de révocations incertaines. Une révocation faite sur une instance ne
-parvient aux autres qu'au rechargement suivant de leur cache, donc au plus tard
-au bout d'un TTL. Un objet S3 par token évite en revanche le lost-update qui
-frappe les magasins à fichier unique : deux mutations portant sur des tokens
-différents ne se marchent jamais dessus.
+Deux choses, et les nommer vaut mieux que de laisser croire qu'elles sont
+couvertes.
+
+La cohérence ENTRE instances. Chaque processus a son propre cache. Une
+révocation faite sur une instance ne parvient aux autres qu'au rechargement
+suivant de leur cache, donc au plus tard au bout d'un TTL.
+
+La DURABILITÉ du registre de révocations incertaines. Il vit en mémoire. Si le
+processus redémarre avant que la révocation ait été rejouée, et que l'objet est
+réellement resté en S3 parce que le DELETE avait échoué côté serveur, le
+rechargement au démarrage le récupère et le token redevient valide. Le cas est
+banal en conteneurs : mise à jour progressive, arrêt pour dépassement mémoire,
+boucle de redémarrage. Fermer ce trou demande une marque de révocation
+persistée en S3, donc une écriture qui peut échouer pour la même raison que le
+DELETE : c'est un chantier en soi, pas un correctif.
+
+Un objet S3 par token évite en revanche le lost-update qui frappe les magasins
+à fichier unique : deux mutations portant sur des tokens différents ne se
+marchent jamais dessus.
 """
 
 import hashlib
@@ -86,6 +99,22 @@ def _est_objet_absent(error: Exception) -> bool:
         return True
     statut = reponse.get("ResponseMetadata", {}).get("HTTPStatusCode")
     return statut == 404
+
+
+def _liste_de_chaines(valeur) -> Optional[List[str]]:
+    """Rend une copie de la liste si c'en est une, de chaînes. Sinon None.
+
+    Une chaîne n'est PAS une liste de chaînes, et c'est tout l'objet de cette
+    fonction. `"network" in "networkonly"` est vrai, `"network" in
+    ["networkonly"]` est faux. `check_tool_access` teste l'appartenance par
+    `in` : un champ `tool_ids` arrivé sous forme de chaîne transforme le
+    contrôle d'accès aux outils en test de sous-chaîne, silencieusement.
+    """
+    if not isinstance(valeur, list):
+        return None
+    if not all(isinstance(element, str) for element in valeur):
+        return None
+    return list(valeur)
 
 
 class TokenStore:
@@ -264,9 +293,15 @@ class TokenStore:
         if token_hash != attendu:
             ignores.append(f"{key}: token_hash ne correspond pas au nom de l'objet")
             return None
-        permissions = data.get("permissions")
-        if not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions):
+        if _liste_de_chaines(data.get("permissions")) is None:
             ignores.append(f"{key}: permissions absentes ou mal formées")
+            return None
+        # `tool_ids` absent vaut liste vide : `check_tool_access` refuse déjà
+        # tout outil dans ce cas. En revanche un `tool_ids` PRÉSENT et mal typé
+        # est écarté, parce qu'une chaîne y ferait basculer le contrôle d'accès
+        # en test de sous-chaîne.
+        if _liste_de_chaines(data.get("tool_ids", [])) is None:
+            ignores.append(f"{key}: tool_ids mal formés")
             return None
         return data
 
@@ -554,8 +589,8 @@ class TokenStore:
 
         return {
             "client_name": info.get("client_name", "unknown"),
-            "permissions": list(info.get("permissions") or []),
-            "tool_ids": info.get("tool_ids", []),
+            "permissions": _liste_de_chaines(info.get("permissions")) or [],
+            "tool_ids": _liste_de_chaines(info.get("tool_ids", [])) or [],
         }
 
     # =========================================================================
@@ -588,6 +623,26 @@ class TokenStore:
             indisponible = self._exiger_s3()
             if indisponible is not None:
                 return indisponible
+
+            # Le chemin d'écriture contrôle ce que le chemin de lecture
+            # contrôle, sinon le contrôle d'intégrité ne vaut que jusqu'au
+            # prochain rechargement. `permissions` et `tool_ids` arrivent tels
+            # quels du corps JSON de POST /admin/api/tokens : rien ne les
+            # typait avant d'atterrir dans le cache.
+            permissions_valides = _liste_de_chaines(permissions)
+            if permissions_valides is None:
+                return {
+                    "status": "error",
+                    "message": "permissions doit être une liste de chaînes.",
+                }
+            tool_ids_valides = _liste_de_chaines(tool_ids if tool_ids is not None else [])
+            if tool_ids_valides is None:
+                return {
+                    "status": "error",
+                    "message": "tool_ids doit être une liste de chaînes.",
+                }
+            permissions = permissions_valides
+            tool_ids = tool_ids_valides
 
             for data in self._cache.values():
                 if data.get("client_name") == client_name:
@@ -717,13 +772,25 @@ class TokenStore:
 
             changes = []
             if permissions is not None:
+                valides = _liste_de_chaines(permissions)
+                if valides is None:
+                    return {
+                        "status": "error",
+                        "message": "permissions doit être une liste de chaînes.",
+                    }
                 old = actuel.get("permissions", [])
-                copie["permissions"] = permissions
-                changes.append(f"permissions: {old} → {permissions}")
+                copie["permissions"] = valides
+                changes.append(f"permissions: {old} → {valides}")
             if tool_ids is not None:
+                valides = _liste_de_chaines(tool_ids)
+                if valides is None:
+                    return {
+                        "status": "error",
+                        "message": "tool_ids doit être une liste de chaînes.",
+                    }
                 old = actuel.get("tool_ids", [])
-                copie["tool_ids"] = tool_ids
-                changes.append(f"tool_ids: {len(old)} → {len(tool_ids)} outils")
+                copie["tool_ids"] = valides
+                changes.append(f"tool_ids: {len(old)} → {len(valides)} outils")
             if email is not None:
                 old = actuel.get("email", "")
                 copie["email"] = email
@@ -807,7 +874,12 @@ class TokenStore:
                         f"Révocation INCERTAINE pour '{client_name}' : {erreur}. "
                         "Le token est refusé par cette instance, mais il peut "
                         "subsister en S3 et rester accepté ailleurs. "
-                        "Relancer la révocation une fois S3 rétabli."
+                        "Le refus local ne survit PAS à un redémarrage de ce "
+                        "processus : si le service redémarre avant la nouvelle "
+                        "tentative et que l'objet est bien resté en S3, le "
+                        "token redevient valide. "
+                        "Relancer la révocation dès que S3 est rétabli, et "
+                        "vérifier par une lecture qu'elle a abouti."
                     ),
                 }
 

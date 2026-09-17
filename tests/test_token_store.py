@@ -608,6 +608,102 @@ class IntegriteChargement(MagasinMixin, unittest.TestCase):
 
 
 # =============================================================================
+# Typage des champs : une chaîne n'est pas une liste de chaînes
+# =============================================================================
+
+
+class TypageDesChamps(MagasinMixin, unittest.TestCase):
+    """`check_tool_access` teste l'appartenance par `in`.
+
+    Sur une liste, `in` est une appartenance. Sur une chaîne, c'est une
+    sous-chaîne. Un `tool_ids` arrivé sous forme de chaîne fait donc basculer
+    le contrôle d'accès aux outils sans qu'aucune erreur ne soit levée.
+
+    Les deux bouts sont couverts ici, et c'est le fond du sujet : contrôler au
+    chargement seulement ne vaudrait que jusqu'au prochain rechargement, parce
+    que `create()` et `update()` déposent dans le cache des valeurs venues
+    directement du corps JSON de l'API admin.
+    """
+
+    def test_un_tool_ids_en_chaine_est_ecarte_au_chargement(self):
+        h, d = entree("alice", tool_ids="networkonly")
+        store = self.monter(objets((h, d)))
+        store.initialize()
+
+        self.assertIsNone(store.validate_token("alice"))
+
+    def test_un_tool_ids_absent_vaut_liste_vide_et_n_ecarte_rien(self):
+        """Absence et mauvais type ne se traitent pas pareil.
+
+        `check_tool_access` refuse déjà tout outil sur un `tool_ids` vide :
+        l'absence est donc déjà fermée, et écarter l'entrée casserait des
+        tokens existants sans rien gagner.
+        """
+        h, d = entree("alice")
+        del d["tool_ids"]
+        store = self.monter(objets((h, d)))
+        store.initialize()
+
+        info = store.validate_token("alice")
+        self.assertIsNotNone(info)
+        self.assertEqual(info["tool_ids"], [])
+
+    def test_un_tool_ids_en_chaine_ne_peut_pas_etre_cree(self):
+        store = self.monter({})
+        store.initialize()
+
+        resultat = store.create("alice", ["access"], "networkonly")
+
+        self.assertEqual(resultat["status"], "error")
+        self.assertIn("tool_ids", resultat["message"])
+        self.assertEqual(self.s3.appels["put"], 0)
+
+    def test_des_permissions_en_chaine_ne_peuvent_pas_etre_creees(self):
+        store = self.monter({})
+        store.initialize()
+
+        resultat = store.create("alice", "admin", [])
+
+        self.assertEqual(resultat["status"], "error")
+        self.assertIn("permissions", resultat["message"])
+        self.assertEqual(self.s3.appels["put"], 0)
+
+    def test_un_tool_ids_en_chaine_ne_peut_pas_etre_pose_par_update(self):
+        h, d = entree("alice", tool_ids=["calc"])
+        store = self.monter(objets((h, d)))
+        store.initialize()
+
+        resultat = store.update("alice", tool_ids="networkonly")
+
+        self.assertEqual(resultat["status"], "error")
+        self.assertEqual(store.validate_token("alice")["tool_ids"], ["calc"])
+
+    def test_le_controle_d_acces_aux_outils_reste_un_test_d_appartenance(self):
+        """La preuve de bout en bout, jusqu'à `check_tool_access`.
+
+        Un token autorisé sur `networkonly` ne doit PAS ouvrir `network`.
+        Cette assertion tombe dès que `tool_ids` cesse d'être une liste.
+        """
+        from src.mcp_tools.auth.context import check_tool_access, current_token_info
+
+        store = self.monter({})
+        store.initialize()
+        cree = store.create("alice", ["access"], ["networkonly"])
+        self.assertEqual(cree["status"], "success")
+
+        info = store.validate_token(cree["token"])
+        self.assertIsInstance(info["tool_ids"], list)
+
+        jeton = current_token_info.set(info)
+        try:
+            with self.assertRaises(ValueError):
+                check_tool_access("network")
+            check_tool_access("networkonly")  # ne doit pas lever
+        finally:
+            current_token_info.reset(jeton)
+
+
+# =============================================================================
 # C8 — l'unicité vérifiée contre une photo ancienne
 # =============================================================================
 
