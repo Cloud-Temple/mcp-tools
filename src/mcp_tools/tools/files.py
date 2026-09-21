@@ -146,7 +146,7 @@ def _build_python_script(
 
     # Le script Python complet — injecté via stdin pour éviter les problèmes d'escaping
     script = r'''
-import codecs, hashlib, json, os, sys, tempfile, traceback
+import codecs, hashlib, json, sys, tempfile, traceback
 
 try:
     import boto3
@@ -381,10 +381,9 @@ def main():
         if declared_size > max_bytes:
             raise ValueError(f"Résultat trop volumineux ({declared_size} octets, max {max_bytes}).")
 
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w+b", dir="/tmp", delete=False) as assembled:
-                temp_path = assembled.name
+        # TemporaryFile est anonyme : une annulation qui tue le processus ne
+        # peut pas laisser un fichier concaténé persistant dans /tmp.
+        with tempfile.TemporaryFile(mode="w+b", dir="/tmp") as assembled:
                 manifest = []
                 output_size = 0
                 for index, source_info in enumerate(source_headers):
@@ -461,24 +460,18 @@ def main():
                     # Une panne pendant le PUT ne permet pas de conclure que S3
                     # n'a pas reçu l'objet. Le client doit relire la destination.
                     raise ConcatResultUncertainError("Écriture de destination indéterminée.") from exc
-            result.update({
-                "path": path,
-                "size": output_size,
-                "sha256": output_hash.hexdigest(),
-                "parts": len(manifest),
-                "sources": manifest,
-                "separator_bytes": len(separator_bytes),
-                "etag": response.get("ETag", ""),
-            })
-            version = response.get("VersionId")
-            if version:
-                result["version_id"] = version
-        finally:
-            if temp_path:
-                try:
-                    os.unlink(temp_path)
-                except FileNotFoundError:
-                    pass
+        result.update({
+            "path": path,
+            "size": output_size,
+            "sha256": output_hash.hexdigest(),
+            "parts": len(manifest),
+            "sources": manifest,
+            "separator_bytes": len(separator_bytes),
+            "etag": response.get("ETag", ""),
+        })
+        version = response.get("VersionId")
+        if version:
+            result["version_id"] = version
 
     print(json.dumps(result, default=str))
 
@@ -609,6 +602,16 @@ async def _run_local(script: str, timeout: int, settings) -> dict:
             process.communicate(), timeout=timeout + 5,
         )
     except asyncio.TimeoutError:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        raise
+    except asyncio.CancelledError:
+        # En développement local, le sous-processus peut encore lire les
+        # sources ou appeler put_object après l'annulation du client. Le tuer
+        # et attendre sa fin préserve la même garantie que la sandbox Docker.
         try:
             process.kill()
             await process.wait()

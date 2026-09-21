@@ -6,17 +6,21 @@ tests vérifient donc le chemin qui lit et écrit les octets, sans Docker ni S3.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import io
 import json
 import sys
 import types
+from pathlib import Path
 from unittest.mock import ANY
 
 import pytest
 
-from mcp_tools.tools import files
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.mcp_tools.tools import files
 
 
 class _Body:
@@ -195,3 +199,59 @@ def test_concat_timeout_is_recorded_as_an_uncertain_remote_result(monkeypatch: p
             "details": {"operation": "concat", "path": "out.md", "reason": "timeout"},
         }),
     ]
+
+
+def test_local_concat_cancellation_kills_and_reaps_the_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Process:
+        def __init__(self) -> None:
+            self.killed = False
+            self.reaped = False
+            self._finished = asyncio.Event()
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await self._finished.wait()
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+            self._finished.set()
+
+        async def wait(self) -> int:
+            self.reaped = True
+            return 0
+
+    process = _Process()
+
+    async def fake_create_subprocess_exec(*args: object, **kwargs: object) -> _Process:
+        return process
+
+    async def exercise() -> None:
+        monkeypatch.setattr(files.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        task = asyncio.create_task(files._run_local("pass", 30, object()))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert process.killed
+    assert process.reaped
+    script = files._build_python_script(
+        operation="concat",
+        endpoint="https://s3.invalid",
+        access_key="access",
+        secret_key="secret",
+        bucket="bucket",
+        region="fr1",
+        path="out.md",
+        path2=None,
+        content=None,
+        prefix=None,
+        max_keys=100,
+        max_output_chars=50_000,
+        paths=["source.md"],
+        separator="\n",
+    )
+    assert "tempfile.TemporaryFile(" in script
+    assert "NamedTemporaryFile" not in script
