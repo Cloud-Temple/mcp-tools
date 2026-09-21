@@ -31,7 +31,7 @@ backlog et ne doivent pas être accordés dans un token de production.
 
 | Tool      | Opérations                                        | Params clés                                                              | Source                  |
 | --------- | ------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------- |
-| **files** ✅ | `list`, `read`, `write`, `delete`, `info`, `diff`, `versions`, `enable_versioning` — Sandbox Docker (--network=bridge, python3+boto3, S3 Dell ECS hybride SigV2/SigV4) | path, content, prefix, version_id, endpoint, access_key, secret_key, bucket, region — 11 tests + 9 tests versioning | Sandbox boto3 (from scratch) |
+| **files** ✅ | `list`, `read`, `write`, `delete`, `info`, `diff`, `versions`, `enable_versioning`, `concat` — Sandbox Docker (--network=bridge, python3+boto3, S3 Dell ECS hybride SigV2/SigV4) | path, content, prefix, version_id, offset/limit/if_match, endpoint, access_key, secret_key, bucket, region — lecture paginée byte-exacte en base64, pincée par VersionId ou ETag | Sandbox boto3 (from scratch) |
 
 ### Utilitaires (2 tools)
 

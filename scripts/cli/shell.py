@@ -36,7 +36,7 @@ SHELL_COMMANDS = {
     "calc":       "calc <expression> — Calcul math (math.sqrt, statistics.mean...)",
     "doc":        "doc <query> [--context C] [--model M] — Documentation technique via Perplexity",
     "ssh":        "ssh <op> <host> <user> [--password P] [--key K] [--command C] [--port N] [--remote-path P] [--content C] [--sudo] [--timeout N]",
-    "files":      "files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
+    "files":      "files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
     "token":      "token <op> [name] [--tools T] [--permissions P] [--expires N] [--email E]",
     "quit":       "Quitter le shell",
 }
@@ -641,7 +641,7 @@ async def cmd_files(client, state, args="", json_output=False):
     """Opérations fichiers sur S3 Dell ECS.
 
     Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P]
-                      [--version-id V] [--max-keys N] [--bucket B]
+                      [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B]
                       [--endpoint E] [--access-key A] [--secret-key S]
                       [--region R] [--timeout N]
 
@@ -651,6 +651,7 @@ async def cmd_files(client, state, args="", json_output=False):
       files list --prefix data/
       files read --path config/app.json
       files read --path config/app.json --version-id v123456
+      files read --path rapports/complet.md --offset 0 --limit 30000
       files write --path test.txt --content 'hello'
       files info --path config/app.json
       files diff --path v1.json --path2 v2.json
@@ -661,13 +662,14 @@ async def cmd_files(client, state, args="", json_output=False):
     """
     parts = args.strip().split()
     if not parts or parts[0] not in FILES_OPS:
-        show_warning("Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]")
+        show_warning("Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]")
         show_warning("")
         show_warning("  Opérations : list, read, write, delete, info, diff, versions, enable_versioning, concat")
         show_warning("")
         show_warning("  files list --prefix data/")
         show_warning("  files read --path config/app.json")
         show_warning("  files read --path config/app.json --version-id v123456")
+        show_warning("  files read --path rapports/complet.md --offset 0 --limit 30000")
         show_warning("  files write --path test.txt --content 'hello'")
         show_warning("  files info --path config/app.json")
         show_warning("  files diff --path v1.json --path2 v2.json")
@@ -683,7 +685,7 @@ async def cmd_files(client, state, args="", json_output=False):
         if parts[i].startswith("--") and i + 1 < len(parts):
             key = parts[i][2:].replace("-", "_")
             val = parts[i + 1]
-            if key in ("max_keys", "timeout"):
+            if key in ("max_keys", "timeout", "offset", "limit"):
                 try:
                     params[key] = int(val)
                 except ValueError:
@@ -809,7 +811,7 @@ async def run_shell(url: str, token: str):
            "--body", "--auth-type", "--auth-value", "--no-ssl",
            "--password", "--key", "--command", "--port", "--remote-path",
            "--content", "--sudo", "--path", "--path2", "--prefix",
-           "--version-id", "--max-keys", "--bucket", "--endpoint",
+           "--version-id", "--offset", "--limit", "--if-match", "--max-keys", "--bucket", "--endpoint",
            "--access-key", "--secret-key", "--region",
            "--tools", "--permissions", "--expires", "--email",
            "--tz", "--days", "--hours", "--minutes", "--format", "--date2",
