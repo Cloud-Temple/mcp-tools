@@ -86,6 +86,7 @@ python scripts/mcp_cli.py ssh status myserver.com --user admin --password secret
 python scripts/mcp_cli.py files list --prefix logs/
 python scripts/mcp_cli.py files read config/app.yaml
 python scripts/mcp_cli.py files write test.txt --content "Hello World"
+python scripts/mcp_cli.py files concat --path rapports/complet.md --source rapports/00-synthese.md --source rapports/01-dns.md
 
 # Gestion des tokens (admin)
 python scripts/mcp_cli.py token create agent-prod --tools shell,date,calc --expires 90
@@ -97,6 +98,17 @@ python scripts/mcp_cli.py token revoke agent-prod
 # Shell interactif
 python scripts/mcp_cli.py shell
 ```
+
+#### Concaténer des objets S3 sans recopier leur contenu
+
+`files concat` lit des objets UTF-8 dans l'ordre déclaré, les assemble dans la
+sandbox puis écrit la destination seulement lorsque toutes les lectures sont
+validées. Les données ne transitent pas par MCP. La sortie est bornée à 5 MB et
+à 64 sources ; elle contient le SHA-256 du résultat ainsi qu'un manifeste de
+chaque source (`path`, `offset` d'octet dans la destination, `size`, `sha256`
+et `version_id` lorsque S3 le fournit). Les séparateurs n'appartiennent à aucune
+source. La destination peut remplacer un objet existant, comme `files write`,
+mais ne peut pas figurer parmi les sources.
 
 ### 4. Recette E2E
 
@@ -241,7 +253,7 @@ ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddlew
 | `network`           | Diagnostic réseau en sandbox Docker (ping, traceroute, nslookup, dig) — IPs privées RFC 1918 interdites                                                                |
 | `http`              | Client HTTP/REST en sandbox Docker (anti-SSRF, auth basic/bearer/api_key) — IPs privées bloquées                                                                       |
 | `ssh`               | Exécution de commandes et transfert de fichiers via SSH en sandbox Docker (exec, status, upload, download) — auth password/key                                         |
-| `files`             | Opérations fichiers sur S3 Dell ECS en sandbox Docker (list, read, write, delete, info, diff, versions, enable_versioning) — config hybride SigV2/SigV4, versioning S3 |
+| `files`             | Opérations fichiers sur S3 Dell ECS en sandbox Docker (list, read, write, delete, info, diff, versions, enable_versioning, concat) — `concat` assemble des objets UTF-8 côté service avec SHA-256 et manifeste d'offsets, sans faire transiter leur contenu par MCP |
 | `perplexity_search` | Recherche internet via Perplexity AI                                                                                                                                   |
 | `perplexity_doc`    | Documentation technique d'une technologie/librairie/API via Perplexity AI                                                                                              |
 | `date`              | Manipulation de dates/heures (now, today, diff, add, format, parse, week_number, day_of_week) — fuseaux horaires                                                       |

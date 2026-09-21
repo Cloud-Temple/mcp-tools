@@ -39,12 +39,15 @@ from ..observability import bind_activity, record_activity, traced_tool
 # Constantes
 # =============================================================================
 
-ALLOWED_OPERATIONS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning")
+ALLOWED_OPERATIONS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat")
 FILES_MAX_TIMEOUT = 60
 # Limite de contenu pour write (5 MB en texte)
 FILES_MAX_CONTENT_SIZE = 5_000_000
 # Nombre max d'objets retournés par list
 FILES_MAX_KEYS = 1000
+# Concaténation : même budget que write, sans faire transiter le contenu par MCP.
+FILES_CONCAT_MAX_SOURCES = 64
+FILES_CONCAT_MAX_SEPARATOR_SIZE = 65_536
 
 
 # =============================================================================
@@ -56,6 +59,43 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) > max_chars:
         return text[:max_chars] + f"\n... [TRONQUÉ — {len(text)} chars, limite {max_chars}]"
     return text
+
+
+def _validate_concat_inputs(path: Optional[str], paths: Optional[list[str]], separator: Optional[str]) -> str | None:
+    """Valide le contrat public de concat avant de démarrer une sandbox.
+
+    Les clés S3 restent opaques : aucune normalisation de chemin n'est appliquée.
+    Le même contrôle est rejoué dans le script sandbox, qui reste la frontière
+    effective avant toute lecture ou écriture distante.
+    """
+    if not path:
+        return "Le paramètre 'path' est requis pour l'opération 'concat'."
+    if not isinstance(paths, list) or not paths:
+        return "Le paramètre 'paths' doit contenir entre 1 et 64 clés S3 pour l'opération 'concat'."
+    if len(paths) > FILES_CONCAT_MAX_SOURCES or any(not isinstance(item, str) or not item for item in paths):
+        return "Le paramètre 'paths' doit contenir entre 1 et 64 clés S3 non vides."
+    if path in paths:
+        return "La destination 'path' ne peut pas aussi être une source de concaténation."
+    if not isinstance(separator, str):
+        return "Le paramètre 'separator' doit être une chaîne de caractères."
+    try:
+        separator_size = len(separator.encode("utf-8"))
+    except UnicodeEncodeError:
+        return "Le paramètre 'separator' doit être encodable en UTF-8."
+    if separator_size > FILES_CONCAT_MAX_SEPARATOR_SIZE:
+        return f"Le séparateur est trop volumineux (max {FILES_CONCAT_MAX_SEPARATOR_SIZE} octets)."
+    return None
+
+
+def _record_uncertain_concat_result(path: Optional[str], reason: str) -> None:
+    """Trace une écriture concat possiblement acceptée mais non confirmée."""
+    bind_activity(remote_result="uncertain")
+    record_activity(
+        "remote.result_uncertain",
+        level="warning",
+        message="Concaténation S3 interrompue : effet distant indéterminé",
+        details={"operation": "concat", "path": path or "", "reason": reason},
+    )
 
 
 def _build_python_script(
@@ -72,6 +112,8 @@ def _build_python_script(
     max_keys: int,
     max_output_chars: int,
     version_id: Optional[str] = None,
+    paths: Optional[list[str]] = None,
+    separator: Optional[str] = None,
 ) -> str:
     """
     Construit le script Python exécuté dans le conteneur sandbox.
@@ -94,12 +136,17 @@ def _build_python_script(
         "max_keys": max_keys,
         "max_output_chars": max_output_chars,
         "version_id": version_id or "",
+        "paths": paths if isinstance(paths, list) else [],
+        "separator": "\n\n" if separator is None else separator,
+        "concat_max_sources": FILES_CONCAT_MAX_SOURCES,
+        "concat_max_output_bytes": FILES_MAX_CONTENT_SIZE,
+        "concat_max_separator_bytes": FILES_CONCAT_MAX_SEPARATOR_SIZE,
     }
     params_json = json.dumps(params)
 
     # Le script Python complet — injecté via stdin pour éviter les problèmes d'escaping
     script = r'''
-import sys, json, traceback
+import codecs, hashlib, json, sys, tempfile, traceback
 
 try:
     import boto3
@@ -107,6 +154,9 @@ try:
 except ImportError:
     print(json.dumps({"status": "error", "message": "boto3 non disponible dans la sandbox"}))
     sys.exit(0)
+
+class ConcatResultUncertainError(Exception):
+    pass
 
 def main():
     params = json.loads(PARAMS_JSON)
@@ -122,6 +172,8 @@ def main():
     prefix = params["prefix"]
     max_keys = params["max_keys"]
     max_output = params["max_output_chars"]
+    paths = params.get("paths", [])
+    separator = params.get("separator", "\n\n")
 
     # Client SigV2 pour opérations sur données (PUT/GET/DELETE)
     config_v2 = BotoConfig(
@@ -288,10 +340,145 @@ def main():
         result["diff"] = diff_text
         result["identical"] = len(diff_lines) == 0
 
+    elif op == "concat":
+        # Rejouer les gardes MCP ici : le script sandbox est la frontière avant
+        # tout accès S3. Les clés S3 sont opaques et comparées telles quelles.
+        max_sources = params["concat_max_sources"]
+        max_bytes = params["concat_max_output_bytes"]
+        max_separator_bytes = params["concat_max_separator_bytes"]
+        if not path:
+            raise ValueError("Destination de concaténation absente.")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= max_sources:
+            raise ValueError(f"Les sources de concaténation doivent être entre 1 et {max_sources} clés.")
+        if any(not isinstance(source, str) or not source for source in paths):
+            raise ValueError("Chaque source de concaténation doit être une clé S3 non vide.")
+        if path in paths:
+            raise ValueError("La destination ne peut pas aussi être une source de concaténation.")
+        if not isinstance(separator, str):
+            raise ValueError("Le séparateur doit être une chaîne de caractères.")
+        try:
+            separator_bytes = separator.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("Le séparateur doit être encodable en UTF-8.") from exc
+        if len(separator_bytes) > max_separator_bytes:
+            raise ValueError("Le séparateur dépasse la taille autorisée.")
+
+        # HEAD fixe la version source quand le bucket l'expose. Sans versioning,
+        # une modification concurrente reste détectée par les bornes et reflétée
+        # par le manifeste calculé sur les octets effectivement lus.
+        source_headers = []
+        declared_size = len(separator_bytes) * (len(paths) - 1)
+        for source in paths:
+            try:
+                head = client_v4.head_object(Bucket=bucket, Key=source)
+            except Exception as exc:
+                raise ValueError(f"Source inaccessible : {source}") from exc
+            size = head.get("ContentLength")
+            if not isinstance(size, int) or size < 0:
+                raise ValueError(f"Taille source invalide : {source}")
+            declared_size += size
+            source_headers.append({"path": source, "version_id": head.get("VersionId")})
+        if declared_size > max_bytes:
+            raise ValueError(f"Résultat trop volumineux ({declared_size} octets, max {max_bytes}).")
+
+        # TemporaryFile est anonyme : une annulation qui tue le processus ne
+        # peut pas laisser un fichier concaténé persistant dans /tmp.
+        with tempfile.TemporaryFile(mode="w+b", dir="/tmp") as assembled:
+                manifest = []
+                output_size = 0
+                for index, source_info in enumerate(source_headers):
+                    if index:
+                        if output_size + len(separator_bytes) > max_bytes:
+                            raise ValueError("Résultat trop volumineux pendant la concaténation.")
+                        assembled.write(separator_bytes)
+                        output_size += len(separator_bytes)
+
+                    source = source_info["path"]
+                    get_kwargs = {"Bucket": bucket, "Key": source}
+                    if isinstance(source_info["version_id"], str) and source_info["version_id"]:
+                        get_kwargs["VersionId"] = source_info["version_id"]
+                    try:
+                        response = client_v2.get_object(**get_kwargs)
+                    except Exception as exc:
+                        raise ValueError(f"Source inaccessible : {source}") from exc
+                    body = response["Body"]
+                    source_offset = output_size
+                    source_size = 0
+                    source_hash = hashlib.sha256()
+                    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+                    try:
+                        while True:
+                            chunk = body.read(65_536)
+                            if not chunk:
+                                break
+                            try:
+                                decoder.decode(chunk, final=False)
+                            except UnicodeDecodeError as exc:
+                                raise ValueError(f"Source non UTF-8 : {source}") from exc
+                            source_size += len(chunk)
+                            if output_size + len(chunk) > max_bytes:
+                                raise ValueError("Résultat trop volumineux pendant la concaténation.")
+                            source_hash.update(chunk)
+                            assembled.write(chunk)
+                            output_size += len(chunk)
+                        try:
+                            decoder.decode(b"", final=True)
+                        except UnicodeDecodeError as exc:
+                            raise ValueError(f"Source non UTF-8 : {source}") from exc
+                    finally:
+                        close = getattr(body, "close", None)
+                        if callable(close):
+                            close()
+                    entry = {
+                        "path": source,
+                        "offset": source_offset,
+                        "size": source_size,
+                        "sha256": source_hash.hexdigest(),
+                    }
+                    if isinstance(source_info["version_id"], str) and source_info["version_id"]:
+                        entry["version_id"] = source_info["version_id"]
+                    manifest.append(entry)
+                assembled.flush()
+                assembled.seek(0)
+                output_hash = hashlib.sha256()
+                while True:
+                    chunk = assembled.read(65_536)
+                    if not chunk:
+                        break
+                    output_hash.update(chunk)
+                assembled.seek(0)
+                # Le PUT est volontairement le dernier effet distant : aucune
+                # destination n'est modifiée si une source échoue ou est binaire.
+                try:
+                    response = client_v2.put_object(
+                        Bucket=bucket,
+                        Key=path,
+                        Body=assembled,
+                        ContentType="text/plain; charset=utf-8",
+                    )
+                except Exception as exc:
+                    # Une panne pendant le PUT ne permet pas de conclure que S3
+                    # n'a pas reçu l'objet. Le client doit relire la destination.
+                    raise ConcatResultUncertainError("Écriture de destination indéterminée.") from exc
+        result.update({
+            "path": path,
+            "size": output_size,
+            "sha256": output_hash.hexdigest(),
+            "parts": len(manifest),
+            "sources": manifest,
+            "separator_bytes": len(separator_bytes),
+            "etag": response.get("ETag", ""),
+        })
+        version = response.get("VersionId")
+        if version:
+            result["version_id"] = version
+
     print(json.dumps(result, default=str))
 
 try:
     main()
+except ConcatResultUncertainError as e:
+    print(json.dumps({"status": "error", "operation": "concat", "message": str(e), "remote_result": "uncertain"}))
 except Exception as e:
     print(json.dumps({"status": "error", "message": str(e), "traceback": traceback.format_exc()}, default=str))
 '''
@@ -385,6 +572,7 @@ async def _run_in_sandbox(script: str, timeout: int, settings) -> dict:
             "status": "error",
             "message": stderr_text or "Pas de sortie du script S3",
             "sandbox": True,
+            "remote_result": "uncertain",
         }
 
     try:
@@ -397,6 +585,7 @@ async def _run_in_sandbox(script: str, timeout: int, settings) -> dict:
             "message": f"Sortie non-JSON : {stdout_text[:500]}",
             "stderr": stderr_text[:500] if stderr_text else None,
             "sandbox": True,
+            "remote_result": "uncertain",
         }
 
 
@@ -419,6 +608,16 @@ async def _run_local(script: str, timeout: int, settings) -> dict:
         except Exception:
             pass
         raise
+    except asyncio.CancelledError:
+        # En développement local, le sous-processus peut encore lire les
+        # sources ou appeler put_object après l'annulation du client. Le tuer
+        # et attendre sa fin préserve la même garantie que la sandbox Docker.
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        raise
 
     stdout_text = stdout.decode(errors="replace").strip()
     stderr_text = stderr.decode(errors="replace").strip()
@@ -428,6 +627,7 @@ async def _run_local(script: str, timeout: int, settings) -> dict:
             "status": "error",
             "message": stderr_text or "Pas de sortie du script S3",
             "sandbox": False,
+            "remote_result": "uncertain",
         }
 
     try:
@@ -440,6 +640,7 @@ async def _run_local(script: str, timeout: int, settings) -> dict:
             "message": f"Sortie non-JSON : {stdout_text[:500]}",
             "stderr": stderr_text[:500] if stderr_text else None,
             "sandbox": False,
+            "remote_result": "uncertain",
         }
 
 
@@ -451,10 +652,12 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("files")
     async def files(
-        operation: Annotated[str, Field(description="Opération S3 : list, read, write, delete, info, diff, versions ou enable_versioning")],
-        path: Annotated[Optional[str], Field(default=None, description="Chemin (clé) de l'objet S3 (requis pour read, write, delete, info, diff)")] = None,
+        operation: Annotated[str, Field(description="Opération S3 : list, read, write, delete, info, diff, versions, enable_versioning ou concat")],
+        path: Annotated[Optional[str], Field(default=None, description="Chemin (clé) de l'objet S3 ; destination requise pour read, write, delete, info, diff et concat")] = None,
         content: Annotated[Optional[str], Field(default=None, description="Contenu à écrire dans l'objet S3 (requis pour write, max 5 MB)")] = None,
         path2: Annotated[Optional[str], Field(default=None, description="Second chemin S3 pour l'opération diff")] = None,
+        paths: Annotated[Optional[list[str]], Field(default=None, description="Sources S3 ordonnées pour concat (1 à 64 clés ; leur contenu ne transite pas par MCP)")] = None,
+        separator: Annotated[Optional[str], Field(default="\n\n", description="Séparateur UTF-8 inséré entre les sources de concat (max 65536 octets)")] = "\n\n",
         prefix: Annotated[Optional[str], Field(default=None, description="Préfixe pour filtrer le listing d'objets (opération list)")] = None,
         version_id: Annotated[Optional[str], Field(default=None, description="ID de version S3 pour lire une version spécifique")] = None,
         max_keys: Annotated[int, Field(default=100, description="Nombre max d'objets retournés par list (1-1000)")] = 100,
@@ -466,7 +669,7 @@ def register(mcp: MCPServer) -> None:
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max 60)")] = 30,
         ctx: Optional[Context] = None,
     ) -> dict:
-        """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. Opérations : list, read, write, delete, info, diff, versions. Versioning S3 supporté via version_id. Config hybride SigV2/SigV4 pour Dell ECS Cloud Temple."""
+        """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
         try:
             check_tool_access("files")
             settings = get_settings()
@@ -508,6 +711,11 @@ def register(mcp: MCPServer) -> None:
                 if not path2:
                     return {"status": "error", "message": "Le paramètre 'path2' est requis pour l'opération 'diff'."}
 
+            if operation == "concat":
+                concat_error = _validate_concat_inputs(path, paths, separator)
+                if concat_error:
+                    return {"status": "error", "message": concat_error}
+
             # --- Bornes de sécurité ---
             timeout = max(1, min(timeout, FILES_MAX_TIMEOUT))
             max_keys = max(1, min(max_keys, FILES_MAX_KEYS))
@@ -530,6 +738,8 @@ def register(mcp: MCPServer) -> None:
                 max_keys=max_keys,
                 max_output_chars=settings.tool_max_output_chars,
                 version_id=version_id,
+                paths=paths,
+                separator=separator,
             )
 
             # --- Exécution ---
@@ -538,20 +748,30 @@ def register(mcp: MCPServer) -> None:
             else:
                 result = await _run_local(script, timeout, settings)
 
+            if operation == "concat" and result.get("remote_result") == "uncertain":
+                _record_uncertain_concat_result(path, "sandbox_output_unusable")
+
             return result
 
         except asyncio.TimeoutError:
+            if operation == "concat":
+                _record_uncertain_concat_result(path, "timeout")
+                return {
+                    "status": "error",
+                    "message": f"Timeout de {timeout}s dépassé ; l'état de la destination est indéterminé.",
+                    "remote_result": "uncertain",
+                }
             return {"status": "error", "message": f"Timeout de {timeout}s dépassé."}
         except asyncio.CancelledError:
             # put/delete/versioning sont transmis au service S3 avant que la
             # sandbox locale ne puisse être arrêtée : ne jamais affirmer leur
             # résultat lors d'une annulation du client.
-            if operation in {"write", "delete", "enable_versioning"}:
+            if operation in {"write", "delete", "enable_versioning", "concat"}:
                 bind_activity(remote_result="uncertain")
                 record_activity(
                     "remote.result_uncertain", level="warning",
                     message="Opération S3 mutante annulée : effet distant indéterminé",
-                    details={"operation": operation},
+                    details={"operation": operation, **({"path": path} if operation == "concat" and path else {})},
                 )
             raise
         except FileNotFoundError:
