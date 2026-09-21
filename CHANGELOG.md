@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-21
+
 ### Added
 
 - `files operation='concat'` assemble, dans la sandbox S3, de 1 à 64 objets
@@ -15,8 +17,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   La sortie est bornée à 5 MB, la destination ne peut pas être une source, et
   aucun `put_object` n'est lancé avant la validation et la lecture complète de
   toutes les sources.
-
-## [0.8.0] — 2026-09-17
 
 ### Sécurité
 
