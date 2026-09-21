@@ -456,6 +456,26 @@ def show_files_result(result: dict):
             if diff_text:
                 console.print(Syntax(diff_text, "diff"))
 
+    elif operation == "concat":
+        console.print(f"  📄 [cyan]{result.get('path', '?')}[/cyan] ({result.get('size', 0)} octets)")
+        console.print(f"  SHA-256 : [dim]{result.get('sha256', '?')}[/dim]")
+        console.print(f"  Sources : [green]{result.get('parts', 0)}[/green] ; séparateur : {result.get('separator_bytes', 0)} octets")
+        sources = result.get("sources", [])
+        if sources:
+            table = Table(show_header=True)
+            table.add_column("Clé", style="cyan")
+            table.add_column("Offset", justify="right")
+            table.add_column("Taille", justify="right")
+            table.add_column("SHA-256", style="dim")
+            for source in sources:
+                table.add_row(
+                    source.get("path", "?"),
+                    str(source.get("offset", "?")),
+                    str(source.get("size", "?")),
+                    source.get("sha256", "?"),
+                )
+            console.print(table)
+
     elif operation == "versions":
         path = result.get("path", "?")
         versions = result.get("versions", [])

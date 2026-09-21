@@ -638,18 +638,23 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
 
 # =============================================================================
 # Outil files (S3)
-# MCP params: operation, path, content, path2, prefix, version_id, max_keys,
-#             endpoint, access_key, secret_key, bucket, region, timeout
+# MCP params: operation, path, paths, separator, content, path2, prefix,
+#             version_id, max_keys, endpoint, access_key, secret_key, bucket,
+#             region, timeout
 # =============================================================================
 
 @cli.command("files")
 @click.argument("operation", type=click.Choice([
-    "list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning"
+    "list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat"
 ]))
 @click.option("--path", "-p", "s3_path", default=None,
-              help="Clé S3 de l'objet (requis pour read, write, delete, info, diff, versions)")
+              help="Clé S3 de l'objet (destination requise pour read, write, delete, info, diff, concat)")
 @click.option("--path2", default=None,
               help="2ème clé S3 (pour diff)")
+@click.option("--source", "sources", multiple=True,
+              help="Clé S3 source, répétable et ordonnée (pour concat)")
+@click.option("--separator", default="\n\n",
+              help="Séparateur UTF-8 entre sources (pour concat, défaut : deux sauts de ligne)")
 @click.option("--content", "-c", default=None,
               help="Contenu à écrire (pour write, max 5 MB)")
 @click.option("--prefix", default=None,
@@ -672,7 +677,7 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
               help="Timeout en secondes (max 60)")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def files_cmd(ctx, operation, s3_path, path2, content, prefix, version_id,
+def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefix, version_id,
               max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json):
     """📁 Opérations fichiers sur S3 Dell ECS en sandbox Docker.
 
@@ -686,6 +691,7 @@ def files_cmd(ctx, operation, s3_path, path2, content, prefix, version_id,
       diff               — Comparer 2 objets S3
       versions           — Lister les versions d'un objet (versioning S3)
       enable_versioning  — Activer le versioning sur le bucket
+      concat             — Assembler des sources UTF-8 côté service
 
     \b
     Config hybride SigV2/SigV4 pour Dell ECS Cloud Temple.
@@ -698,6 +704,7 @@ def files_cmd(ctx, operation, s3_path, path2, content, prefix, version_id,
       files write -p "config/app.json" -c '{"key": "value"}'
       files info -p "config/app.json"
       files diff -p "config/v1.json" --path2 "config/v2.json"
+      files concat -p "rapports/complet.md" --source "rapports/00.md" --source "rapports/01.md" --separator "---"
       files versions -p "config/app.json"
       files enable_versioning
       files delete -p "config/old.json"
@@ -710,6 +717,10 @@ def files_cmd(ctx, operation, s3_path, path2, content, prefix, version_id,
             params["path"] = s3_path
         if path2:
             params["path2"] = path2
+        if sources:
+            params["paths"] = list(sources)
+        if operation == "concat":
+            params["separator"] = separator
         if content:
             params["content"] = content
         if prefix:

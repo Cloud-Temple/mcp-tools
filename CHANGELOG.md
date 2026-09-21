@@ -4,6 +4,18 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `files operation='concat'` assemble, dans la sandbox S3, de 1 à 64 objets
+  UTF-8 dans l'ordre explicite des sources. Les octets ne traversent jamais
+  MCP : le résultat retourne seulement sa taille, son SHA-256 et le manifeste
+  des offsets, tailles, empreintes et versions S3 disponibles de chaque source.
+  La sortie est bornée à 5 MB, la destination ne peut pas être une source, et
+  aucun `put_object` n'est lancé avant la validation et la lecture complète de
+  toutes les sources.
+
 ## [0.8.0] — 2026-09-17
 
 ### Sécurité

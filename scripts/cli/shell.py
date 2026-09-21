@@ -36,7 +36,7 @@ SHELL_COMMANDS = {
     "calc":       "calc <expression> — Calcul math (math.sqrt, statistics.mean...)",
     "doc":        "doc <query> [--context C] [--model M] — Documentation technique via Perplexity",
     "ssh":        "ssh <op> <host> <user> [--password P] [--key K] [--command C] [--port N] [--remote-path P] [--content C] [--sudo] [--timeout N]",
-    "files":      "files <op> [--path P] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
+    "files":      "files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
     "token":      "token <op> [name] [--tools T] [--permissions P] [--expires N] [--email E]",
     "quit":       "Quitter le shell",
 }
@@ -629,22 +629,23 @@ async def cmd_ssh(client, state, args="", json_output=False):
 
 # =============================================================================
 # Tool: files (S3)
-# MCP params: operation, path, content, path2, prefix, version_id, max_keys,
-#             endpoint, access_key, secret_key, bucket, region, timeout
+# MCP params: operation, path, paths, separator, content, path2, prefix,
+#             version_id, max_keys, endpoint, access_key, secret_key, bucket,
+#             region, timeout
 # =============================================================================
 
-FILES_OPS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning")
+FILES_OPS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat")
 
 
 async def cmd_files(client, state, args="", json_output=False):
     """Opérations fichiers sur S3 Dell ECS.
 
-    Usage: files <op> [--path P] [--path2 P] [--content C] [--prefix P]
+    Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P]
                       [--version-id V] [--max-keys N] [--bucket B]
                       [--endpoint E] [--access-key A] [--secret-key S]
                       [--region R] [--timeout N]
 
-    Opérations : list, read, write, delete, info, diff, versions, enable_versioning
+    Opérations : list, read, write, delete, info, diff, versions, enable_versioning, concat
 
     Exemples :
       files list --prefix data/
@@ -653,15 +654,16 @@ async def cmd_files(client, state, args="", json_output=False):
       files write --path test.txt --content 'hello'
       files info --path config/app.json
       files diff --path v1.json --path2 v2.json
+      files concat --path rapports/complet.md --source rapports/00.md --source rapports/01.md
       files versions --path config/app.json
       files enable_versioning
       files delete --path old.json
     """
     parts = args.strip().split()
     if not parts or parts[0] not in FILES_OPS:
-        show_warning("Usage: files <op> [--path P] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]")
+        show_warning("Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]")
         show_warning("")
-        show_warning("  Opérations : list, read, write, delete, info, diff, versions, enable_versioning")
+        show_warning("  Opérations : list, read, write, delete, info, diff, versions, enable_versioning, concat")
         show_warning("")
         show_warning("  files list --prefix data/")
         show_warning("  files read --path config/app.json")
@@ -669,6 +671,7 @@ async def cmd_files(client, state, args="", json_output=False):
         show_warning("  files write --path test.txt --content 'hello'")
         show_warning("  files info --path config/app.json")
         show_warning("  files diff --path v1.json --path2 v2.json")
+        show_warning("  files concat --path rapports/complet.md --source rapports/00.md --source rapports/01.md")
         show_warning("  files versions --path config/app.json")
         show_warning("  files enable_versioning")
         show_warning("  files delete --path old.json")
@@ -685,6 +688,8 @@ async def cmd_files(client, state, args="", json_output=False):
                     params[key] = int(val)
                 except ValueError:
                     params[key] = val
+            elif key == "source":
+                params.setdefault("paths", []).append(val)
             else:
                 params[key] = val
             i += 2
