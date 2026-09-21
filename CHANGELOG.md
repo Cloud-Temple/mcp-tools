@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `files operation='read'` accepte désormais une pagination S3 en octets avec
+  `offset` et `limit`. Les pages retournent des octets base64 et un curseur
+  explicite (`next_offset`, `end`) ; elles sont pincées par `VersionId` lorsque
+  le bucket le fournit, ou protégées par ETag (`if_match`) sinon, pour ne jamais
+  mélanger silencieusement deux générations d'objet.
+
 ## [0.8.0] — 2026-09-21
 
 ### Added

@@ -639,7 +639,7 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
 # =============================================================================
 # Outil files (S3)
 # MCP params: operation, path, paths, separator, content, path2, prefix,
-#             version_id, max_keys, endpoint, access_key, secret_key, bucket,
+#             version_id, offset, limit, if_match, max_keys, endpoint, access_key, secret_key, bucket,
 #             region, timeout
 # =============================================================================
 
@@ -661,6 +661,12 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
               help="Préfixe pour filtrer le listing (pour list)")
 @click.option("--version-id", default=None,
               help="ID de version S3 pour lire une version spécifique")
+@click.option("--offset", type=click.IntRange(min=0), default=None,
+              help="Offset en octets (lecture read paginée)")
+@click.option("--limit", type=click.IntRange(min=1), default=None,
+              help="Nombre d'octets (lecture read paginée)")
+@click.option("--if-match", default=None,
+              help="ETag de la page précédente (lecture read non versionnée)")
 @click.option("--max-keys", default=100, type=int,
               help="Nombre max d'objets retournés par list (1-1000, défaut: 100)")
 @click.option("--endpoint", default=None,
@@ -677,7 +683,7 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
               help="Timeout en secondes (max 60)")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefix, version_id,
+def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefix, version_id, offset, limit, if_match,
               max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json):
     """📁 Opérations fichiers sur S3 Dell ECS en sandbox Docker.
 
@@ -701,6 +707,7 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
       files list --prefix "data/"
       files read -p "config/app.json"
       files read -p "config/app.json" --version-id "v123456"
+      files read -p "rapports/complet.md" --offset 0 --limit 30000
       files write -p "config/app.json" -c '{"key": "value"}'
       files info -p "config/app.json"
       files diff -p "config/v1.json" --path2 "config/v2.json"
@@ -727,6 +734,12 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
             params["prefix"] = prefix
         if version_id:
             params["version_id"] = version_id
+        if offset is not None:
+            params["offset"] = offset
+        if limit is not None:
+            params["limit"] = limit
+        if if_match:
+            params["if_match"] = if_match
         if endpoint:
             params["endpoint"] = endpoint
         if access_key:

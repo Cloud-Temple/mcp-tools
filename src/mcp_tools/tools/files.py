@@ -28,7 +28,7 @@ import json
 import uuid
 from typing import Annotated, Optional
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
@@ -48,6 +48,10 @@ FILES_MAX_KEYS = 1000
 # Concaténation : même budget que write, sans faire transiter le contenu par MCP.
 FILES_CONCAT_MAX_SOURCES = 64
 FILES_CONCAT_MAX_SEPARATOR_SIZE = 65_536
+# Lecture paginée : la base64 augmente les octets d'environ un tiers. La marge
+# couvre l'enveloppe MCP et les clés S3 UTF-8 échappées dans le JSON.
+FILES_READ_PAGE_DEFAULT_BYTES = 30_000
+FILES_READ_PAGE_RESPONSE_OVERHEAD_CHARS = 8_192
 
 
 # =============================================================================
@@ -87,6 +91,35 @@ def _validate_concat_inputs(path: Optional[str], paths: Optional[list[str]], sep
     return None
 
 
+def _effective_read_page_limit(max_output_chars: int) -> int:
+    """Retourne le plafond d'octets dont la base64 tient dans une réponse MCP."""
+    payload_budget = max(0, max_output_chars - FILES_READ_PAGE_RESPONSE_OVERHEAD_CHARS)
+    return min(FILES_READ_PAGE_DEFAULT_BYTES, (payload_budget // 4) * 3)
+
+
+def _validate_read_range_inputs(
+    offset: Optional[int], limit: Optional[int], if_match: Optional[str], max_output_chars: int,
+) -> str | None:
+    """Valide le mode paginé ; l'absence des trois paramètres conserve read historique."""
+    paged = offset is not None or limit is not None
+    if if_match is not None and not paged:
+        return "Le paramètre 'if_match' nécessite une lecture paginée ('offset' ou 'limit')."
+    if not paged:
+        return None
+    if offset is not None and (type(offset) is not int or offset < 0):
+        return "Le paramètre 'offset' doit être un entier en octets supérieur ou égal à 0."
+    if limit is not None and type(limit) is not int:
+        return "Le paramètre 'limit' doit être un entier en octets."
+    effective_limit = _effective_read_page_limit(max_output_chars)
+    if effective_limit < 1:
+        return "TOOL_MAX_OUTPUT_CHARS est trop bas pour une lecture paginée."
+    if limit is not None and not 1 <= limit <= effective_limit:
+        return f"Le paramètre 'limit' doit être entre 1 et {effective_limit} octets."
+    if if_match is not None and (not isinstance(if_match, str) or not if_match):
+        return "Le paramètre 'if_match' doit être un ETag S3 non vide."
+    return None
+
+
 def _record_uncertain_concat_result(path: Optional[str], reason: str) -> None:
     """Trace une écriture concat possiblement acceptée mais non confirmée."""
     bind_activity(remote_result="uncertain")
@@ -112,6 +145,9 @@ def _build_python_script(
     max_keys: int,
     max_output_chars: int,
     version_id: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    if_match: Optional[str] = None,
     paths: Optional[list[str]] = None,
     separator: Optional[str] = None,
 ) -> str:
@@ -136,6 +172,11 @@ def _build_python_script(
         "max_keys": max_keys,
         "max_output_chars": max_output_chars,
         "version_id": version_id or "",
+        "read_paged": offset is not None or limit is not None,
+        "read_offset": 0 if offset is None else offset,
+        "read_limit": _effective_read_page_limit(max_output_chars) if limit is None else limit,
+        "read_page_max": _effective_read_page_limit(max_output_chars),
+        "if_match": if_match or "",
         "paths": paths if isinstance(paths, list) else [],
         "separator": "\n\n" if separator is None else separator,
         "concat_max_sources": FILES_CONCAT_MAX_SOURCES,
@@ -158,6 +199,9 @@ except ImportError:
 class ConcatResultUncertainError(Exception):
     pass
 
+class ObjectChangedError(Exception):
+    pass
+
 def main():
     params = json.loads(PARAMS_JSON)
     op = params["operation"]
@@ -172,6 +216,11 @@ def main():
     prefix = params["prefix"]
     max_keys = params["max_keys"]
     max_output = params["max_output_chars"]
+    read_paged = params.get("read_paged", False)
+    read_offset = params.get("read_offset", 0)
+    read_limit = params.get("read_limit", 0)
+    read_page_max = params.get("read_page_max", 0)
+    if_match = params.get("if_match", "")
     paths = params.get("paths", [])
     separator = params.get("separator", "\n\n")
 
@@ -258,24 +307,112 @@ def main():
         result["count"] = len(versions)
 
     elif op == "read":
-        get_kwargs = {"Bucket": bucket, "Key": path}
         version_id = params.get("version_id", "")
-        if version_id:
-            get_kwargs["VersionId"] = version_id
-        resp = client_v2.get_object(**get_kwargs)
-        body = resp["Body"].read()
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
-            import base64
-            text = "[BINAIRE — base64]\n" + base64.b64encode(body).decode("ascii")
-        if len(text) > max_output:
-            text = text[:max_output] + f"\n... [TRONQUÉ — {len(text)} chars, limite {max_output}]"
-        result["path"] = path
-        result["content"] = text
-        result["size"] = resp["ContentLength"]
-        result["content_type"] = resp.get("ContentType", "")
-        result["last_modified"] = resp["LastModified"].isoformat()
+        if read_paged:
+            # La pagination est en octets. Retourner de la base64 évite qu'une
+            # plage S3 coupe une séquence UTF-8 et rende le morceau illisible.
+            if type(read_offset) is not int or read_offset < 0:
+                raise ValueError("Offset de lecture paginée invalide.")
+            if type(read_limit) is not int or not 1 <= read_limit <= read_page_max:
+                raise ValueError("Limite de lecture paginée invalide.")
+
+            requested_version = version_id if version_id not in ("", "null") else ""
+            # Une reprise ne doit jamais choisir la version devenue courante :
+            # le client chaîne explicitement le VersionId ou l'ETag retourné
+            # par sa page précédente.
+            if read_offset and not requested_version and not if_match:
+                raise ObjectChangedError("La reprise d'une lecture paginée exige le VersionId ou l'ETag de la page précédente.")
+            head_kwargs = {"Bucket": bucket, "Key": path}
+            if requested_version:
+                head_kwargs["VersionId"] = requested_version
+            head = client_v4.head_object(**head_kwargs)
+            size = head.get("ContentLength")
+            if type(size) is not int or size < 0:
+                raise ValueError("Taille S3 invalide pour la lecture paginée.")
+            etag = head.get("ETag", "")
+            head_version = head.get("VersionId", "")
+            pinned_version = requested_version or (
+                head_version if isinstance(head_version, str) and head_version not in ("", "null") else ""
+            )
+
+            if not pinned_version and not etag:
+                raise ValueError("La lecture paginée non versionnée exige un ETag S3.")
+
+            # Une page vide est aussi une reprise : ne pas déclarer la fin sur
+            # une nouvelle génération si le client n'a pas chaîné son ETag.
+            if if_match and etag and if_match != etag:
+                raise ObjectChangedError("L'objet a changé depuis la page précédente.")
+            if read_offset > size:
+                raise ValueError(f"Offset hors objet ({read_offset} > {size}).")
+            if read_offset == size:
+                result.update({
+                    "path": path, "encoding": "base64", "content_base64": "",
+                    "offset": read_offset, "returned_bytes": 0,
+                    "next_offset": read_offset, "end": True, "size": size,
+                    "etag": etag, "content_type": head.get("ContentType", ""),
+                    "last_modified": head["LastModified"].isoformat(),
+                })
+                if head_version not in ("", "null"):
+                    result["version_id"] = head_version
+            else:
+                # Sur un bucket non versionné, le client doit chaîner l'ETag
+                # obtenu à la première page afin qu'une mutation échoue au lieu
+                # de mélanger silencieusement deux générations.
+                end_offset = min(size - 1, read_offset + read_limit - 1)
+                get_kwargs = {"Bucket": bucket, "Key": path, "Range": f"bytes={read_offset}-{end_offset}"}
+                if pinned_version:
+                    get_kwargs["VersionId"] = pinned_version
+                if if_match:
+                    get_kwargs["IfMatch"] = if_match
+                elif not pinned_version and etag:
+                    get_kwargs["IfMatch"] = if_match or etag
+                try:
+                    resp = client_v2.get_object(**get_kwargs)
+                except Exception as exc:
+                    code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+                    if code in {"PreconditionFailed", "412"}:
+                        raise ObjectChangedError("L'objet a changé pendant la lecture paginée.") from exc
+                    raise
+                expected_range = f"bytes {read_offset}-{end_offset}/{size}"
+                if resp.get("ContentRange") != expected_range:
+                    raise ValueError("Réponse S3 Range incohérente.")
+                body = resp["Body"].read()
+                expected_bytes = end_offset - read_offset + 1
+                if len(body) != expected_bytes or resp.get("ContentLength") != expected_bytes:
+                    raise ValueError("Réponse S3 Range incomplète.")
+                import base64
+                next_offset = read_offset + len(body)
+                result.update({
+                    "path": path, "encoding": "base64",
+                    "content_base64": base64.b64encode(body).decode("ascii"),
+                    "offset": read_offset, "returned_bytes": len(body),
+                    "next_offset": next_offset, "end": next_offset == size,
+                    "size": size, "etag": etag,
+                    "content_type": head.get("ContentType", ""),
+                    "last_modified": head["LastModified"].isoformat(),
+                })
+                if head_version not in ("", "null"):
+                    result["version_id"] = head_version
+        else:
+            # Contrat historique : contenu texte ou fallback binaire, borné en
+            # caractères et sans pagination implicite.
+            get_kwargs = {"Bucket": bucket, "Key": path}
+            if version_id:
+                get_kwargs["VersionId"] = version_id
+            resp = client_v2.get_object(**get_kwargs)
+            body = resp["Body"].read()
+            try:
+                text = body.decode("utf-8")
+            except UnicodeDecodeError:
+                import base64
+                text = "[BINAIRE — base64]\n" + base64.b64encode(body).decode("ascii")
+            if len(text) > max_output:
+                text = text[:max_output] + f"\n... [TRONQUÉ — {len(text)} chars, limite {max_output}]"
+            result["path"] = path
+            result["content"] = text
+            result["size"] = resp["ContentLength"]
+            result["content_type"] = resp.get("ContentType", "")
+            result["last_modified"] = resp["LastModified"].isoformat()
 
     elif op == "write":
         client_v2.put_object(
@@ -294,12 +431,18 @@ def main():
         result["message"] = f"Fichier supprimé : {path}"
 
     elif op == "info":
-        resp = client_v4.head_object(Bucket=bucket, Key=path)
+        kwargs = {"Bucket": bucket, "Key": path}
+        version_id = params.get("version_id", "")
+        if version_id and version_id != "null":
+            kwargs["VersionId"] = version_id
+        resp = client_v4.head_object(**kwargs)
         result["path"] = path
         result["size"] = resp["ContentLength"]
         result["content_type"] = resp.get("ContentType", "")
         result["last_modified"] = resp["LastModified"].isoformat()
         result["etag"] = resp.get("ETag", "")
+        if resp.get("VersionId") not in ("", "null"):
+            result["version_id"] = resp["VersionId"]
         metadata = resp.get("Metadata", {})
         if metadata:
             result["metadata"] = metadata
@@ -479,6 +622,8 @@ try:
     main()
 except ConcatResultUncertainError as e:
     print(json.dumps({"status": "error", "operation": "concat", "message": str(e), "remote_result": "uncertain"}))
+except ObjectChangedError as e:
+    print(json.dumps({"status": "error", "operation": "read", "code": "object_changed", "message": str(e)}))
 except Exception as e:
     print(json.dumps({"status": "error", "message": str(e), "traceback": traceback.format_exc()}, default=str))
 '''
@@ -660,6 +805,9 @@ def register(mcp: MCPServer) -> None:
         separator: Annotated[Optional[str], Field(default="\n\n", description="Séparateur UTF-8 inséré entre les sources de concat (max 65536 octets)")] = "\n\n",
         prefix: Annotated[Optional[str], Field(default=None, description="Préfixe pour filtrer le listing d'objets (opération list)")] = None,
         version_id: Annotated[Optional[str], Field(default=None, description="ID de version S3 pour lire une version spécifique")] = None,
+        offset: Annotated[Optional[StrictInt], Field(default=None, description="Offset en octets pour une lecture paginée (read)")] = None,
+        limit: Annotated[Optional[StrictInt], Field(default=None, description="Nombre d'octets à lire pour une lecture paginée (read)")] = None,
+        if_match: Annotated[Optional[str], Field(default=None, description="ETag de la page précédente pour figer une lecture paginée non versionnée (read)")] = None,
         max_keys: Annotated[int, Field(default=100, description="Nombre max d'objets retournés par list (1-1000)")] = 100,
         endpoint: Annotated[Optional[str], Field(default=None, description="URL endpoint S3 (optionnel, défaut depuis config serveur)")] = None,
         access_key: Annotated[Optional[str], Field(default=None, description="Access key S3 (optionnel, défaut depuis config serveur)")] = None,
@@ -716,6 +864,11 @@ def register(mcp: MCPServer) -> None:
                 if concat_error:
                     return {"status": "error", "message": concat_error}
 
+            if operation == "read":
+                read_error = _validate_read_range_inputs(offset, limit, if_match, settings.tool_max_output_chars)
+                if read_error:
+                    return {"status": "error", "message": read_error}
+
             # --- Bornes de sécurité ---
             timeout = max(1, min(timeout, FILES_MAX_TIMEOUT))
             max_keys = max(1, min(max_keys, FILES_MAX_KEYS))
@@ -738,6 +891,9 @@ def register(mcp: MCPServer) -> None:
                 max_keys=max_keys,
                 max_output_chars=settings.tool_max_output_chars,
                 version_id=version_id,
+                offset=offset,
+                limit=limit,
+                if_match=if_match,
                 paths=paths,
                 separator=separator,
             )
@@ -750,6 +906,19 @@ def register(mcp: MCPServer) -> None:
 
             if operation == "concat" and result.get("remote_result") == "uncertain":
                 _record_uncertain_concat_result(path, "sandbox_output_unusable")
+
+            if operation == "read" and (offset is not None or limit is not None):
+                record_activity(
+                    "files.read_page", message="Lecture S3 paginée",
+                    details={
+                        "offset": offset if offset is not None else 0,
+                        "limit": limit if limit is not None else _effective_read_page_limit(settings.tool_max_output_chars),
+                        "returned_bytes": result.get("returned_bytes"),
+                        "size": result.get("size"), "end": result.get("end"),
+                        "version_pinned": bool(result.get("version_id") and result.get("version_id") != "null"),
+                        "etag_guarded": bool(if_match),
+                    },
+                )
 
             return result
 

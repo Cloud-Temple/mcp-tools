@@ -424,6 +424,18 @@ def show_files_result(result: dict):
         path = result.get("path", "?")
         size = result.get("size", 0)
         console.print(f"  📄 [cyan]{path}[/cyan] ({size} octets)")
+        if result.get("encoding") == "base64":
+            console.print(
+                f"  📦 Page : offset {result.get('offset', 0)}, "
+                f"{result.get('returned_bytes', 0)} octets, "
+                f"suivant {result.get('next_offset', 0)}, fin={result.get('end', False)}"
+            )
+            console.print(f"  Encodage : base64 (utiliser --json pour récupérer la page)")
+            if result.get("etag"):
+                console.print(f"  ETag : [dim]{result['etag']}[/dim]")
+            if result.get("version_id"):
+                console.print(f"  Version : [dim]{result['version_id']}[/dim]")
+            return
         content = result.get("content", "")
         if content.strip():
             if len(content) > 2000:

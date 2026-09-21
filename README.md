@@ -85,6 +85,7 @@ python scripts/mcp_cli.py ssh status myserver.com --user admin --password secret
 # Fichiers S3
 python scripts/mcp_cli.py files list --prefix logs/
 python scripts/mcp_cli.py files read config/app.yaml
+python scripts/mcp_cli.py files read rapports/complet.md --offset 0 --limit 30000 --json
 python scripts/mcp_cli.py files write test.txt --content "Hello World"
 python scripts/mcp_cli.py files concat --path rapports/complet.md --source rapports/00-synthese.md --source rapports/01-dns.md
 
@@ -109,6 +110,21 @@ chaque source (`path`, `offset` d'octet dans la destination, `size`, `sha256`
 et `version_id` lorsque S3 le fournit). Les séparateurs n'appartiennent à aucune
 source. La destination peut remplacer un objet existant, comme `files write`,
 mais ne peut pas figurer parmi les sources.
+
+#### Lire un objet S3 paginé
+
+Sans `offset` ni `limit`, `files read` conserve son comportement historique :
+le texte est borné afin de protéger le contexte MCP. Pour extraire intégralement
+un objet, passer `offset` et/ou `limit` (en **octets**). Chaque page utilise une
+requête S3 `Range` et retourne `content_base64`, `offset`, `next_offset`, `end`,
+`size`, `etag` et, quand S3 le fournit, `version_id`. La base64 est
+intentionnelle : une plage d'octets peut couper un caractère UTF-8 ou contenir
+du binaire.
+
+Réutiliser `next_offset` jusqu'à `end=true`. Sur un bucket versionné, reprendre
+le `version_id` retourné pour figer les pages. Sinon, reprendre l'`etag` dans
+`if_match` : si l'objet change, la lecture échoue explicitement au lieu de
+mélanger deux générations.
 
 ### 4. Recette E2E
 

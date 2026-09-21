@@ -80,6 +80,7 @@ python scripts/mcp_cli.py ssh status myserver.com --user admin --password secret
 # S3 files
 python scripts/mcp_cli.py files list --prefix logs/
 python scripts/mcp_cli.py files read config/app.yaml
+python scripts/mcp_cli.py files read reports/full.md --offset 0 --limit 30000 --json
 python scripts/mcp_cli.py files write test.txt --content "Hello World"
 
 # Token management (admin)
@@ -175,7 +176,7 @@ ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddlew
 | `network`           | Network diagnostics in Docker sandbox (ping, traceroute, nslookup, dig) — RFC 1918 private IPs blocked                                                                 |
 | `http`              | HTTP/REST client in Docker sandbox (anti-SSRF, auth basic/bearer/api_key) — private IPs blocked                                                                        |
 | `ssh`               | SSH command execution and file transfer in Docker sandbox (exec, status, upload, download) — password/key auth                                                          |
-| `files`             | File operations on S3 Dell ECS in Docker sandbox (list, read, write, delete, info, diff, versions, enable_versioning) — hybrid SigV2/SigV4 config, S3 versioning       |
+ | `files`             | File operations on S3 Dell ECS in Docker sandbox (list, read, write, delete, info, diff, versions, enable_versioning, concat) — hybrid SigV2/SigV4 config; read supports byte-range base64 pages with VersionId or ETag continuity       |
 | `perplexity_search` | Internet search via Perplexity AI                                                                                                                                      |
 | `perplexity_doc`    | Technical documentation for a technology/library/API via Perplexity AI                                                                                                 |
 | `date`              | Date/time manipulation (now, today, diff, add, format, parse, week_number, day_of_week) — timezone support                                                             |
