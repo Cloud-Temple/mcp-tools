@@ -15,6 +15,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existants sont conservés ; une erreur de transport ne prouve pas l'absence
   d'une mutation distante.
 
+### Sécurité
+
+- La clôture de dépendances fixe PyJWT à 2.15.0 et urllib3 à 2.8.0, avec des
+  bornes minimales explicites. Les régressions couvrent la réutilisation des
+  options JWT, les erreurs JWT/JWK, la conservation d'une clef RSA valide après
+  une clef malformée, la confiance TLS propre aux proxies et les lectures
+  chunked. Les configurations de proxy HTTPS doivent utiliser
+  `proxy_ssl_context` pour la confiance du proxy ; la confiance de destination
+  ne la remplace plus. Les champs de version corrigée de deux avis PyJWT restent
+  non renseignés chez le mainteneur : les tests et l'audit ne constituent pas
+  une garantie générale de sécurité.
+
 ## [0.8.1] — 2026-09-21
 
 ### Added
