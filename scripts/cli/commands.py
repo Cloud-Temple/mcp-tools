@@ -718,7 +718,7 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
       files list --endpoint "https://s3.custom.com" --bucket "my-bucket" --access-key "AK" --secret-key "SK"
     """
     async def _run():
-        client = MCPClient(ctx.obj["url"], ctx.obj["token"])
+        client = MCPClient(ctx.obj["url"], ctx.obj["token"], timeout=max(1, min(timeout, 60)))
         params = {"operation": operation, "timeout": timeout, "max_keys": max_keys}
         if s3_path:
             params["path"] = s3_path
