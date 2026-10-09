@@ -345,12 +345,23 @@ async def ssh(host: str, command: str, ...):
 | Token Service    | `core/tokens.py` (starter-kit)          | Copie + champ `tool_ids`                     |
 | Access Control   | `auth/context.py` (starter-kit)         | Copie + `check_tool_access()`                |
 | Storage S3       | `core/storage.py` (starter-kit)         | Copie directe                                |
-| CLI client       | `scripts/cli/client.py` (starter-kit)   | Copie directe                                |
+| CLI client       | `scripts/cli/client.py` (starter-kit)   | Adapté : budget global et refus des redirections |
 | CLI commands     | `scripts/cli/commands.py` (starter-kit) | Adapté (tools au lieu de spaces)             |
 | Shell interactif | `scripts/cli/shell.py` (starter-kit)    | Adapté                                       |
 | Display Rich     | `scripts/cli/display.py` (starter-kit)  | Copie directe                                |
 | Config           | `config.py` (starter-kit)               | Adapté (ajout Perplexity, etc.)              |
 | Dockerfile       | Starter-kit                             | Adapté (ajout libreoffice, ffmpeg si besoin) |
+
+Le client partagé CLI/shell conserve les signatures publiques et le parsing des
+résultats. Son budget asyncio unique couvre la création du transport HTTPX2,
+l'initialisation MCP, l'appel et la sortie des contextes ; aucun budget neuf
+n'est accordé entre ces phases. Le timeout `files` transmis au client reprend
+la borne serveur 1–60 secondes. Les interruptions héritant de `BaseException`
+se propagent ; seules les erreurs ordinaires deviennent des résultats `error`.
+Cette annulation coopérative ne garantit pas la fermeture physique d'un SDK
+bloqué, ni l'annulation d'une écriture distante. Aucun retry automatique n'est
+ajouté. HTTPS garde la vérification native des deux clients HTTP ; une CA privée
+commune se transmet par `SSL_CERT_FILE`, sans nouvel argument ou API cliente.
 
 ### Ce qu'on s'inspire de Dragonfly (réécriture Python propre)
 

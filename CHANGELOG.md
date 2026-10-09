@@ -4,6 +4,17 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.2] — Non publiée
+
+### Fixed
+
+- Le client MCP partagé par la CLI refuse les redirections et applique un
+  budget global à la connexion, à l'initialisation et à l'appel. Les annulations
+  et interruptions de processus se propagent. `files --timeout` borne aussi ce
+  budget client entre 1 et 60 secondes. Les formats JSON et codes de sortie
+  existants sont conservés ; une erreur de transport ne prouve pas l'absence
+  d'une mutation distante.
+
 ## [0.8.1] — 2026-09-21
 
 ### Added

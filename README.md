@@ -343,6 +343,26 @@ Authentification admin requise (ADMIN_BOOTSTRAP_KEY ou token S3 avec permission 
 | ----------- | -------------- | ----------------------- |
 | `MCP_URL`   | URL du serveur | `http://localhost:8082` |
 | `MCP_TOKEN` | Token d'auth   | (vide)                  |
+| `SSL_CERT_FILE` | Fichier PEM des autorités de certification HTTPS | Confiance du client HTTP installé |
+| `SSL_CERT_DIR` | Répertoire des autorités HTTPS | Confiance du client HTTP installé |
+
+Le client vérifie les certificats HTTPS et refuse les redirections MCP.
+HTTPX2 utilise par défaut la confiance du système ; le client REST HTTPX utilise
+son bundle par défaut. Pour la même CA privée sur les deux chemins, transmettre
+`SSL_CERT_FILE` dans l'environnement du processus CLI. Ne pas désactiver TLS.
+Ces variables sont prises en compte par défaut ([HTTPX2](https://pydantic.dev/docs/httpx2/advanced/ssl/),
+[HTTPX](https://www.python-httpx.org/advanced/ssl/)). `MCP_TOKEN` peut également
+être transmis par environnement, sans le placer dans les arguments du processus.
+
+Le budget MCP couvre la connexion, l'initialisation, l'appel et la fermeture
+coopérative de la session : 300 secondes par défaut pour `MCPClient`, et pour
+`files` le `--timeout` demandé, borné entre 1 et 60 secondes comme côté serveur
+(défaut 30). Un timeout retourne une erreur ; une annulation ou une interruption
+du processus se propage. Cela ne prouve pas qu'une mutation distante a été
+annulée : inspecter son état avant de la répéter. La sortie `--json` et les codes
+de sortie existants restent identiques ; un code 0 ne confirme pas un résultat
+métier `error` ou `incomplete`. Le budget asyncio requiert un SDK coopératif et
+ne remplace pas une supervision physique du processus.
 
 ## Structure des fichiers
 

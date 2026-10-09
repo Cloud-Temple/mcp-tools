@@ -5,7 +5,7 @@ FROM python:3.11-slim@sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51
 
 LABEL maintainer="Cloud Temple"
 LABEL description="MCP Cybersec — évaluations actives sous mandat approuvé"
-LABEL version="0.8.1"
+LABEL version="0.8.2"
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
