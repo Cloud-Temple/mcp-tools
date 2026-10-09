@@ -22,6 +22,9 @@
 # SDK MCP v2 : `MCPServer` et `streamable_http_client`. La borne <2.2 fixe la
 # ligne mineure validée et interdit une dérive lors de la reconstruction.
 mcp[cli]>=2.1.1,<2.2
+# Bornes de sécurité des transitives auth et S3 ; le lock fige leurs versions.
+PyJWT>=2.15.0,<3.0
+urllib3>=2.8.0,<3.0
 uvicorn>=0.32.0,<1.0
 
 # === Configuration ===

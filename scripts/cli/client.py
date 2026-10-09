@@ -53,10 +53,10 @@ class MCPClient:
                 await on_progress(label)
 
         try:
-            async with httpx2.AsyncClient(
+            async with asyncio.timeout(self.timeout), httpx2.AsyncClient(
                 headers=headers,
                 timeout=httpx2.Timeout(30, read=self.timeout),
-                follow_redirects=True,
+                follow_redirects=False,
             ) as http_client:
                 async with streamable_http_client(
                     f"{self.base_url}/mcp",
@@ -91,7 +91,7 @@ class MCPClient:
 
         except ConnectionRefusedError:
             return {"status": "error", "message": f"Serveur non accessible: {self.base_url}"}
-        except BaseException as e:
+        except Exception as e:
             # Extraire la vraie erreur des ExceptionGroup (MCP SDK TaskGroup)
             msg = self._extract_error(e)
             return {"status": "error", "message": msg}
