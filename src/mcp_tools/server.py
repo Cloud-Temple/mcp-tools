@@ -146,6 +146,8 @@ def create_app():
     # visibles dans l'activité mais absents du journal HTTP commun.
     app = LoggingMiddleware(app)
     app = ActivityMiddleware(app)
+    from .storage.files_lifecycle import StorageLifecycleMiddleware
+    app = StorageLifecycleMiddleware(app, settings)
 
     return app
 
@@ -163,15 +165,18 @@ class HealthCheckMiddleware:
             version_file = Path(__file__).parent.parent.parent / "VERSION"
             if version_file.exists():
                 version = version_file.read_text().strip()
+            from .storage.files_lifecycle import lifecycle
+            ready = await lifecycle.probe(settings) if scope.get("path") == "/ready" else True
             body = json.dumps({
-                "status": "healthy",
+                "status": "healthy" if ready else "not_ready",
+                **({"storage": lifecycle.state} if scope.get("path") == "/ready" else {}),
                 "service": settings.mcp_server_name,
                 "version": version,
                 "transport": "streamable-http",
             }).encode()
             await send({
                 "type": "http.response.start",
-                "status": 200,
+                "status": 200 if ready else 503,
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode()),

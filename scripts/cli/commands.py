@@ -645,7 +645,7 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
 
 @cli.command("files")
 @click.argument("operation", type=click.Choice([
-    "list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat"
+    "list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat", "metadata_batch", "operation_info", "reconcile"
 ]))
 @click.option("--path", "-p", "s3_path", default=None,
               help="Clé S3 de l'objet (destination requise pour read, write, delete, info, diff, concat)")
@@ -667,6 +667,10 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
               help="Nombre d'octets (lecture read paginée)")
 @click.option("--if-match", default=None,
               help="ETag de la page précédente (lecture read non versionnée)")
+@click.option("--catalog", is_flag=True, help="Mode catalogue : UUID généré avant mutation")
+@click.option("--cursor", default=None, help="Curseur opaque list/versions du catalogue")
+@click.option("--operation-id", default=None, help="UUID ; mutation répétée = inspection uniquement")
+@click.option("--expected-revision", type=click.IntRange(min=0), default=None, help="CAS de destination catalogue")
 @click.option("--max-keys", default=100, type=int,
               help="Nombre max d'objets retournés par list (1-1000, défaut: 100)")
 @click.option("--endpoint", default=None,
@@ -684,7 +688,7 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
 def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefix, version_id, offset, limit, if_match,
-              max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json):
+              max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json, cursor, operation_id, expected_revision, catalog):
     """📁 Opérations fichiers sur S3 Dell ECS en sandbox Docker.
 
     \b
@@ -720,6 +724,17 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
         params = {"operation": operation, "timeout": timeout, "max_keys": max_keys}
+        if cursor:
+            params["cursor"] = cursor
+        if expected_revision is not None:
+            params["expected_revision"] = expected_revision
+        oid = operation_id
+        if catalog and operation in {"write", "concat", "delete"} and oid is None:
+            import uuid
+            oid = str(uuid.uuid4())
+        if oid:
+            params["operation_id"] = oid
+            click.echo("operation_id=" + oid, err=True)
         if s3_path:
             params["path"] = s3_path
         if path2:

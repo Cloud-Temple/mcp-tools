@@ -2218,7 +2218,7 @@ def _parse_lock(path):
             if not line or "==" not in line:
                 continue
             name, _, version = line.partition("==")
-            pins[re.sub(r"[-_.]+", "-", name).strip().lower()] = version.strip()
+            pins[re.sub(r"[-_.]+", "-", name).strip().lower()] = version.strip().split()[0]
     return pins
 
 
@@ -2272,6 +2272,16 @@ async def test_15_reproducibility():
     except Exception as e:
         record("lock couvre toutes les dépendances directes", False, str(e))
 
+    # Catalogue optionnel : même garde de bornes/lock, hash du wheel figé.
+    try:
+        optional = _parse_direct_requirements(root / "requirements-postgres.txt")
+        optional_pins = _parse_lock(root / "requirements-postgres.lock")
+        ok = all(("==" in spec or "<" in spec) and re.sub(r"[-_.]+", "-", name).lower() in optional_pins for name,spec in optional)
+        ok = ok and "--hash=sha256:" in (root / "requirements-postgres.lock").read_text()
+        record("driver PostgreSQL : bornes, lock et hash", ok, str(optional_pins))
+    except Exception as e:
+        record("driver PostgreSQL : bornes, lock et hash", False, str(e))
+
     # 15d. Le SDK MCP v2 et son paquet de types restent figés ensemble.
     try:
         mcp_pin = pins.get("mcp", "")
@@ -2296,6 +2306,12 @@ async def test_15_reproducibility():
             record(f"import {label} dans l'image", rc == 0,
                    "OK" if rc == 0 else out.splitlines()[-1][:120])
 
+    probes.append(("libpq", "import psycopg; assert psycopg.pq.version() > 0"))
+    # Sonde additionnelle indépendante : la boucle principale a déjà servi les deux imports MCP.
+    reachable, rc, out = _docker_exec(["python", "-c", probes[-1][1]], timeout=30)
+    record("driver libpq dans l'image", rc == 0 if reachable else False,
+           "OK" if reachable and rc == 0 else "image indisponible ou import invalide", skipped=not reachable)
+
     # 15f. Cohérence de l'arbre installé dans l'image (conflits de versions).
     reachable, rc, out = _docker_exec(["python", "-m", "pip", "check"])
     if not reachable:
@@ -2313,6 +2329,11 @@ async def test_15_reproducibility():
         )
         record("pip-audit : aucune CVE sur les versions figées",
                r.returncode == 0, (r.stdout or r.stderr).strip().splitlines()[-1][:160] if (r.stdout or r.stderr) else "OK")
+        driver_audit = subprocess.run(
+            ["pip-audit", "--requirement", str(root / "requirements-postgres.lock"), "--no-deps", "--disable-pip", "--progress-spinner", "off", "--strict"],
+            capture_output=True,text=True,timeout=60)
+        record("pip-audit : driver PostgreSQL",driver_audit.returncode==0,
+            (driver_audit.stdout or driver_audit.stderr).strip()[-160:] or "OK")
     except FileNotFoundError:
         record("pip-audit : aucune CVE sur les versions figées", False,
                "pip-audit non installé (pip install pip-audit)", skipped=True)

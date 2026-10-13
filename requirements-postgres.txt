@@ -1,0 +1,2 @@
+# Driver pur Python/libpq système ; aucun libpq embarqué ni compilation C requise.
+psycopg>=3.3.6,<3.4

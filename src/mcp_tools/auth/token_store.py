@@ -588,6 +588,7 @@ class TokenStore:
             return None
 
         return {
+            "credential_binding": "tools-token-v1:" + token_hash,
             "client_name": info.get("client_name", "unknown"),
             "permissions": _liste_de_chaines(info.get("permissions")) or [],
             "tool_ids": _liste_de_chaines(info.get("tool_ids", [])) or [],

@@ -45,6 +45,29 @@ class Settings(BaseSettings):
     token_store_stale_grace: int = 300
     token_store_fail_mode: str = "fail_close"
 
+    # --- Autorité fichiers (aucune bascule/fallback implicite) ---
+    files_metadata_backend: str = "s3"
+    files_credentials_mode: str = "direct"
+    files_pg_service: str = "tools-app"
+    files_pg_database: str = "tools"
+    files_pg_role: str = "tools_files_app"
+    files_pg_owner: str = "tools_files_owner"
+    files_pg_schema: str = "tools_files"
+    files_pg_ca_file: str = ""
+    files_pg_system_identifier: str = ""
+    files_pg_timeline: int = Field(default=1, ge=1)
+    files_connect_timeout: int = Field(default=2, ge=1, le=10)
+    files_durability: str = "local"
+    files_quorum: int = Field(default=1, ge=1, le=16)
+    files_replication_roster: str = "[]"
+    files_s3_prefix: str = "files-generations/"
+    files_s3_data_signature: str = "s3"  # Dell ECS s3 ; autre provider s3v4 explicite
+    files_vault_url: str = ""
+    files_vault_id: str = ""
+    files_vault_path: str = ""
+    files_vault_token_file: str = ""
+    files_vault_ca_file: str = ""
+
     # --- Perplexity ---
     perplexity_api_key: str = ""
     perplexity_model: str = "sonar-reasoning-pro"

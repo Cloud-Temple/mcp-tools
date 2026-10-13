@@ -17,7 +17,7 @@ FROM python:3.11-slim@sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51
 # Métadonnées
 LABEL maintainer="Cloud Temple"
 LABEL description="MCP Tools — Bibliothèque d'outils exécutables pour agents IA"
-LABEL version="0.8.1"
+LABEL version="0.9.0"
 
 # Variables d'environnement Python
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -38,6 +38,7 @@ WORKDIR /app
 #   sera implémenté (voir DESIGN/mcp-tools/TOOLS_CATALOG.md).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libpq5 \
     iputils-ping \
     dnsutils \
     traceroute \
@@ -67,8 +68,9 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # Le lock fige AUSSI pip/setuptools/wheel : un `--upgrade pip` non borné
 # réintroduirait la dérive que cette version corrige, et c'est le setuptools
 # ancien de l'image de base qui portait PYSEC-2026-3447.
-COPY requirements.txt requirements.lock ./
+COPY requirements.txt requirements.lock requirements-postgres.txt requirements-postgres.lock ./
 RUN pip install --no-cache-dir -r requirements.lock \
+    && pip install --no-cache-dir --no-deps --require-hashes -r requirements-postgres.lock \
     && pip check
 
 # Créer un utilisateur non-root pour la sécurité

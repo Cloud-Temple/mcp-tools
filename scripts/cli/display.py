@@ -393,12 +393,21 @@ def show_files_result(result: dict):
     operation = result.get("operation", "?")
     bucket = result.get("bucket", "?")
 
-    icon = "✅" if status == "success" else "❌"
+    icon = "✅" if status in {"success", "ok"} else "❌"
     sandbox_tag = " [dim](sandbox)[/dim]" if result.get("sandbox") else ""
     console.print(f"\n{icon} [bold]files {operation}[/bold] — bucket:{bucket}{sandbox_tag}")
 
-    if status == "error":
-        console.print(f"[red]{result.get('message', 'Erreur')}[/red]")
+    if result.get("operation_id"):
+        console.print("operation_id=" + str(result["operation_id"]))
+    if result.get("durability_state"):
+        console.print("Effet=" + str(result.get("effect_state", "observed")) + " ; durabilité=" + result["durability_state"])
+    if result.get("next_cursor"):
+        console.print("next_cursor=" + result["next_cursor"])
+    if status in {"error", "incomplete"}:
+        show_json(result)
+        return
+    if operation in {"metadata_batch", "operation_info", "reconcile"}:
+        show_json(result)
         return
 
     if operation == "list":
