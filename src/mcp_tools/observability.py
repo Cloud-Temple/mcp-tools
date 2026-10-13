@@ -30,8 +30,8 @@ _ACTIVITY_SCHEMA_VERSION = 2
 _MAX_ACTIVITY = _SETTINGS.activity_max_events
 _MAX_ACTIVITY_AGE_SECONDS = _SETTINGS.activity_max_age_seconds
 _MAX_STRING_LENGTH = 256
-# Le catalogue MCP Cybersec (13 outils) dépasse 8 KiB. Le probe reste borné
-# et transitoire, mais doit pouvoir parser l'enveloppe tools/list complète.
+# Le probe reste borné et transitoire, mais doit pouvoir parser l'enveloppe
+# tools/list complète lorsque les descriptions du catalogue sont volumineuses.
 _MAX_RESPONSE_PROBE_BYTES = 65_536
 _SERVER_GENERATION = f"gen_{uuid.uuid4().hex[:12]}"
 
