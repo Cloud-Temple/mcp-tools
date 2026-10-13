@@ -4,6 +4,33 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] — En préparation
+
+### Fixed
+
+- PyJWT passe à 2.15.0 (`PYSEC-2026-4183`) et urllib3 à 2.8.0
+  (`PYSEC-2026-4175`) pour débloquer l'audit des dépendances (#34).
+  Les planchers transitifs sont explicites dans le contrat ; les 53 autres
+  paquets du lock sont conservés.
+
+### Removed
+
+- Retrait complet du sous-projet MCP CyberSec : serveur, catalogue, CLI,
+  console, images de scanners, compositions Docker, laboratoire et tests
+  dédiés. MCP Tools conserve son catalogue, ses sandboxes et ses contrats.
+- Suppression des variables publiques `CYBERSEC_*`, des instructions de
+  lancement et du couplage CyberSec dans le script de release.
+
+### Migration
+
+- Les contrôles de sécurité sont fournis par le serveur indépendant
+  [MCP Sec Tools](https://github.com/Cloud-Temple/mcp-sec-tools). Les identités,
+  campagnes et preuves CyberSec ne sont pas migrées automatiquement.
+- Ce retrait du dépôt n'arrête aucun déploiement CyberSec existant et ne
+  supprime aucun secret, objet S3 ni volume. Son arrêt doit être traité dans
+  une opération distincte, depuis sa version déployée et son runbook conservé
+  dans l'historique Git (par exemple `v0.8.1`).
+
 ## [0.8.1] — 2026-09-21
 
 ### Added
