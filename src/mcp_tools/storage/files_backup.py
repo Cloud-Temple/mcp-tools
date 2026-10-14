@@ -12,6 +12,7 @@ from ..config import get_settings
 from .files_credentials import Credentials, StorageUnavailable, private_text
 from .files_postgres import Catalog
 from .files_s3 import Blobs
+from .files_restore import project, structure, target_roles
 
 
 def escaped(value):
@@ -63,6 +64,8 @@ async def recipe(args):
         manifest=destination/"manifest.jsonl"
         async with cat.connection(operator=True) as c:
             await cat.infrastructure(c)
+            await cat.check_schema(c, role=args.app_role)
+            structure_hash = await structure(c, s.files_pg_schema, s.files_pg_owner)
             # Un dump ne restitue pas les rôles : scope fermé aux deux identités du domaine.
             roles=await (await c.execute("SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=ANY(%s)",([s.files_pg_owner,args.app_role],))).fetchall()
             if len(roles)!=2:
@@ -72,7 +75,7 @@ async def recipe(args):
             with os.fdopen(fd,"w") as f:
                 f.write(json.dumps({"header":{"database":s.files_pg_database,"cluster":s.files_pg_system_identifier,
                     "timeline":s.files_pg_timeline,"schema":s.files_pg_schema,"schema_version":schema,
-                    "roles":roles,"quiesced_operator_assertion":True}},default=str)+"\n")
+                    "roles":roles,"structure_sha256":structure_hash,"quiesced_operator_assertion":True}},default=str)+"\n")
                 after=""
                 total=0
                 while True:
@@ -132,10 +135,16 @@ async def recipe(args):
             exists=await cat.one(c,"SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s) present",(s.files_pg_schema,))
             if exists["present"]:
                 raise StorageUnavailable("Restore exige cible neuve sans schéma Tools")
-            for role in header["roles"]:
-                actual=await cat.one(c,"SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=%s",(role["rolname"],))
-                if actual!=role:
-                    raise StorageUnavailable("Rôles/grants à rétablir sous provisionneur avant import")
+            if getattr(args,"project_roles",False):
+                if (len(header["roles"])!=2 or not isinstance(header.get("structure_sha256"),str)
+                        or len(header["structure_sha256"])!=64):
+                    raise StorageUnavailable("Projection exige manifeste structurel récent")
+                await target_roles(cat,c,s,args.app_role,header["roles"])
+            else:
+                for role in header["roles"]:
+                    actual=await cat.one(c,"SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=%s",(role["rolname"],))
+                    if actual!=role:
+                        raise StorageUnavailable("Rôles/grants à rétablir sous provisionneur avant import")
         count=0
         for line in f:
             item=json.loads(line)
@@ -144,7 +153,14 @@ async def recipe(args):
                 if count>args.max_generations:
                     raise StorageUnavailable("Budget restore dépassé")
                 await blobs.get(item["pin"])  # le pin original doit survivre ; aucune réécriture cachée
-    await pg_job(s,["pg_restore","--exit-on-error","--single-transaction","--role="+s.files_pg_owner,"--dbname="+s.files_pg_database,str(destination/"domain.dump")],None)
+    argv=["pg_restore","--exit-on-error","--single-transaction","--role="+s.files_pg_owner]
+    if getattr(args,"project_roles",False):
+        argv += ["--no-owner","--no-acl"]
+    await pg_job(s,argv+["--dbname="+s.files_pg_database,str(destination/"domain.dump")],None)
+    if getattr(args,"project_roles",False):
+        async with cat.connection(operator=True) as c:
+            await target_roles(cat,c,s,args.app_role,header["roles"])
+            await project(cat,c,s,args.app_role,header["structure_sha256"])
     return {"status":"ok","action":"import","next":"droits/defaults/probes opérateur ; révocations auth actuelles ; process app neuf /ready + lecture publique et SQL indépendante ; aucun cleanup automatique"}
 
 
@@ -153,6 +169,8 @@ def main():
     p.add_argument("action",choices=("export","import"))
     p.add_argument("--archive",required=True)
     p.add_argument("--app-role",default="tools_files_app")
+    p.add_argument("--project-roles",action="store_true",
+                   help="Import seul : owner/app/installer cible distincts, aucun owner/ACL Source rétabli")
     p.add_argument("--quiesced",action="store_true",required=True,
                    help="Assertion opérateur : tous écrivains/administrateurs de mutation arrêtés")
     p.add_argument("--max-generations",type=int,default=10000)
@@ -160,6 +178,8 @@ def main():
     try:
         if not 1<=args.max_generations<=10000:
             raise StorageUnavailable("Budget invalide")
+        if args.project_roles and args.action!="import":
+            raise StorageUnavailable("Projection réservée à import")
         async def bounded():
             async with asyncio.timeout(600):
                 return await recipe(args)

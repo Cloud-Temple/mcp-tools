@@ -150,6 +150,23 @@ DROP/recreate/migration. Rétablir scopes/probes HBA et révoquer membership tem
 contrôler app readiness et droits/auth actuels avant raccord. Le provider S3
 doit préserver VersionId exact ; sinon reprise arrêtée sans réécriture pins.
 
+Pour une copie logique aux identités distinctes, `import --project-roles
+--app-role <application-cible>` exige un export récent avec empreinte de structure.
+Configurer `FILES_PG_OWNER` et `FILES_PG_ROLE` pour owner/installer cible : les trois
+identités doivent différer de celles du manifeste Source. L'installer reçoit
+uniquement membership owner cible `INHERIT FALSE, SET TRUE`, sans admin option ni
+CONNECT sur d'autres bases. Owner NOLOGIN, application sans membership/privilèges
+élevés ; aucun droit Source n'est accordé à la copie. Provisionner les probes
+PG contrôle de l'owner/installer dans la cible avant import, jamais à l'application.
+Le binaire utilise `--no-owner --no-acl`, puis la recette compare colonnes,
+contraintes, indexes, triggers et définitions des deux fonctions du domaine,
+projette les seuls grants applicatifs du contrat et retire les droits PUBLIC et
+defaults permissifs. Tout objet inattendu ou divergence arrête la recette ; la
+copie partielle reste hors service, sans DROP/replay automatique. Retirer ensuite
+membership, LOGIN et badge installer sous provisionneur avant raccordement public.
+L'auth S3 actuelle et les versions épinglées restent inchangées ; cette option
+n'effectue ni restauration de tokens ni PITR.
+
 Backup de base seulement ≠ révocations auth restaurées : conserver l'autorité
 tokens actuelle et chaîne Vault. Reprise antérieure à fence : anciens writers
 arrêtés, reconcile neuf explicite avant clôture, aucun redispatch. Voisin B
