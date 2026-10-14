@@ -17,9 +17,11 @@ class Connection:
 
 
 class Catalog:
-    def __init__(self, *, privileged=False, other_database=False):
+    def __init__(self, *, privileged=False, other_database=False, owner_membership=False, defaults=False):
         self.privileged = privileged
         self.other_database = other_database
+        self.owner_membership = owner_membership
+        self.defaults = defaults
 
     async def one(self, connection, query, params=()):
         if "rolcanlogin" in query:
@@ -27,6 +29,10 @@ class Catalog:
                     "rolcreatedb": False, "rolcreaterole": False, "rolreplication": False, "rolbypassrls": False}
         if "datdba" in query:
             return {"owner": "copy_owner"}
+        if "pg_default_acl" in query:
+            return {"bad": self.defaults}
+        if "pg_has_role" in query:
+            return {"bad": self.owner_membership}
         return {"bad": self.other_database if "pg_database" in query else False}
 
 
@@ -48,3 +54,11 @@ class RoleBoundary(IsolatedAsyncioTestCase):
     async def test_connect_to_other_database_is_refused(self):
         with self.assertRaises(StorageUnavailable):
             await target_roles(Catalog(other_database=True), Connection(), self.settings, "copy_app", self.source)
+
+    async def test_owner_membership_is_refused(self):
+        with self.assertRaises(StorageUnavailable):
+            await target_roles(Catalog(owner_membership=True), Connection(), self.settings, "copy_app", self.source)
+
+    async def test_preexisting_defaults_are_refused(self):
+        with self.assertRaises(StorageUnavailable):
+            await target_roles(Catalog(defaults=True), Connection(), self.settings, "copy_app", self.source)

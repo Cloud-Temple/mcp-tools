@@ -74,6 +74,14 @@ async def target_roles(cat, c, settings, app, source_roles):
     row = await cat.one(c, "SELECT pg_get_userbyid(datdba) owner FROM pg_database WHERE datname=current_database()")
     if row["owner"] != owner:
         raise StorageUnavailable("Owner cible divergent")
+    row = await cat.one(c, "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname<>%s "
+                          "AND pg_has_role(%s,oid,'MEMBER')) bad", (owner, owner))
+    if row["bad"]:
+        raise StorageUnavailable("Membership owner cible interdit")
+    row = await cat.one(c, "SELECT EXISTS(SELECT 1 FROM pg_default_acl WHERE defaclrole="
+                          "(SELECT oid FROM pg_roles WHERE rolname=%s)) bad", (owner,))
+    if row["bad"]:
+        raise StorageUnavailable("Defaults préexistants owner cible interdits")
     membership = await (await c.execute(
         "SELECT pg_get_userbyid(roleid) role,admin_option,inherit_option,set_option FROM pg_auth_members "
         "WHERE member=(SELECT oid FROM pg_roles WHERE rolname=%s)", (installer,))).fetchall()
@@ -107,9 +115,43 @@ async def project(cat, c, settings, app, expected):
                             sql.Identifier(schema), sql.Identifier(table), sql.Identifier(app)))
         await c.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {}.files_infrastructure() TO {}").format(
                         sql.Identifier(schema), sql.Identifier(app)))
-        await c.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} REVOKE ALL ON TABLES FROM PUBLIC").format(sql.Identifier(schema)))
-        await c.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(sql.Identifier(schema)))
+        # Une révocation par schéma ne neutralise pas le default global EXECUTE PUBLIC.
+        await c.execute("ALTER DEFAULT PRIVILEGES REVOKE ALL ON TABLES FROM PUBLIC")
+        await c.execute("ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
         await cat.check_schema(c, role=app)
+        await check_acl(c, schema, owner, app)
     async with cat.transaction(c):
         await c.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
         await cat.check_schema(c, role=app)
+        await check_acl(c, schema, owner, app)
+
+
+async def check_acl(c, schema, owner, app):
+    """Chaque grantee/grantor, defaults compris ; pas seulement les droits de l'app."""
+    objects = await (await c.execute(
+        "SELECT 'schema' kind,nspname name,nspowner owner,nspacl acl,'n'::\"char\" code FROM pg_namespace WHERE nspname=%s "
+        "UNION ALL SELECT 'table',relname,relowner,relacl,'r'::\"char\" FROM pg_class "
+        "WHERE relnamespace=(SELECT oid FROM pg_namespace WHERE nspname=%s) AND relkind='r' "
+        "UNION ALL SELECT 'function',proname,proowner,proacl,'f'::\"char\" FROM pg_proc "
+        "WHERE pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=%s)", (schema,) * 3)).fetchall()
+    for obj in objects:
+        grants = await (await c.execute(
+            "SELECT pg_get_userbyid(grantor) grantor,pg_get_userbyid(grantee) grantee,privilege_type,is_grantable "
+            "FROM aclexplode(COALESCE(%s::aclitem[],acldefault(%s::\"char\",%s::oid)))",
+            (obj["acl"], obj["code"], obj["owner"]))).fetchall()
+        allowed = ({"USAGE"} if obj["kind"] == "schema" else
+                   set(TABLE_PRIVILEGES.get(obj["name"], "").split(", ")) if obj["kind"] == "table" else
+                   {"EXECUTE"} if obj["name"] == "files_infrastructure" else set())
+        for grant in grants:
+            if grant["grantor"] != owner or grant["grantee"] not in (owner, app):
+                raise StorageUnavailable("Grantee/grantor hors contrat cible")
+            if grant["grantee"] == app and (grant["is_grantable"] or grant["privilege_type"] not in allowed):
+                raise StorageUnavailable("ACL application hors contrat cible")
+    defaults = await (await c.execute(
+        "SELECT d.defaclnamespace,d.defaclobjtype,pg_get_userbyid(a.grantor) grantor,"
+        "pg_get_userbyid(a.grantee) grantee,a.privilege_type FROM pg_default_acl d "
+        "CROSS JOIN LATERAL aclexplode(d.defaclacl) a WHERE d.defaclrole=(SELECT oid FROM pg_roles WHERE rolname=%s)",
+        (owner,))).fetchall()
+    if any(r["defaclnamespace"] != 0 or r["defaclobjtype"] != "f" or r["grantor"] != owner
+           or r["grantee"] != owner or r["privilege_type"] != "EXECUTE" for r in defaults):
+        raise StorageUnavailable("Defaults cible hors contrat")

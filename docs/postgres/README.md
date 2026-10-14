@@ -156,12 +156,14 @@ Configurer `FILES_PG_OWNER` et `FILES_PG_ROLE` pour owner/installer cible : les 
 identités doivent différer de celles du manifeste Source. L'installer reçoit
 uniquement membership owner cible `INHERIT FALSE, SET TRUE`, sans admin option ni
 CONNECT sur d'autres bases. Owner NOLOGIN, application sans membership/privilèges
-élevés ; aucun droit Source n'est accordé à la copie. Provisionner les probes
+élevés ; owner sans membership et sans default ACL préexistante. Aucun droit
+Source n'est accordé à la copie. Provisionner les probes
 PG contrôle de l'owner/installer dans la cible avant import, jamais à l'application.
 Le binaire utilise `--no-owner --no-acl`, puis la recette compare colonnes,
 contraintes, indexes, triggers et définitions des deux fonctions du domaine,
-projette les seuls grants applicatifs du contrat et retire les droits PUBLIC et
-defaults permissifs. Tout objet inattendu ou divergence arrête la recette ; la
+projette les seuls grants applicatifs du contrat, retire PUBLIC et neutralise le
+default global EXECUTE PUBLIC. Chaque grantee/grantor des schémas, tables et
+fonctions ainsi que les defaults finaux est vérifié. Tout objet inattendu ou divergence arrête la recette ; la
 copie partielle reste hors service, sans DROP/replay automatique. Retirer ensuite
 membership, LOGIN et badge installer sous provisionneur avant raccordement public.
 L'auth S3 actuelle et les versions épinglées restent inchangées ; cette option

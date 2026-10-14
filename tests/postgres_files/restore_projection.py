@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from src.mcp_tools.config import Settings
 from src.mcp_tools.storage import files_backup, files_bootstrap
 from src.mcp_tools.storage.files_postgres import Catalog
+from src.mcp_tools.storage.files_credentials import StorageUnavailable
 
 IMAGE = "sha256:cae132fc01034fb8c9d1e951eeebd7b242d3e13238be3c28bb8b60b5d79abcc9"
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,7 +90,8 @@ async def exercise(socket, folder, name):
         with connect(socket, db) as c:
             c.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
             c.execute(f"GRANT EXECUTE ON FUNCTION pg_control_system(),pg_control_checkpoint() TO {owner},{installer}")
-            c.execute(f"GRANT pg_read_all_stats TO {owner}")
+            if owner == "source_owner":
+                c.execute(f"GRANT pg_read_all_stats TO {owner}")
     with connect(socket, "source30") as c:
         cluster, timeline = c.execute("SELECT (pg_control_system()).system_identifier::text,(pg_control_checkpoint()).timeline_id").fetchone()
     common = dict(files_pg_schema="tools_files", files_pg_system_identifier=cluster, files_pg_timeline=timeline,
@@ -120,6 +122,26 @@ async def exercise(socket, folder, name):
             exported = await files_backup.recipe(SimpleNamespace(action="export", app_role="source_app", archive=str(archive), max_generations=64))
         target = settings.model_copy(update={"files_pg_database": "copy30", "files_pg_owner": "copy_owner", "files_pg_role": "copy_install"})
         with patch.object(files_backup, "get_settings", return_value=target):
+            async def refused_before_restore():
+                try:
+                    await files_backup.recipe(SimpleNamespace(action="import", project_roles=True, app_role="copy_app", archive=str(archive), max_generations=64))
+                except StorageUnavailable:
+                    pass
+                else:
+                    raise AssertionError("dangerous target contract accepted")
+                with connect(socket, "copy30") as c:
+                    assert c.execute("SELECT to_regnamespace('tools_files')").fetchone() == (None,)
+            with connect(socket) as c:
+                c.execute("GRANT source_owner TO copy_owner WITH INHERIT FALSE, SET TRUE")
+            await refused_before_restore()
+            with connect(socket) as c:
+                c.execute("REVOKE source_owner FROM copy_owner")
+            for objects, privilege in (("TABLES", "SELECT"), ("SCHEMAS", "USAGE"), ("FUNCTIONS", "EXECUTE")):
+                with connect(socket, "copy30") as c:
+                    c.execute(f"ALTER DEFAULT PRIVILEGES FOR ROLE copy_owner GRANT {privilege} ON {objects} TO source_app")
+                await refused_before_restore()
+                with connect(socket, "copy30") as c:
+                    c.execute(f"ALTER DEFAULT PRIVILEGES FOR ROLE copy_owner REVOKE {privilege} ON {objects} FROM source_app")
             imported = await files_backup.recipe(SimpleNamespace(action="import", project_roles=True, app_role="copy_app", archive=str(archive), max_generations=64))
     assert exported["status"] == imported["status"] == "ok"
     with connect(socket, "copy30", "copy_app") as c:
@@ -148,7 +170,8 @@ async def exercise(socket, folder, name):
         assert c.execute("SELECT NOT rolcanlogin FROM pg_roles WHERE rolname='copy_install'").fetchone() == (True,)
         assert c.execute("SELECT count(*) FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname='copy_install')").fetchone() == (0,)
     return {"archive_real": True, "projection": True, "pins_preserved_software": True,
-            "source_connect_denied": True, "history_immutable": True, "installer_closed": True}
+            "source_connect_denied": True, "history_immutable": True, "installer_closed": True,
+            "owner_membership_refused": True, "foreign_defaults_refused": 3}
 
 
 def main():
