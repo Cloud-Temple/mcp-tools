@@ -69,7 +69,6 @@ echo "  ok  main propre, synchronisée, tag libre, CHANGELOG rédigé, aucun sec
 etape "Bump VERSION → ${VERSION_CIBLE}"
 echo "${VERSION_CIBLE}" > VERSION
 DOCKERFILES=(Dockerfile)
-[[ -f Dockerfile.cybersec ]] && DOCKERFILES+=(Dockerfile.cybersec)
 for dockerfile in "${DOCKERFILES[@]}"; do
     if grep -q '^LABEL version=' "$dockerfile"; then
         sed -i.bak "s/^LABEL version=.*/LABEL version=\"${VERSION_CIBLE}\"/" "$dockerfile"
