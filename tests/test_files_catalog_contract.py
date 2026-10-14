@@ -2,6 +2,8 @@
 import asyncio
 import json
 import threading
+import copy
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
@@ -9,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from src.mcp_tools.auth.context import current_token_info
 from src.mcp_tools.storage.files_credentials import Credentials, StorageUnavailable
 from src.mcp_tools.storage.files_postgres import Catalog, Conflict
-from src.mcp_tools.storage.files_service import FilesService
+from src.mcp_tools.storage.files_service import FilesService, digest
 from src.mcp_tools.storage.files_s3 import Blobs
 
 
@@ -87,6 +89,105 @@ class RightsContracts(IsolatedAsyncioTestCase):
             release.set()
             while blobs.jobs: await asyncio.sleep(.005)
         self.assertFalse(blobs.slots.locked())
+
+
+class DeleteReconciliationContracts(IsolatedAsyncioTestCase):
+    async def exercise(self, observation, published=True):
+        """Transaction seam rolls back on failure; PostgreSQL index needs real E2E."""
+        intent = {"operation": "delete", "attempt": "a", "generation": "g",
+                  "sources": [{"pin": {"key": "generation-unique", "version_id": "v1"}}]}
+        state = {"row": {"intent": intent, "intent_digest": digest(intent),
+                          "attempt": "a", "generation": "g", "path": "same-path",
+                          "phase": "EFFECT_COMMITTED", "publication_allowed": True,
+                          "revocation": None, "closed": False}, "receipts": []}
+
+        class Connection:
+            async def execute(self, query, params):
+                row = state["row"]
+                if query.startswith("UPDATE operations SET publication_allowed=false"):
+                    row.update(publication_allowed=False, revocation=params[0])
+                elif query.startswith("UPDATE operations SET closed=true"):
+                    if not row["publication_allowed"] and row["revocation"] == params[1]:
+                        row["closed"] = True
+                else:
+                    raise AssertionError("unexpected SQL in transaction seam")
+
+        class Store:
+            @asynccontextmanager
+            async def connection(self):
+                yield Connection()
+
+            @asynccontextmanager
+            async def transaction(self, connection):
+                before = copy.deepcopy(state)
+                try:
+                    yield
+                except BaseException:
+                    state.clear(); state.update(before)
+                    raise
+
+            async def lock(self, connection, operation):
+                return state["row"]
+
+            async def one(self, connection, query, params):
+                if query.startswith("SELECT pin FROM generations"):
+                    return None
+                if "kind='publication'" in query:
+                    return {"present": published}
+                if "kind IN ('delete_marker'" in query:
+                    return {"present": False}
+                raise AssertionError("unexpected observation query")
+
+            async def receipt(self, connection, operation, kind, detail):
+                state["receipts"].append((kind, detail))
+                return str(len(state["receipts"]))
+
+            async def barrier(self, connection, operation, kind):
+                return await self.receipt(connection, operation, kind, {})
+
+            async def verify_barrier(self, connection, operation, receipt):
+                return {"barrier": receipt}
+
+        service = object.__new__(FilesService)
+        service.catalog = Store()
+        service.ref = AsyncMock(return_value={"operation": "op", "deleted": True})
+        service.blobs = SimpleNamespace(inspect_marker=AsyncMock(), get=AsyncMock(),
+                                        marker=AsyncMock(), put=AsyncMock())
+        if isinstance(observation, Exception):
+            service.blobs.inspect_marker.side_effect = observation
+        else:
+            service.blobs.inspect_marker.return_value = observation
+        service.info = AsyncMock(return_value={"remote_result": "uncertain"})
+        context = current_token_info.set({"permissions": ["admin"]})
+        try:
+            result = await service.reconcile("op")
+        finally:
+            current_token_info.reset(context)
+        self.assertTrue(state["row"]["closed"])
+        self.assertFalse(state["row"]["publication_allowed"])
+        self.assertEqual(result["remote_result"], "uncertain")
+        service.blobs.marker.assert_not_awaited()
+        service.blobs.put.assert_not_awaited()
+        return service, state
+
+    async def test_published_delete_without_marker_closes_without_s3_replay(self):
+        for reason in ("marker not observed", "S3 refused"):
+            with self.subTest(reason=reason):
+                service, state = await self.exercise(StorageUnavailable(reason))
+                service.blobs.inspect_marker.assert_awaited_once()
+                receipt = dict(state["receipts"])["delete_marker_unobserved"]
+                self.assertTrue(receipt["absence_not_proven"])
+                self.assertEqual(dict(state["receipts"])["reconciliation_closed"]["result"], "published")
+
+    async def test_observed_marker_remains_observed(self):
+        marker = {"key": "generation-unique", "version_id": "marker-v2"}
+        service, state = await self.exercise(marker)
+        self.assertEqual(dict(state["receipts"])["delete_marker_observed"], marker)
+
+    async def test_unpublished_delete_does_not_claim_publication(self):
+        service, state = await self.exercise(StorageUnavailable("not observed"), published=False)
+        service.blobs.inspect_marker.assert_not_awaited()
+        self.assertEqual(dict(state["receipts"])["reconciliation_closed"]["result"], "not_published")
 
 
 class IdentityContracts(TestCase):

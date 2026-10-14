@@ -148,3 +148,13 @@ tokens actuelle et chaîne Vault. Reprise antérieure à fence : anciens writers
 arrêtés, reconcile neuf explicite avant clôture, aucun redispatch. Voisin B
 relu par ses propres identités avant/après. Rollback et lecture finale indépendante
 avant cleanup selon QUALIFICATION. RTO/RPO non mesurés, pas de PITR/HA implicite.
+
+Après un delete dont le tombstone SQL est publié mais dont le marker S3 n'est
+pas confirmé, `reconcile` admin ferme la réservation du chemin après sa fence
+durable. Il consigne `delete_marker_unobserved` et `absence_not_proven=true` si
+le marker ne peut pas être observé. Le tombstone SQL fait autorité ; aucune
+absence physique S3 n'est déduite, aucun DELETE, purge ou republication n'est
+réémis. Les versions historiques restent conservées et lisibles par leur pin.
+Une nouvelle écriture peut ensuite utiliser ce chemin sans reconstruire l'ACK
+de la suppression initiale. Une nouvelle inspection peut observer un marker
+apparu plus tard ; elle ne relance aucune mutation S3.

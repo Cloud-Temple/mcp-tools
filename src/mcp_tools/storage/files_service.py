@@ -413,8 +413,14 @@ class FilesService:
                 if current["intent"]["operation"]=="delete" and published["present"]:
                     marker = await cat.one(c,"SELECT EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind IN ('delete_marker','delete_marker_observed')) present",(oid,))
                     if not marker["present"]:
-                        observed_marker = await self.blobs.inspect_marker(current["intent"]["sources"][0]["pin"])
-                        await cat.receipt(c,oid,"delete_marker_observed",observed_marker)
+                        try:
+                            observed_marker = await self.blobs.inspect_marker(current["intent"]["sources"][0]["pin"])
+                        except StorageUnavailable:
+                            # The current SQL tombstone is authoritative. An unobserved
+                            # marker never proves S3 absence and must not trigger a DELETE.
+                            await cat.receipt(c,oid,"delete_marker_unobserved",{"absence_not_proven":True})
+                        else:
+                            await cat.receipt(c,oid,"delete_marker_observed",observed_marker)
                 await c.execute("UPDATE operations SET closed=true WHERE id=%s AND NOT publication_allowed AND revocation=%s",(oid,revocation))
                 closing = await cat.receipt(c,oid,"reconciliation_closed",{"barrier_id":rid,"revocation_id":revocation,"result":"published" if published["present"] else "not_published"})
             await cat.verify_barrier(c,oid,closing)
