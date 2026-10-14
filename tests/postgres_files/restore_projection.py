@@ -94,6 +94,8 @@ async def exercise(socket, folder, name):
                 c.execute(f"GRANT pg_read_all_stats TO {owner}")
     with connect(socket, "source30") as c:
         cluster, timeline = c.execute("SELECT (pg_control_system()).system_identifier::text,(pg_control_checkpoint()).timeline_id").fetchone()
+    with connect(socket, "copy30") as c:
+        assert c.execute("SELECT rolname FROM pg_roles WHERE pg_has_role('copy_owner',oid,'MEMBER') ORDER BY rolname").fetchall() == [("copy_owner",), ("pg_database_owner",)]
     common = dict(files_pg_schema="tools_files", files_pg_system_identifier=cluster, files_pg_timeline=timeline,
                   files_durability="local", files_credentials_mode="direct")
     settings = Settings(_env_file=None, files_pg_database="source30", files_pg_owner="source_owner",
@@ -171,7 +173,8 @@ async def exercise(socket, folder, name):
         assert c.execute("SELECT count(*) FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname='copy_install')").fetchone() == (0,)
     return {"archive_real": True, "projection": True, "pins_preserved_software": True,
             "source_connect_denied": True, "history_immutable": True, "installer_closed": True,
-            "owner_membership_refused": True, "foreign_defaults_refused": 3}
+            "owner_membership_refused": True, "foreign_defaults_refused": 3,
+            "implicit_database_owner_verified": True}
 
 
 def main():

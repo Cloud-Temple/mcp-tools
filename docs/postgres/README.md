@@ -156,7 +156,9 @@ Configurer `FILES_PG_OWNER` et `FILES_PG_ROLE` pour owner/installer cible : les 
 identités doivent différer de celles du manifeste Source. L'installer reçoit
 uniquement membership owner cible `INHERIT FALSE, SET TRUE`, sans admin option ni
 CONNECT sur d'autres bases. Owner NOLOGIN, application sans membership/privilèges
-élevés ; owner sans membership et sans default ACL préexistante. Aucun droit
+élevés ; owner sans membership explicite et sans default ACL préexistante.
+Seul son membership implicite `pg_database_owner`, limité à la base courante,
+est admis ([contrat PostgreSQL17](https://www.postgresql.org/docs/17/predefined-roles.html)). Aucun droit
 Source n'est accordé à la copie. Provisionner les probes
 PG contrôle de l'owner/installer dans la cible avant import, jamais à l'application.
 Le binaire utilise `--no-owner --no-acl`, puis la recette compare colonnes,

@@ -74,7 +74,9 @@ async def target_roles(cat, c, settings, app, source_roles):
     row = await cat.one(c, "SELECT pg_get_userbyid(datdba) owner FROM pg_database WHERE datname=current_database()")
     if row["owner"] != owner:
         raise StorageUnavailable("Owner cible divergent")
-    row = await cat.one(c, "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname<>%s "
+    # pg_database_owner est le membership implicite du seul owner de current_database(),
+    # déjà vérifié ci-dessus ; PostgreSQL interdit tout grant de ce rôle ou vers lui.
+    row = await cat.one(c, "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname NOT IN (%s,'pg_database_owner') "
                           "AND pg_has_role(%s,oid,'MEMBER')) bad", (owner, owner))
     if row["bad"]:
         raise StorageUnavailable("Membership owner cible interdit")
