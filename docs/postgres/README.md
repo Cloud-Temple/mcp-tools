@@ -78,6 +78,13 @@ app. HBA/DBaaS doit refuser app dans autres bases, identités voisines et SET RO
 Retirer CONNECT/CREATE/TEMP PUBLIC de base dédiée, retirer CREATE public, donner
 CONNECT app explicitement ; aucune modification des bases voisines depuis Tools.
 Membership temporaire installateur retirée après installation complète.
+Pour l'import logique, accorder au rôle restore `SET TRUE, INHERIT FALSE`
+sur l'owner configuré et CONNECT uniquement sur la cible neuve. `pg_restore`
+fait SET ROLE vers `FILES_PG_OWNER` dans cette connexion ; propriétaires et
+ACL de l'archive restent conservés. Vérifier le refus CONNECT vers la source
+avant et après l'import, puis retirer la membership temporaire. Une cible
+de qualification arrêtée doit être mise hors service (`ALLOW_CONNECTIONS false`)
+et ne conserver aucune session avant le retour au service source.
 Avant premier bootstrap, provisionneur accorde au job opérateur les deux probes
 natives `pg_control_system()`/`pg_control_checkpoint()` nécessaires à vérifier
 system identifier/timeline, sans les donner directement à app. Identité et

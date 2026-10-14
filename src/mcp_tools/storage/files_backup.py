@@ -144,7 +144,7 @@ async def recipe(args):
                 if count>args.max_generations:
                     raise StorageUnavailable("Budget restore dépassé")
                 await blobs.get(item["pin"])  # le pin original doit survivre ; aucune réécriture cachée
-    await pg_job(s,["pg_restore","--exit-on-error","--single-transaction","--dbname="+s.files_pg_database,str(destination/"domain.dump")],None)
+    await pg_job(s,["pg_restore","--exit-on-error","--single-transaction","--role="+s.files_pg_owner,"--dbname="+s.files_pg_database,str(destination/"domain.dump")],None)
     return {"status":"ok","action":"import","next":"droits/defaults/probes opérateur ; révocations auth actuelles ; process app neuf /ready + lecture publique et SQL indépendante ; aucun cleanup automatique"}
 
 
