@@ -154,8 +154,8 @@ async def exercise(socket, folder, name):
         assert c.execute("SELECT has_table_privilege(current_user,'refs','DELETE')").fetchone() == (False,)
         try:
             c.execute("UPDATE operations SET publication_allowed=true,revocation=NULL")
-        except psycopg.Error:
-            pass
+        except psycopg.Error as error:
+            assert error.sqlstate == "P0001" and error.diag.message_primary == "immutable operation history"
         else:
             raise AssertionError("immutable history writable")
     for user in ("copy_app", "copy_install"):

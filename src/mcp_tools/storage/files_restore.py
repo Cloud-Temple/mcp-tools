@@ -104,10 +104,12 @@ async def project(cat, c, settings, app, expected):
     from psycopg import sql
     owner, schema = settings.files_pg_owner, settings.files_pg_schema
     # Le restore terminé ne vaut pas confirmation : empreinte et droits restent à vérifier.
-    if await structure(c, schema, owner) != expected:
-        raise StorageUnavailable("Structure restaurée divergente")
     async with cat.transaction(c):
         await c.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(owner)))
+        # Même visibilité de namespace que l'export : installer INHERIT FALSE n'a
+        # pas encore USAGE, ce qui change les qualifications rendues par pg_get_*.
+        if await structure(c, schema, owner) != expected:
+            raise StorageUnavailable("Structure restaurée divergente")
         await c.execute(sql.SQL("REVOKE ALL ON SCHEMA {} FROM PUBLIC").format(sql.Identifier(schema)))
         await c.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(app)))
         await c.execute(sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM PUBLIC").format(sql.Identifier(schema)))
