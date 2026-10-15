@@ -2,6 +2,8 @@
 
 import hashlib
 
+from .postgres_admin_schema import ADMIN_DDL, ADMIN_ROUTINES
+
 VERSION = 1
 DDL = r'''
 CREATE SCHEMA tools_access;
@@ -54,7 +56,7 @@ CREATE TABLE tools_access.activity_events (
  id uuid PRIMARY KEY, call_id uuid NOT NULL REFERENCES tools_access.activity_calls(id),
  phase text NOT NULL CHECK(phase IN ('terminal','access_mutation')),
  outcome text NOT NULL CHECK(outcome IN ('completed','denied','failed','uncertain')),
- created_at timestamptz NOT NULL DEFAULT clock_timestamp(), UNIQUE(call_id,phase)
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(), target_actor_id uuid, UNIQUE(call_id,phase)
 );
 CREATE INDEX activity_expiry ON tools_access.activity_calls(expires_at,id);
 CREATE INDEX activity_actor ON tools_access.activity_calls(tenant_id,actor_id,created_at,id);
@@ -127,10 +129,11 @@ BEGIN
  DELETE FROM tools_access.access_credentials c WHERE c.token_hash=ANY(hashes); GET DIAGNOSTICS credentials=ROW_COUNT;
  RETURN NEXT;
 END $$;
+''' + ADMIN_DDL + r'''
 REVOKE ALL ON ALL TABLES IN SCHEMA tools_access FROM PUBLIC;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA tools_access FROM PUBLIC;
 '''
 CHECKSUM = hashlib.sha256(DDL.encode()).hexdigest()
 
-APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)")
+APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)") + ADMIN_ROUTINES
 MAINTENANCE_ROUTINES = ("purge_expired(integer)",)
