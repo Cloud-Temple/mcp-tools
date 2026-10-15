@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import secrets
+import re
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from .postgres_contract import Credential, authenticate_row
+from .postgres_contract import Credential, authenticate_row, utc
 from .access_cursors import AccessCursors
 from .token_store import TokenStoreUnavailable
 
@@ -42,6 +44,8 @@ class PostgresAccessStore:
         import psycopg
         from psycopg.rows import dict_row
 
+        if any(key.startswith('PG') and value for key, value in os.environ.items()):
+            raise TokenStoreUnavailable('Ambient PostgreSQL settings forbidden')
         if not psycopg.capabilities.has_cancel_safe():
             raise TokenStoreUnavailable('Access cancellation unavailable')
         deadline = time.monotonic() + self.timeout
@@ -56,8 +60,20 @@ class PostgresAccessStore:
                     raise TokenStoreUnavailable('Access SQL identity invalid')
                 connection = await psycopg.AsyncConnection.connect(
                     **credential, sslmode='verify-full', sslrootcert=self.ca_file,
+                    target_session_attrs='read-write',
                     connect_timeout=2, row_factory=dict_row,
                     options='-c statement_timeout=2000 -c lock_timeout=1000 -c idle_in_transaction_session_timeout=3000')
+                from .postgres_schema import CHECKSUM, VERSION
+                async with connection.cursor() as check:
+                    await check.execute('SELECT * FROM tools_access.schema_contract()', ())
+                    if await check.fetchall() != [{'version': VERSION, 'checksum': CHECKSUM}]:
+                        raise TokenStoreUnavailable('Access schema incompatible')
+                    await check.execute("SELECT current_user AS role,current_database() AS db,pg_is_in_recovery() AS recovery,"
+                        "(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) AS privileged "
+                        "FROM pg_roles WHERE rolname=current_user", ())
+                    if await check.fetchall() != [{'role': self.role, 'db': self.database,
+                                                   'recovery': False, 'privileged': False}]:
+                        raise TokenStoreUnavailable('Access SQL authority invalid')
 
             async def operation():
                 async with connection.cursor() as cursor:
@@ -133,6 +149,7 @@ class PostgresAccessStore:
                   'permissions', 'tool_ids', 'created_at', 'expires_at', 'revoked', 'version')
         public = [{k: row[k] for k in fields} for row in rows]
         for row in public:
+            row['expired'] = row['expires_at'] is not None and utc(row['expires_at']) <= datetime.now(timezone.utc)
             for key in ('actor_id', 'created_at', 'expires_at'):
                 if row.get(key) is not None:
                     row[key] = str(row[key])
@@ -164,10 +181,12 @@ class PostgresAccessStore:
                   'expires_at', 'outcome', 'target_actor_id')
         public = [{k: str(row[k]) if isinstance(row[k], (UUID, datetime)) else row[k]
                    for k in fields} for row in rows]
-        return {'status': 'ok', 'calls': public, 'count': len(public),
+        return {'status': 'ok', 'storage_backend': 'postgres', 'calls': public, 'count': len(public),
                 'next_cursor': continuation, 'page_complete': True}
 
     async def _target(self, requester, reference):
+        if not isinstance(reference, str) or not re.fullmatch(r'[0-9a-f]{12}', reference):
+            raise ValueError('Access reference must come from the current list')
         rows = await self._run('SELECT * FROM tools_access.credential_target(%s,%s)',
                                (requester, reference))
         if len(rows) != 1:
@@ -176,7 +195,8 @@ class PostgresAccessStore:
 
     async def info(self, requester, reference):
         current = await self._target(requester, reference)
-        return {'status': 'success', 'token': current.public_view(),
+        return {'status': 'success', **current.public_view(),
+                'expired': current.expires_at is not None and current.expires_at <= datetime.now(timezone.utc),
                 'token_prefix': current.token_hash[:12]}
 
     async def create(self, requester, *, client_name, tenant_id, service_id,
@@ -185,7 +205,7 @@ class PostgresAccessStore:
             raise ValueError('Access expiry must be between 0 and 3650 days')
         raw = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
-        current = Credential.from_row(dict(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+        current = self._request_credential(dict(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
             actor_id=str(UUID(str(actor_id))) if actor_id is not None else str(uuid4()),
             tenant_id=tenant_id, service_id=service_id, client_name=client_name,
             permissions=permissions, tool_ids=tool_ids, created_at=now,
@@ -201,6 +221,13 @@ class PostgresAccessStore:
                 'operation_id': operation, **current.public_view()}
 
     @staticmethod
+    def _request_credential(row):
+        try:
+            return Credential.from_row(row)
+        except TokenStoreUnavailable:
+            raise ValueError('Access request fields invalid') from None
+
+    @staticmethod
     def _changed(rows):
         if len(rows) != 1 or rows[0].get('changed') is not True:
             raise TokenStoreUnavailable('Access mutation unconfirmed')
@@ -211,7 +238,7 @@ class PostgresAccessStore:
         if type(expected_version) is not int or expected_version != current.version:
             raise ValueError('Access version conflict; refresh before retrying')
         # Validation locale stricte ; la routine SQL vérifie à nouveau ses contraintes.
-        proposed = Credential.from_row({**current.__dict__,
+        proposed = self._request_credential({**current.__dict__,
             'permissions': list(current.permissions) if permissions is None else permissions,
             'tool_ids': list(current.tool_ids) if tool_ids is None else tool_ids,
             'client_name': current.client_name if client_name is None else client_name})
@@ -234,10 +261,13 @@ class PostgresAccessStore:
                 'revoked': True}
 
     async def admit(self, *, call_id, bearer, tool, trace_id, operation_id=None):
+        return await self.admit_binding(call_id=call_id, binding=hashlib.sha256(bearer.encode()).hexdigest(),
+                                        tool=tool, trace_id=trace_id, operation_id=operation_id)
+
+    async def admit_binding(self, *, call_id, binding, tool, trace_id, operation_id=None):
         # UUIDs fournis avant toute écriture ; aucun renouvellement si incertitude.
         ids = tuple(str(UUID(str(value))) if value is not None else None
                     for value in (call_id, trace_id, operation_id))
-        binding = hashlib.sha256(bearer.encode()).hexdigest()
         rows = await self._run('SELECT tools_access.admit_technical(%s,%s,%s,%s,%s) AS admitted',
                                (ids[0], binding, tool, ids[1], ids[2]))
         if len(rows) != 1 or type(rows[0].get('admitted')) is not bool:

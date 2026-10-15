@@ -20,14 +20,23 @@ class Provider:
         return dict(host='private', port=5432, dbname='access', user='app', password='PRIVATE-CANARY')
 
 
+def contract_rows(query):
+    from src.mcp_tools.auth.postgres_schema import VERSION, CHECKSUM
+    if 'schema_contract' in query:
+        return [{'version': VERSION, 'checksum': CHECKSUM}]
+    if 'pg_roles' in query:
+        return [{'role': 'app', 'db': 'access', 'recovery': False, 'privileged': False}]
+    return [{'admitted': True}]
+
+
 def test_uncertain_commit_never_returns_rows_or_retries(monkeypatch):
     import psycopg
 
     class Cursor:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
-        async def execute(self, *args): pass
-        async def fetchall(self): return [{'admitted': True}]
+        async def execute(self, query, *args): self.query = query
+        async def fetchall(self): return contract_rows(self.query)
 
     class Connection:
         pgconn = SimpleNamespace(finish=lambda: None)
@@ -56,8 +65,11 @@ def test_stalled_statement_is_cancelled_closed_and_bounded(monkeypatch):
     class Cursor:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
-        async def execute(self, *args): await asyncio.sleep(30)
-        async def fetchall(self): return []
+        async def execute(self, query, *args):
+            self.query = query
+            if 'schema_contract' not in query and 'pg_roles' not in query:
+                await asyncio.sleep(30)
+        async def fetchall(self): return contract_rows(self.query)
     def close(): flags['close'] += 1
     class Connection:
         pgconn = SimpleNamespace(finish=close)
@@ -93,8 +105,8 @@ def test_external_cancellation_during_commit_never_publishes_success(monkeypatch
         class Cursor:
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
-            async def execute(self, *args): pass
-            async def fetchall(self): return [{'admitted': True}]
+            async def execute(self, query, *args): self.query = query
+            async def fetchall(self): return contract_rows(self.query)
         def close(): flags['closed'] = True
         class Connection:
             pgconn = SimpleNamespace(finish=close)

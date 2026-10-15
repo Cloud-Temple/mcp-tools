@@ -25,10 +25,17 @@ class Blobs:
                     s3={"addressing_style": "path"}, retries={"total_max_attempts": 1},
                     connect_timeout=s.files_connect_timeout, read_timeout=10))
 
-    async def run(self, work):
+    async def run(self, work, *, authorize=True):
         # Après timeout/annulation le thread peut encore muter S3 : garder son admission
         # jusqu'à sa vraie fin. La réservation/intention survit indépendamment.
         await self.slots.acquire()
+        try:
+            from ..auth.access_runtime import refresh_access
+            if authorize:
+                await refresh_access('files')
+        except BaseException:
+            self.slots.release()
+            raise
         task = asyncio.create_task(asyncio.to_thread(work))
         self.jobs.add(task)
         def finish(t):
@@ -46,7 +53,8 @@ class Blobs:
 
     async def call(self, method, metadata=False, **kwargs):
         c = self.clients["s3v4" if metadata else self.data_signature]
-        return await self.run(lambda: getattr(c, method)(Bucket=self.bucket, **kwargs))
+        return await self.run(lambda: getattr(c, method)(Bucket=self.bucket, **kwargs),
+                              authorize=method != 'get_bucket_versioning')
 
     async def ready(self):
         r = await self.call("get_bucket_versioning", metadata=True)

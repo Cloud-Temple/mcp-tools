@@ -77,8 +77,8 @@ async function apiToolsRun(toolName, args) {
     });
 }
 
-async function apiTokensList() {
-    return await adminFetch('/admin/api/tokens');
+async function apiTokensList(cursor = null) {
+    return await adminFetch('/admin/api/tokens' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
 }
 
 async function apiTokensCreate(data) {
@@ -101,8 +101,9 @@ async function apiTokensUpdate(name, data) {
     });
 }
 
-async function apiTokensRevoke(name) {
-    return await adminFetch(`/admin/api/tokens/${encodeURIComponent(name)}`, {
+async function apiTokensRevoke(name, expectedVersion = null) {
+    const cas = app.me?.access_backend === 'postgres' ? '?expected_version=' + encodeURIComponent(expectedVersion) : '';
+    return await adminFetch(`/admin/api/tokens/${encodeURIComponent(name)}${cas}`, {
         method: 'DELETE',
     });
 }
@@ -121,6 +122,6 @@ async function apiAudit() {
     return await adminFetch('/admin/api/audit');
 }
 
-async function apiActivity() {
-    return await adminFetch('/admin/api/activity');
+async function apiActivity(cursor = null) {
+    return await adminFetch('/admin/api/activity' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
 }

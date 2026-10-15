@@ -102,10 +102,16 @@ async def system_activity(
     limit: int = 100,
     trace_id: Optional[str] = None,
     call_id: Optional[str] = None,
+    cursor: Optional[str] = None,
 ) -> dict:
     """Retourne les traces d'activité corrélées, filtrables par trace ou call (administrateurs uniquement, secrets exclus)."""
     try:
         check_tool_access("system_activity")
+        if get_settings().access_backend == 'postgres':
+            from .auth.access_runtime import get_access_store, current_binding
+            if trace_id is not None or call_id is not None:
+                return {'status': 'error', 'message': 'Utiliser la pagination activité PG'}
+            return await get_access_store().activity_page(current_binding(), cursor=cursor, limit=limit)
         token_info = current_token_info.get() or {}
         if "admin" not in token_info.get("permissions", []):
             return {"status": "error", "message": "Permission admin requise pour consulter l'activité."}
@@ -247,7 +253,7 @@ def _security_checks():
     """Vérifications de sécurité au démarrage (§3.7, sandbox)."""
 
     # §3.7 — Bootstrap key par défaut = risque critique
-    if settings.admin_bootstrap_key == "change_me_in_production":
+    if settings.access_backend == 's3' and settings.admin_bootstrap_key == "change_me_in_production":
         print(
             "\n"
             "  ╔══════════════════════════════════════════════════╗\n"
@@ -281,8 +287,9 @@ def main():
     _security_checks()
 
     # Initialiser le Token Store (charge les tokens depuis S3)
-    from .auth.token_store import init_token_store
-    init_token_store()
+    if settings.access_backend == 's3':
+        from .auth.token_store import init_token_store
+        init_token_store()
 
     app = create_app()
 

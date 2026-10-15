@@ -10,6 +10,9 @@
  */
 
 let _lastCreatedToken = null;
+let _tokenNextCursor = null;
+let _editingTokenVersion = null;
+const postgresAccess = () => app.me?.access_backend === 'postgres';
 
 // ═══════════════ CATALOGUE DES OUTILS ═══════════════
 
@@ -63,12 +66,13 @@ const ALL_TOOLS = Object.values(TOOL_CATEGORIES).flatMap(c => c.tools);
 
 // ═══════════════ CHARGEMENT ═══════════════
 
-async function loadTokens() {
+async function loadTokens(append = false) {
     const el = document.getElementById('view-tokens');
     try {
-        const r = await apiTokensList();
+        const r = await apiTokensList(append ? _tokenNextCursor : null);
         if (r.status === 'success') {
-            app.tokens = r.tokens || [];
+            app.tokens = append ? app.tokens.concat(r.tokens || []) : r.tokens || [];
+            _tokenNextCursor = r.next_cursor || null;
             el.innerHTML = renderTokensView();
         } else {
             el.innerHTML = `<div class="empty-state">❌ ${esc(r.message)}</div>`;
@@ -92,7 +96,7 @@ function renderTokensView() {
         <div class="view-title">🔑 Tokens <span class="count">${app.tokens.length}</span></div>
         <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="showCreateTokenForm()">+ Nouveau token</button>`;
-    if (expiredCount > 0) {
+    if (expiredCount > 0 && !postgresAccess()) {
         h += `<button class="btn btn-danger btn-sm" onclick="confirmPurgeExpired(${expiredCount})">🗑️ Purger ${expiredCount} expiré(s)</button>`;
     }
     h += `<button class="btn btn-secondary btn-sm" onclick="loadTokens()">🔄</button>
@@ -128,8 +132,7 @@ function renderTokensView() {
     if (app.tokens.length === 0) {
         h += `<div class="empty-state">
             <div class="empty-state-icon">🔑</div>
-            Aucun token S3 configuré.<br>
-            Seul le bootstrap key (ADMIN_BOOTSTRAP_KEY) est actif.
+            ${postgresAccess() ? 'Aucun accès dans cette page.' : 'Aucun token S3 configuré.<br>Seul le bootstrap key (ADMIN_BOOTSTRAP_KEY) est actif.'}
         </div>`;
     } else {
         h += '<div class="table-wrap"><table>';
@@ -145,7 +148,8 @@ function renderTokensView() {
         </tr>`;
 
         app.tokens.forEach(t => {
-            const statusBadge = t.expired
+            const reference = postgresAccess() ? t.token_prefix : t.client_name;
+            const statusBadge = t.revoked ? '<span class="badge badge-red">Révoqué</span>' : t.expired
                 ? '<span class="badge badge-red">Expiré</span>'
                 : '<span class="badge badge-green">Actif</span>';
 
@@ -176,7 +180,7 @@ function renderTokensView() {
             h += `<tr class="${t.expired ? 'row-expired' : ''}">
                 <td>
                     <strong style="color:#fff">${esc(t.client_name)}</strong><br>
-                    <span style="font-size:0.62rem;color:#555;font-family:monospace">${esc(t.token_hash_prefix)}</span>
+                    <span style="font-size:0.62rem;color:#555;font-family:monospace">${esc(t.token_prefix || t.token_hash_prefix)}${t.version ? ' / v' + esc(t.version) : ''}</span>
                 </td>
                 <td>${emailDisplay}</td>
                 <td>${perms}</td>
@@ -188,15 +192,16 @@ function renderTokensView() {
                 <td style="font-size:0.72rem">${t.expires_at ? fmtDate(t.expires_at) : '<span style="color:#555">Jamais</span>'}</td>
                 <td>${statusBadge}</td>
                 <td style="white-space:nowrap">
-                    <button class="btn btn-secondary btn-sm" onclick="showTokenInfo('${esc(t.client_name)}')" title="Détails">ℹ️</button>
-                    <button class="btn btn-secondary btn-sm" onclick="showEditTokenForm('${esc(t.client_name)}')" title="Modifier"${t.expired ? ' disabled' : ''}>✏️</button>
-                    <button class="btn btn-danger btn-sm" onclick="confirmRevokeToken('${esc(t.client_name)}')" title="Révoquer">🗑️</button>
+                    <button class="btn btn-secondary btn-sm" onclick="showTokenInfo('${esc(reference)}')" title="Détails">ℹ️</button>
+                    <button class="btn btn-secondary btn-sm" onclick="showEditTokenForm('${esc(reference)}')" title="Modifier"${t.expired || t.revoked ? ' disabled' : ''}>✏️</button>
+                    <button class="btn btn-danger btn-sm" onclick="confirmRevokeToken('${esc(reference)}')" title="Révoquer"${t.revoked ? ' disabled' : ''}>🗑️</button>
                 </td>
             </tr>`;
         });
 
         h += '</table></div>';
     }
+    if (_tokenNextCursor) h += '<button class="btn btn-secondary" onclick="loadTokens(true)">Page suivante</button>';
 
     return h;
 }
@@ -363,6 +368,14 @@ function showCreateTokenForm() {
     </div>`;
 
     el.innerHTML = h;
+    if (postgresAccess()) {
+        const email = document.getElementById('tokenEmail');
+        email.closest('.form-group').hidden = true;
+        const fields = document.createElement('div');
+        fields.className = 'form-row';
+        fields.innerHTML = '<div class="form-group"><label>Tenant</label><input class="form-input" id="tokenTenant" required></div><div class="form-group"><label>Service</label><input class="form-input" id="tokenService" required></div><div class="form-group"><label>Acteur existant (rotation, optionnel)</label><input class="form-input" id="tokenActor"></div>';
+        email.closest('.form-row').after(fields);
+    }
     document.getElementById('tokenClientName')?.focus();
 
     // Écouter le changement de permission pour ajuster le picker
@@ -417,13 +430,21 @@ async function createToken() {
     btn.innerHTML = '<span class="spinner"></span> Création…';
 
     try {
-        const r = await apiTokensCreate({
+        const data = {
             client_name: clientName,
             permissions,
             tool_ids: toolIds,
             expires_days: expiresDays,
             email,
-        });
+        };
+        if (postgresAccess()) {
+            delete data.email;
+            data.tenant_id = document.getElementById('tokenTenant').value.trim();
+            data.service_id = document.getElementById('tokenService').value.trim();
+            const actor = document.getElementById('tokenActor').value.trim();
+            if (actor) data.actor_id = actor;
+        }
+        const r = await apiTokensCreate(data);
 
         if (r.status === 'success') {
             _lastCreatedToken = { client_name: clientName, token: r.token };
@@ -454,6 +475,7 @@ async function showEditTokenForm(clientName) {
             return;
         }
         tokenData = r;
+        _editingTokenVersion = r.version ?? null;
     } catch (e) {
         showToast('Erreur de chargement', 'error');
         return;
@@ -501,6 +523,7 @@ async function showEditTokenForm(clientName) {
     </div>`;
 
     showModal(`✏️ Modifier « ${clientName} »`, body);
+    if (postgresAccess()) document.getElementById('editEmail').closest('.form-group').hidden = true;
 
     // Écouter le changement de permission pour désactiver/activer le picker
     const editPicker = document.getElementById('edit-picker');
@@ -539,11 +562,16 @@ async function doUpdateToken(clientName) {
     btn.innerHTML = '<span class="spinner"></span> Enregistrement…';
 
     try {
-        const r = await apiTokensUpdate(clientName, {
+        const data = {
             permissions,
             tool_ids: toolIds,
             email: email || '',
-        });
+        };
+        if (postgresAccess()) {
+            delete data.email;
+            data.expected_version = _editingTokenVersion;
+        }
+        const r = await apiTokensUpdate(clientName, data);
 
         if (r.status === 'success') {
             hideModal();
@@ -625,12 +653,12 @@ async function showTokenInfo(name) {
             </div>
             <div class="token-info-row">
                 <span class="token-info-label">Hash</span>
-                <span class="token-info-value" style="font-family:monospace;font-size:0.72rem;color:#666">${esc(r.token_hash_prefix)}</span>
+                <span class="token-info-value" style="font-family:monospace;font-size:0.72rem;color:#666">${esc(r.token_prefix || r.token_hash_prefix)}</span>
             </div>
         </div>
         <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem;padding-top:0.8rem;border-top:1px solid rgba(255,255,255,0.05)">
             <button class="btn btn-secondary" onclick="hideModal()">Fermer</button>
-            <button class="btn btn-secondary" onclick="hideModal();showEditTokenForm('${esc(r.client_name)}')" ${r.expired ? 'disabled' : ''}>✏️ Modifier</button>
+            <button class="btn btn-secondary" onclick="hideModal();showEditTokenForm('${esc(postgresAccess() ? r.token_prefix : r.client_name)}')" ${r.expired || r.revoked ? 'disabled' : ''}>✏️ Modifier</button>
         </div>`;
 
         showModal(`🔑 Token « ${name} »`, body);
@@ -641,6 +669,7 @@ async function showTokenInfo(name) {
 // ═══════════════ RÉVOCATION TOKEN ═══════════════
 
 function confirmRevokeToken(name) {
+    const version = postgresAccess() ? app.tokens.find(t => t.token_prefix === name)?.version : null;
     const body = `
         <div style="text-align:center;padding:0.5rem 0">
             <div style="font-size:2.5rem;margin-bottom:0.5rem">⚠️</div>
@@ -653,17 +682,17 @@ function confirmRevokeToken(name) {
             </p>
             <div style="display:flex;gap:0.5rem;justify-content:center">
                 <button class="btn btn-secondary" onclick="hideModal()">Annuler</button>
-                <button class="btn btn-danger" onclick="doRevokeToken('${esc(name)}')">🗑️ Révoquer définitivement</button>
+                <button class="btn btn-danger" onclick="doRevokeToken('${esc(name)}', ${Number.isInteger(version) ? version : 'null'})">🗑️ Révoquer définitivement</button>
             </div>
         </div>
     `;
     showModal('Confirmer la révocation', body);
 }
 
-async function doRevokeToken(name) {
+async function doRevokeToken(name, expectedVersion = null) {
     hideModal();
     try {
-        const r = await apiTokensRevoke(name);
+        const r = await apiTokensRevoke(name, expectedVersion);
         if (r.status === 'success') {
             showToast(`Token « ${name} » révoqué`, 'success');
             _lastCreatedToken = null;

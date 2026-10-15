@@ -6,8 +6,29 @@
  */
 
 let _currentLogsTab = 'activity';
+let _durableActivityCursor = null;
+
+async function loadDurableActivity(append = false) {
+    const el = document.getElementById('view-logs');
+    try {
+        const result = await apiActivity(append ? _durableActivityCursor : null);
+        if (result.status !== 'ok') throw new Error('Activité indisponible');
+        app.activityCalls = append ? app.activityCalls.concat(result.calls || []) : result.calls || [];
+        _durableActivityCursor = result.next_cursor || null;
+        const rows = app.activityCalls.map(call => '<tr>' +
+            ['tool', 'actor_id', 'admission', 'outcome', 'created_at', 'expires_at'].map(key =>
+                `<td>${esc(call[key] || '—')}</td>`).join('') + '</tr>').join('');
+        el.innerHTML = `<div class="view-header"><div class="view-title">Activité durable</div><button class="btn btn-secondary" onclick="loadDurableActivity()">Actualiser</button></div>
+            <div class="table-wrap"><table><tr><th>Outil</th><th>Acteur</th><th>Admission</th><th>Résultat</th><th>Créé</th><th>Échéance</th></tr>${rows}</table></div>
+            ${_durableActivityCursor ? '<button class="btn btn-secondary" onclick="loadDurableActivity(true)">Page suivante</button>' : ''}`;
+    } catch {
+        app.activityCalls = [];
+        el.innerHTML = '<div class="empty-state">Activité indisponible. Actualisez pour vérifier votre accès.</div>';
+    }
+}
 
 async function loadLogs() {
+    if (app.me?.access_backend === 'postgres') return loadDurableActivity();
     const el = document.getElementById('view-logs');
     try {
         const [auditR, logsR, activityR] = await Promise.all([apiAudit(), apiLogs(), apiActivity()]);

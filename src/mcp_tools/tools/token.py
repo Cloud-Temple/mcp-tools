@@ -49,6 +49,13 @@ def register(mcp: MCPServer) -> None:
         tool_ids: Annotated[Optional[List[str]], Field(default=None, description="Liste des IDs d'outils autorisés (ex: ['shell', 'http', 'calc']). ['all'] = tous les 13 outils. Vide = aucun accès (fail-closed pour non-admin)")] = None,
         expires_days: Annotated[int, Field(default=90, description="Durée de validité en jours (0 = jamais d'expiration)")] = 90,
         email: Annotated[Optional[str], Field(default=None, description="Email du propriétaire du token (optionnel, pour traçabilité)")] = None,
+        tenant_id: Annotated[Optional[str], Field(default=None, description="Profil PG : tenant explicite fixé à la création")] = None,
+        service_id: Annotated[Optional[str], Field(default=None, description="Profil PG : service explicite fixé à la création")] = None,
+        actor_id: Annotated[Optional[str], Field(default=None, description="Profil PG : UUID acteur existant pour une rotation explicite")] = None,
+        token_prefix: Annotated[Optional[str], Field(default=None, description="Profil PG : référence de 12 caractères de list/info, requise pour info/update/revoke")] = None,
+        expected_version: Annotated[Optional[int], Field(default=None, description="Profil PG : version lue requise pour update/revoke")] = None,
+        cursor: Annotated[Optional[str], Field(default=None, description="Profil PG : continuation opaque de list")] = None,
+        limit: Annotated[int, Field(default=50, ge=1, le=100, description="Profil PG : taille de page (1–100)")] = 50,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Gestion des tokens d'authentification MCP (admin uniquement). Opérations : create, list, info, revoke, update. Chaque token restreint l'accès aux outils via tool_ids. Passez tool_ids=['all'] pour autoriser tous les outils."""
@@ -76,6 +83,26 @@ def register(mcp: MCPServer) -> None:
                 tool_ids = list(ALL_TOOL_IDS)
 
             # Import du store
+            from ..config import get_settings
+            if get_settings().access_backend == 'postgres':
+                from ..auth.access_runtime import get_access_store, current_binding
+                access, requester = get_access_store(), current_binding()
+                if email:
+                    return {'status': 'error', 'message': 'Email non pris en charge par le profil PG'}
+                if operation == 'create':
+                    return await access.create(requester, client_name=client_name,
+                        tenant_id=tenant_id, service_id=service_id, actor_id=actor_id,
+                        permissions=['access'] if permissions is None else permissions,
+                        tool_ids=[] if tool_ids is None else tool_ids, expires_days=expires_days)
+                if operation == 'list':
+                    return await access.list_credentials(requester, cursor=cursor, limit=limit)
+                if operation == 'info':
+                    return await access.info(requester, token_prefix)
+                if operation == 'update':
+                    return await access.update(requester, token_prefix, expected_version,
+                        permissions=permissions, tool_ids=tool_ids)
+                return await access.revoke(requester, token_prefix, expected_version)
+
             from ..auth.token_store import get_token_store
             store = get_token_store()
 

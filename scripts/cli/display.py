@@ -71,6 +71,18 @@ def show_activity_result(result: dict, details: bool = False, include_protocol: 
         show_error(result.get("message", "Impossible de lire l'activité"))
         return
 
+    if result.get('storage_backend') == 'postgres':
+        table = Table(title='Activité durable — page courante', show_header=True)
+        for title in ('Appel', 'Outil', 'Acteur', 'Admission', 'Résultat', 'Créé', 'Échéance'):
+            table.add_column(title, overflow='fold')
+        for call in result.get('calls', []):
+            table.add_row(*(str(call.get(key) or '—') for key in
+                ('call_id', 'tool', 'actor_id', 'admission', 'outcome', 'created_at', 'expires_at')))
+        console.print(table)
+        if result.get('next_cursor'):
+            console.print(f"Page suivante : --cursor {result['next_cursor']}")
+        return
+
     stats = result.get("stats", {}) if isinstance(result.get("stats"), dict) else {}
     all_calls = result.get("calls", []) if isinstance(result.get("calls"), list) else []
     calls = all_calls if include_protocol else [call for call in all_calls if call.get("kind") == "tool_call"]
@@ -578,6 +590,8 @@ def show_token_result(result: dict):
             table.add_column("Outils (tool_ids)", style="white")
             table.add_column("Expire", style="dim")
             table.add_column("Créé par", style="dim")
+            if 'next_cursor' in result:
+                table.add_column('Référence / version', style='dim')
             for t in tokens:
                 tool_str = ", ".join(t.get("tool_ids", [])) or "(tous)"
                 exp = t.get("expires_at", "jamais") or "jamais"
@@ -585,15 +599,20 @@ def show_token_result(result: dict):
                     exp = f"[red]{exp[:10]} (EXPIRÉ)[/red]"
                 elif exp != "jamais":
                     exp = exp[:10]
-                table.add_row(
+                cells = [
                     t.get("client_name", "?"),
                     t.get("email", "") or "",
                     ", ".join(t.get("permissions", [])),
                     tool_str,
                     exp,
                     t.get("created_by", "?"),
-                )
+                ]
+                if 'next_cursor' in result:
+                    cells.append(f"{t.get('token_prefix','?')} / {t.get('version','?')}")
+                table.add_row(*cells)
             console.print(table)
+        if result.get('next_cursor'):
+            console.print(f"Page suivante : --cursor {result['next_cursor']}")
         return
 
     # --- INFO ---

@@ -444,6 +444,8 @@ class FilesService:
             async with asyncio.timeout(max(1,min(args.get("timeout",30),60))):
                 async with self.calls:
                     await self.ready()
+                    from ..auth.access_runtime import refresh_access
+                    await refresh_access('files')
                     if op in ("write","concat","delete"):
                         return await self.mutate(op,args,oid)
                     if op=="operation_info":

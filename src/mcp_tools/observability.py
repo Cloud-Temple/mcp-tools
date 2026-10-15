@@ -398,7 +398,12 @@ def traced_tool(tool_name: str) -> Callable[[Callable[..., Awaitable[_T]]], Call
             )
             return result
 
-        return wrapped
+        @functools.wraps(func)
+        async def durable_wrapped(*args: Any, **kwargs: Any) -> _T:
+            from .auth.access_runtime import run_durable_tool
+            return await run_durable_tool(tool_name, wrapped, args, kwargs)
+
+        return durable_wrapped
     return decorate
 
 

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     access_pg_hosts: str = ""
     access_pg_ca_file: str = ""
     access_operation_timeout: float = Field(default=5, ge=2, le=5)
+    access_cursor_ttl_seconds: int = Field(default=60, ge=1, le=300)
+    access_cursor_capacity: int = Field(default=1024, ge=1, le=10000)
     access_vault_url: str = ""
     access_vault_id: str = ""
     access_vault_path: str = "connection"
