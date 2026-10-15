@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     mcp_server_host: str = "0.0.0.0"
     mcp_server_port: int = 8050
     mcp_server_debug: bool = False
+    technical_log_directory: str = ""
 
     # --- Auth ---
     admin_bootstrap_key: str = "change_me_in_production"

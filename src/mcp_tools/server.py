@@ -156,6 +156,8 @@ def create_app():
     app = ActivityMiddleware(app)
     from .storage.files_lifecycle import StorageLifecycleMiddleware
     app = StorageLifecycleMiddleware(app, settings)
+    from .technical_logs import TechnicalLogsMiddleware
+    app = TechnicalLogsMiddleware(app, settings)
 
     return app
 

@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Mission #846 (préparation) : segments techniques UTC privés, issus des codes
+  du diagnostic existant sans payload, et nettoyage opérateur borné à30jours.
+  La politique annuelle d'activité et les échéances de sécurité restent séparées.
+
 - Candidat #31 : accès PostgreSQL explicites, contrôle frais avant admission,
   audit des mutations atomique, pages d'activité filtrées par droits courants.
 - Opérateur public install/verify/bootstrap/purge, API/CLI et console avec
