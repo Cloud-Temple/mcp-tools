@@ -134,6 +134,15 @@ class Catalog:
         if not trigger["ok"]:
             raise StorageUnavailable("Garde SQL absente")
 
+        from psycopg import sql
+        relation = sql.Identifier(self.s.files_pg_schema, 'blob_retirements').as_string(c)
+        extension = await self.one(c, 'SELECT to_regclass(%s) IS NOT NULL AS present', (relation,))
+        if extension['present'] != self.s.files_recovery_enabled:
+            raise StorageUnavailable("Recovery profile and installed schema differ")
+        if self.s.files_recovery_enabled:
+            from .files_recovery_contract import verify
+            await verify(c, self.s, app_role=role)
+
     async def infrastructure(self, c, bound=None):
         # Fonction étroite fournie par opérateur/DBaaS : pas de pg_monitor accordé à app.
         r = await self.one(c, "SELECT files_infrastructure() AS proof")

@@ -15,7 +15,20 @@ async def install(args):
     cat = Catalog(s)
     # En Vault, le job utilise son scope/secret propre par FILES_PG_ROLE et FILES_VAULT_PATH.
     service = args.operator_service if s.files_credentials_mode=="direct" else None
-    for name in (args.schema,args.app_role,s.files_pg_owner):
+    recovery_ddl = None
+    if s.files_recovery_enabled:
+        from .files_recovery_contract import expected_projection
+        from .files_recovery_schema import render
+        # Missing/unreviewed projection refuses before any SQL installation effect.
+        expected_projection()
+        if len({args.app_role, s.files_pg_owner, s.files_recovery_maintenance_role}) != 3:
+            raise StorageUnavailable("Rôles recovery distincts requis")
+        recovery_ddl = render(args.schema, args.app_role, s.files_recovery_maintenance_role,
+                              prefix=s.files_s3_prefix, recovery_days=s.files_recovery_days)
+    roles = (args.schema,args.app_role,s.files_pg_owner)
+    if s.files_recovery_enabled:
+        roles += (s.files_recovery_maintenance_role,)
+    for name in roles:
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}",name):
             raise StorageUnavailable("Identifiant SQL invalide")
     async with cat.connection(service=service,operator=True) as c:
@@ -23,6 +36,11 @@ async def install(args):
         app = await cat.one(c,"SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=%s",(args.app_role,))
         if not owner or any(owner.values()) or not app or not app["rolcanlogin"] or any(v for k,v in app.items() if k!="rolcanlogin"):
             raise StorageUnavailable("Rôles opérateur/application incompatibles")
+        if s.files_recovery_enabled:
+            maintenance = await cat.one(c,"SELECT rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=%s",(s.files_recovery_maintenance_role,))
+            memberships = await cat.one(c,"SELECT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=%s::regrole) present",(s.files_recovery_maintenance_role,))
+            if not maintenance or not maintenance['rolcanlogin'] or any(v for k,v in maintenance.items() if k!='rolcanlogin') or memberships['present']:
+                raise StorageUnavailable("Rôle maintenance non privilégié sans membership requis")
         exists = await cat.one(c,"SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s) present",(args.schema,))
         if args.check:
             if not exists["present"]:
@@ -51,6 +69,8 @@ async def install(args):
                 await c.execute(sql.SQL("GRANT {} ON {}.{} TO {}").format(sql.SQL(privileges),sql.Identifier(args.schema),sql.Identifier(table),sql.Identifier(args.app_role)))
             await c.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} REVOKE ALL ON TABLES FROM PUBLIC").format(sql.Identifier(args.schema)))
             await c.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC").format(sql.Identifier(args.schema)))
+            if recovery_ddl is not None:
+                await c.execute(recovery_ddl,prepare=False)
         return {"status":"ok","action":"apply","version":VERSION,"checksum":CHECKSUM,
                 "next":"installer la probe infrastructure opérateur, retirer membership temporaire puis --check et /ready app"}
 

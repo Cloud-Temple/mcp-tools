@@ -71,3 +71,35 @@ async def test_deletion_during_s3_read_prevents_content_publication(monkeypatch)
     service.blobs = SimpleNamespace(get=deleting_get)
     with pytest.raises(Conflict, match='retirée ou modifiée'):
         await service.read_operations('read', {'path': 'owned'})
+
+
+@pytest.mark.asyncio
+async def test_unapproved_recovery_projection_prevents_install_connection(monkeypatch):
+    from src.mcp_tools.storage import files_bootstrap, files_recovery_contract
+    from src.mcp_tools.storage.files_credentials import StorageUnavailable
+
+    class NoConnection:
+        def __init__(self, settings):
+            pass
+
+        def connection(self, **kwargs):
+            pytest.fail('unapproved recovery schema reached SQL')
+
+    settings = SimpleNamespace(files_credentials_mode='vault', files_recovery_enabled=True,
+                               model_copy=lambda **kwargs: settings)
+    monkeypatch.setattr(files_bootstrap, 'get_settings', lambda: settings)
+    monkeypatch.setattr(files_bootstrap, 'Catalog', NoConnection)
+    monkeypatch.setattr(files_recovery_contract, 'Path', lambda *a: SimpleNamespace(
+        with_name=lambda *a: SimpleNamespace(read_text=lambda: '{}')))
+    with pytest.raises(StorageUnavailable, match='schema/ACL drift'):
+        await files_bootstrap.install(SimpleNamespace(schema='owned', app_role='app',
+                                                      operator_service='private', check=False))
+
+
+def test_recovery_window_has_thirty_day_minimum():
+    from pydantic import ValidationError
+    from src.mcp_tools.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(files_recovery_days=29)
+    assert Settings(files_recovery_days=30).files_recovery_days == 30

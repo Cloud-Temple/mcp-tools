@@ -140,7 +140,9 @@ class FilesService:
                 after = self.after(args.get("cursor"), op, path)
                 n = args["max_keys"]
                 # UUID lexical : pagination bornée, pas promesse snapshot ni ordre chronologique.
-                rows = await (await c.execute("SELECT id,pin,manifest,created_at FROM generations WHERE path=%s AND id::text > %s ORDER BY id::text LIMIT %s", (path, after, n+1))).fetchall()
+                rows = await (await c.execute("SELECT id,pin,manifest,created_at FROM generations WHERE path=%s AND id::text > %s"
+                    + (" AND generation_visible(id)" if getattr(self.s, 'files_recovery_enabled', False) else "")
+                    + " ORDER BY id::text LIMIT %s", (path, after, n+1))).fetchall()
                 data = [{"generation": str(r["id"]), "version_id": r["pin"]["version_id"], "size": r["pin"]["size"], "sha256": r["pin"]["sha256"], "created_at": r["created_at"].isoformat()} for r in rows[:n]]
                 result = {"status": "ok", "versions": data, "count": len(data), "truncated": len(rows)>n,
                         "next_cursor": self.cursor(op,path,str(rows[n-1]["id"])) if len(rows)>n else None}
@@ -152,7 +154,9 @@ class FilesService:
                 await self.current_read(c, current)
                 return result
             if args.get("version_id"):
-                histories = await (await c.execute("SELECT id,pin,manifest FROM generations WHERE path=%s AND pin->>'version_id'=%s LIMIT 2", (path,args["version_id"]))).fetchall()
+                histories = await (await c.execute("SELECT id,pin,manifest FROM generations WHERE path=%s AND pin->>'version_id'=%s"
+                    + (" AND generation_visible(id)" if getattr(self.s, 'files_recovery_enabled', False) else "")
+                    + " LIMIT 2", (path,args["version_id"]))).fetchall()
                 if len(histories)!=1:
                     raise Conflict("Version non cataloguée")
                 historical = histories[0]

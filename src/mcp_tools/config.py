@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     files_durability: str = "local"
     files_quorum: int = Field(default=1, ge=1, le=16)
     files_replication_roster: str = "[]"
+    files_recovery_enabled: bool = False
+    files_recovery_days: int = Field(default=30, ge=30, le=36500)
+    files_recovery_maintenance_role: str = ""
     files_s3_prefix: str = "files-generations/"
     files_s3_data_signature: str = "s3"  # Dell ECS s3 ; autre provider s3v4 explicite
     files_vault_url: str = ""

@@ -75,6 +75,12 @@ CREATE FUNCTION {schema}.guard_source_pins() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE entry jsonb;
 BEGIN
+ IF jsonb_typeof(NEW.pin)<>'object'
+  OR NOT (NEW.pin ?& ARRAY['key','version_id','sha256','size'])
+  OR jsonb_typeof(NEW.pin->'key')<>'string'
+  OR NEW.pin->>'key' IS DISTINCT FROM {prefix} || NEW.id::text
+  OR jsonb_typeof(NEW.pin->'version_id')<>'string' OR NEW.pin->>'version_id' IN ('','null')
+ THEN RAISE EXCEPTION 'new generation requires its own versioned key'; END IF;
  IF jsonb_typeof(NEW.manifest)<>'array' THEN RAISE EXCEPTION 'invalid source pins'; END IF;
  FOR entry IN SELECT jsonb_array_elements(NEW.manifest) LOOP
   IF NOT EXISTS(SELECT 1 FROM {schema}.generations g
@@ -103,7 +109,7 @@ REVOKE ALL ON FUNCTION {schema}.guard_retirement(),{schema}.capture_retirement()
  {schema}.guard_source_pins() FROM {app};
 GRANT EXECUTE ON FUNCTION {schema}.generation_visible(uuid) TO {app};
 GRANT USAGE ON SCHEMA {schema} TO {maintenance};
-GRANT SELECT ON {schema}.refs,{schema}.generations,{schema}.operations,{schema}.receipts,
+GRANT SELECT ON {schema}.schema_version,{schema}.refs,{schema}.generations,{schema}.operations,{schema}.receipts,
  {schema}.blob_retirements TO {maintenance};
 GRANT UPDATE(retired_ack_at,recover_until,delete_state,delete_ack_at)
  ON {schema}.blob_retirements TO {maintenance};
