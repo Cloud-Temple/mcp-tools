@@ -199,3 +199,24 @@ def test_ready_fails_closed_on_access_outage_while_liveness_stays_available(monk
             if path == '/ready':
                 assert json.loads(sent[1]['body'])['access'] == 'unavailable'
     asyncio.run(scenario())
+
+
+def test_effect_exception_with_terminal_ack_loss_keeps_inspection_ids(monkeypatch):
+    store, effects = Store(), []
+    configure(monkeypatch, store)
+    store.terminal_unknown = True
+    async def effect():
+        effects.append(True)
+        raise RuntimeError('PRIVATE-CANARY after partial effect')
+    async def scenario():
+        token = current_token_info.set(store.info)
+        try:
+            result = await runtime.run_durable_tool('files', effect, (), {})
+            assert result['status'] == 'uncertain'
+            assert result['activity_call_id'] == store.admission['call_id']
+            assert result['operation_id'] == store.admission['operation_id']
+            assert 'PRIVATE-CANARY' not in json.dumps(result)
+        finally:
+            current_token_info.reset(token)
+    asyncio.run(scenario())
+    assert effects == [True] and store.terminals == ['failed']

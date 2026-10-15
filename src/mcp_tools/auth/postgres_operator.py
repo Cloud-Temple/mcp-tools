@@ -140,8 +140,13 @@ async def operate(args):
                 if (await one(c, 'SELECT count(*) n FROM tools_access.access_credentials'))['n']:
                     raise ValueError('Premier admin déjà initialisé ; aucune réinitialisation')
                 raw = secrets.token_urlsafe(32)
+                actor_id, operation_id = str(uuid4()), str(uuid4())
+                binding = hashlib.sha256(raw.encode()).hexdigest()
                 await c.execute("INSERT INTO tools_access.access_credentials(token_hash,actor_id,tenant_id,service_id,client_name,permissions,tool_ids,expires_at,version) VALUES(%s,%s,%s,%s,'initial-admin',ARRAY['admin'],ARRAY[]::text[],clock_timestamp()+interval '24 hours',1)",
-                    (hashlib.sha256(raw.encode()).hexdigest(), str(uuid4()), args.tenant_id, args.service_id))
+                    (binding, actor_id, args.tenant_id, args.service_id))
+                await c.execute("SELECT tools_access.record_admin(c,%s,'access_bootstrap',%s) "
+                    "FROM tools_access.access_credentials c WHERE c.token_hash=%s",
+                    (operation_id, actor_id, binding))
         if raw is not None:
             write_token(token_path, raw)
         return {'status': 'ok', 'action': args.action, 'schema_version': VERSION, 'checksum': CHECKSUM}

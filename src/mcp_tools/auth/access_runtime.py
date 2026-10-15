@@ -96,7 +96,8 @@ async def run_durable_tool(tool, function, args, kwargs):
         try:
             await store.finish(call_id, 'failed')
         except TokenStoreUnavailable:
-            raise TokenStoreUnavailable('Activity terminal unavailable or uncertain') from None
+            return {'status': 'uncertain', 'message': 'Activity terminal not confirmed; do not replay',
+                    'activity_call_id': call_id, 'operation_id': operation_id}
         raise
     finally:
         current_access_operation.reset(context)
@@ -107,6 +108,6 @@ async def run_durable_tool(tool, function, args, kwargs):
         await store.finish(call_id, outcome)
     except TokenStoreUnavailable:
         return {'status': 'uncertain', 'message': 'Activity terminal not confirmed; do not replay',
-                'activity_call_id': call_id}
+                'activity_call_id': call_id, 'operation_id': operation_id}
     return ({**result, 'activity_call_id': call_id, 'activity_state': 'confirmed'}
             if isinstance(result, dict) else result)

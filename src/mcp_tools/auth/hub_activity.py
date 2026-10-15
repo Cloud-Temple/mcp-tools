@@ -222,11 +222,14 @@ class HubActivityMiddleware:
         if fresh is None or fresh['version'] != info['version'] or check != binding:
             raise ValueError('Local access or binding changed')
         await delegation.active()
-        # Le contrôle réseau peut lui-même dépasser une échéance locale connue.
-        # Les versions/révocations sont fraîchement relues ci-dessus ; ne pas
-        # restituer après l'expiration pendant cette dernière attente réseau.
+        # Le contrôle réseau peut attendre pendant une révocation locale.
+        # Relecture après cette dernière attente, jamais uniquement avant.
+        fresh = await store.authenticate_binding(requester)
+        check = await store.hub_binding(requester, c)
+        if fresh is None or fresh['version'] != info['version'] or check != binding:
+            raise ValueError('Local access or binding changed before response')
         now = datetime.now(timezone.utc)
-        if (binding['expires_at'] <= now
+        if (time.time() >= c['exp'] or binding['expires_at'] <= now
                 or (fresh.get('expires_at') is not None
                     and datetime.fromisoformat(str(fresh['expires_at'])) <= now)):
             raise ValueError('Local access expired before response')

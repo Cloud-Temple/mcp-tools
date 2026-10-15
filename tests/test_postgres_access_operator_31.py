@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.mcp_tools.auth import postgres_operator as operator
 
 
-def configure(monkeypatch, tmp_path, commit_failure=False):
+def configure(monkeypatch, tmp_path, commit_failure=False, audit_failure=False):
     import psycopg
     settings = SimpleNamespace(access_backend='postgres', access_pg_ca_file='ca',
         access_pg_owner='access_owner', access_pg_role='access_install', access_pg_database='access')
@@ -31,6 +31,9 @@ def configure(monkeypatch, tmp_path, commit_failure=False):
                 if commit_failure:
                     raise RuntimeError('COMMIT ACK unknown')
                 events.append('committed')
+            else:
+                c.rows.clear()
+                events.append('rolled_back')
 
     class Connection:
         def __init__(self):
@@ -42,6 +45,10 @@ def configure(monkeypatch, tmp_path, commit_failure=False):
             self.params = params
             if 'INSERT INTO tools_access.access_credentials' in self.query:
                 self.rows.append(params)
+            if 'record_admin' in self.query:
+                if audit_failure:
+                    raise RuntimeError('audit unavailable')
+                events.append('audited')
             return self
         async def fetchone(self):
             if 'current_user' in self.query:
@@ -78,7 +85,7 @@ def test_first_admin_file_is_0600_after_commit_without_raw_sql_or_stdout(monkeyp
     result = asyncio.run(operator.operate(args))
     raw = target.read_text().strip()
     assert result['status']=='ok' and os.stat(target).st_mode & 0o777 == 0o600
-    assert events == ['connected','verified','committed','secret_written','closed']
+    assert events == ['connected','verified','audited','committed','secret_written','closed']
     assert c.rows[0][0] == hashlib.sha256(raw.encode()).hexdigest()
     assert raw not in repr(c.rows) and raw not in capsys.readouterr().out
 
@@ -96,3 +103,11 @@ def test_existing_file_refuses_before_sql_without_overwrite(monkeypatch, tmp_pat
     with pytest.raises(ValueError, match='neuf'):
         asyncio.run(operator.operate(args))
     assert target.read_text()=='existing' and not events and not c.rows
+
+
+def test_bootstrap_audit_failure_rolls_back_credential_and_never_writes_file(monkeypatch, tmp_path):
+    args, c, events, target = configure(monkeypatch, tmp_path, audit_failure=True)
+    with pytest.raises(RuntimeError, match='audit unavailable'):
+        asyncio.run(operator.operate(args))
+    assert not target.exists() and not c.rows
+    assert 'rolled_back' in events and 'committed' not in events and 'secret_written' not in events

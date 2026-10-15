@@ -264,3 +264,45 @@ def test_signed_context_through_middleware_needs_current_opaque_before_effect(mo
     assert store.admissions[0]['call_id'] == claims['call_id']
     assert store.admissions[0]['claims']['request_sha256'] == hashlib.sha256(body).hexdigest()
     assert hub.current_hub_context.get() is None and current_token_info.get() is None
+
+
+@pytest.mark.parametrize('change', ['opaque', 'mapping', 'rights'])
+def test_local_revocation_during_last_live_wait_returns_zero_batch(monkeypatch, change):
+    monkeypatch.setattr(hub.ssl, 'create_default_context', lambda **kwargs: object())
+    body = json.dumps({'mission_id': 'mis_1', 'root_agent_id': 'ag_root', 'limit': 10}).encode()
+    token, keys, _ = issuer(body)
+    store, sent = Store(), []
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class GatedReply(Reply):
+            async def aiter_bytes(self):
+                entered.set()
+                await release.wait()
+                yield b'{"active":true}'
+        class GatedClient(Client):
+            posts = 0
+            def stream(self, method, url, **kwargs):
+                if method == 'POST':
+                    self.posts += 1
+                    if self.posts == 2:
+                        return GatedReply(None)
+                return super().stream(method, url, **kwargs)
+        client = GatedClient(keys)
+        async def receive(): return {'type': 'http.request', 'body': body}
+        async def send(value): sent.append(value)
+        middleware = hub.HubActivityMiddleware(None, cfg(), client_factory=lambda **kwargs: client,
+                                               store_factory=lambda: store)
+        pending = asyncio.create_task(middleware({'type': 'http', 'path': hub.PATH, 'method': 'POST',
+            'headers': [(b'authorization', b'Bearer local-opaque'),
+                        (b'x-tools-activity-context', token.encode())]}, receive, send))
+        await entered.wait()
+        assert store.reads == 1
+        if change == 'rights':
+            store.info['tool_ids'] = []
+            store.info['version'] += 1
+        else:
+            store.change = change
+        release.set()
+        await pending
+    asyncio.run(scenario())
+    assert sent[0]['status'] == 403 and 'calls' not in json.loads(sent[1]['body'])
