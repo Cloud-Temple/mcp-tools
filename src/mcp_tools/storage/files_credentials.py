@@ -47,8 +47,12 @@ class Credentials:
             import httpx2
             token = private_text(s.files_vault_token_file)
             tls = ssl.create_default_context(cafile=s.files_vault_ca_file)
+            async def reject_redirect(response):
+                if response.is_redirect:
+                    raise httpx2.HTTPStatusError("MCP_REDIRECT_REFUSED", request=response.request, response=response)
             async with asyncio.timeout(s.files_connect_timeout):
                 async with httpx2.AsyncClient(verify=tls, follow_redirects=False,
+                        event_hooks={"response": [reject_redirect]},
                         timeout=s.files_connect_timeout,
                         headers={"Authorization": "Bearer " + token}) as http:
                     async with streamable_http_client(s.files_vault_url.rstrip("/") + "/mcp",
