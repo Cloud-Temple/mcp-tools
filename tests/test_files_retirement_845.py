@@ -103,3 +103,84 @@ def test_recovery_window_has_thirty_day_minimum():
     with pytest.raises(ValidationError):
         Settings(files_recovery_days=29)
     assert Settings(files_recovery_days=30).files_recovery_days == 30
+
+
+@pytest.mark.asyncio
+async def test_recovery_reconcile_only_observes_exact_pin():
+    from botocore.exceptions import ClientError
+    from src.mcp_tools.storage.files_recovery_s3 import RecoveryBlobs
+
+    calls = []
+
+    def get(**kwargs):
+        calls.append(kwargs)
+        raise ClientError({'Error': {'Code': 'NoSuchVersion'}}, 'GetObject')
+
+    async def run(work, **kwargs):
+        assert kwargs == {'authorize': False}
+        return work()
+
+    recovery = object.__new__(RecoveryBlobs)
+    recovery.io = SimpleNamespace(prefix='content/', bucket='owned', data_signature='s3',
+                                  clients={'s3': SimpleNamespace(get_object=get)}, run=run)
+    pin = {'key': 'content/12345678-1234-1234-1234-123456789abc', 'version_id': 'exact',
+           'sha256': 'a' * 64, 'size': 4}
+    assert await recovery.absence(pin) is True
+    assert calls == [{'Bucket': 'owned', 'Key': pin['key'], 'VersionId': 'exact'}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code', ['AccessDenied', '404', 'NoSuchBucket'])
+async def test_recovery_refusal_is_never_absence(code):
+    from botocore.exceptions import ClientError
+    from src.mcp_tools.storage.files_recovery_s3 import RecoveryBlobs
+
+    def get(**kwargs):
+        raise ClientError({'Error': {'Code': code}}, 'GetObject')
+
+    async def run(work, **kwargs):
+        return work()
+
+    recovery = object.__new__(RecoveryBlobs)
+    recovery.io = SimpleNamespace(prefix='content/', bucket='owned', data_signature='s3',
+                                  clients={'s3': SimpleNamespace(get_object=get)}, run=run)
+    pin = {'key': 'content/12345678-1234-1234-1234-123456789abc', 'version_id': 'exact',
+           'sha256': 'a' * 64, 'size': 4}
+    with pytest.raises(ClientError):
+        await recovery.absence(pin)
+
+
+@pytest.mark.asyncio
+async def test_collection_dispatches_one_exact_version_delete_and_observes_absence():
+    import hashlib
+    import io
+    from botocore.exceptions import ClientError
+    from src.mcp_tools.storage.files_recovery_s3 import RecoveryBlobs
+
+    content = b'owned'
+    reads, deletes, bodies = [], [], []
+
+    def get(**kwargs):
+        reads.append(kwargs)
+        if deletes:
+            raise ClientError({'Error': {'Code': 'NoSuchVersion'}}, 'GetObject')
+        body = io.BytesIO(content)
+        bodies.append(body)
+        return {'Body': body, 'VersionId': 'exact'}
+
+    def delete(**kwargs):
+        deletes.append(kwargs)
+        return {'VersionId': 'exact'}
+
+    async def run(work, **kwargs):
+        return work()
+
+    recovery = object.__new__(RecoveryBlobs)
+    recovery.io = SimpleNamespace(prefix='content/', bucket='owned', data_signature='s3',
+        clients={'s3': SimpleNamespace(get_object=get, delete_object=delete)}, run=run)
+    pin = {'key': 'content/12345678-1234-1234-1234-123456789abc', 'version_id': 'exact',
+           'sha256': hashlib.sha256(content).hexdigest(), 'size': len(content)}
+    assert await recovery.delete_once(pin) is True
+    exact = {'Bucket': 'owned', 'Key': pin['key'], 'VersionId': 'exact'}
+    assert deletes == [exact] and reads == [exact, exact]
+    assert bodies[0].closed
