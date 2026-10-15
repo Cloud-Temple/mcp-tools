@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx2
-from mcp_tools.storage.files_credentials import Credentials, StorageUnavailable
+from src.mcp_tools.storage.files_credentials import Credentials, StorageUnavailable
 
 
 class MCP220Redirects(unittest.IsolatedAsyncioTestCase):
