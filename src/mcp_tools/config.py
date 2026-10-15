@@ -6,7 +6,6 @@ Variables d'environnement chargées depuis .env.
 """
 
 from functools import lru_cache
-from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -22,6 +21,20 @@ class Settings(BaseSettings):
 
     # --- Auth ---
     admin_bootstrap_key: str = "change_me_in_production"
+
+    # --- Autorité accès/activité PG explicite #31 (aucun fallback S3) ---
+    access_backend: str = "s3"
+    access_pg_database: str = "tools"
+    access_pg_role: str = "tools_access_app"
+    access_pg_owner: str = "tools_access_owner"
+    access_pg_hosts: str = ""
+    access_pg_ca_file: str = ""
+    access_operation_timeout: float = Field(default=5, ge=2, le=5)
+    access_vault_url: str = ""
+    access_vault_id: str = ""
+    access_vault_path: str = "connection"
+    access_vault_token_file: str = ""
+    access_vault_ca_file: str = ""
 
     # --- S3 (tokens MCP uniquement) ---
     s3_endpoint_url: str = ""
