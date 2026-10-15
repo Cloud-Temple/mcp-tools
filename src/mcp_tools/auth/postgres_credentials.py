@@ -24,7 +24,8 @@ class AccessCredentials:
             hosts = result['host'].split(',')
             expected = self.expected_hosts.split(',')
             if (not expected or not all(expected) or len(expected) != len(set(expected))
-                    or any(part.strip() != part or not part for part in hosts+expected)
+                    or any(part.strip() != part or not part or any(c in part for c in '/\\@')
+                           for part in hosts+expected)
                     or len(hosts) != len(set(hosts)) or set(hosts) != set(expected)
                     or type(result['port']) is not int or result['port'] != 5432):
                 raise TokenStoreUnavailable('Access SQL target invalid')

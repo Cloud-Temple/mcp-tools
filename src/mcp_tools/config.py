@@ -6,6 +6,7 @@ Variables d'environnement chargées depuis .env.
 """
 
 from functools import lru_cache
+from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     admin_bootstrap_key: str = "change_me_in_production"
 
     # --- Autorité accès/activité PG explicite #31 (aucun fallback S3) ---
-    access_backend: str = "s3"
+    access_backend: Literal["s3", "postgres"] = "s3"
     access_pg_database: str = "tools"
     access_pg_role: str = "tools_access_app"
     access_pg_owner: str = "tools_access_owner"

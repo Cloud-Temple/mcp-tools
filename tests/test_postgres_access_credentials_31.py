@@ -41,3 +41,20 @@ def test_corrupt_or_moved_target_is_unavailable(change):
     obj.provider.sql = read
     with pytest.raises(TokenStoreUnavailable):
         asyncio.run(obj.sql())
+
+
+@pytest.mark.parametrize('host', ['/tmp/pg', '@private-socket', 'relative/socket', r'\\pipe\\pg'])
+def test_unix_socket_cannot_bypass_tls_even_when_configuration_matches(host):
+    obj = provider()
+    obj.expected_hosts = host
+    async def read():
+        return dict(host=host, port=5432, dbname='tools', user='app', password='private')
+    obj.provider.sql = read
+    with pytest.raises(TokenStoreUnavailable):
+        asyncio.run(obj.sql())
+
+
+def test_unknown_backend_is_rejected_without_s3_fallback():
+    from src.mcp_tools.config import Settings
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, access_backend='unknown')
