@@ -1,13 +1,17 @@
 """Contrats d'identité/TTL avant raccord PG ; aucune persistance attestée."""
 
 import json
+import sys
+from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 
-from mcp_tools.auth.postgres_contract import Credential, authenticate_row, validate_transition
-from mcp_tools.auth.token_store import TokenStoreUnavailable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.mcp_tools.auth.postgres_contract import Credential, authenticate_row, validate_transition
+from src.mcp_tools.auth.token_store import TokenStoreUnavailable
 
 NOW = datetime(2026, 10, 15, 12, tzinfo=timezone.utc)
 HASH = "a"*64
