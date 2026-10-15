@@ -43,6 +43,27 @@ async def snapshot(c, settings, *, app_role):
             has_database_privilege(%s,current_database(),'TEMP') write''', (role, role, role))).fetchone()
         if databases['bad'] or databases['write']:
             raise StorageUnavailable('Recovery database scope invalid')
+    base_tables = {'schema_version', 'refs', 'generations', 'operations', 'receipts'}
+    for role in (app_role, maintenance):
+        expected_tables = base_tables | ({'blob_retirements'} if role == maintenance else set())
+        accessible = await (await c.execute("""SELECT n.nspname,c.relname FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%%'
+            AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f')
+            AND (has_table_privilege(%s,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+              OR has_any_column_privilege(%s,c.oid,'SELECT,INSERT,UPDATE,REFERENCES'))
+            ORDER BY 1,2""", (role, role))).fetchall()
+        if {(r['nspname'], r['relname']) for r in accessible} != {(schema, table) for table in expected_tables}:
+            raise StorageUnavailable('Recovery table authority outside the finite owner domain')
+        callable_functions = await (await c.execute("""SELECT n.nspname,p.proname,
+            pg_get_function_identity_arguments(p.oid) arguments FROM pg_proc p
+            JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT LIKE 'pg_%%'
+            AND n.nspname<>'information_schema' AND has_schema_privilege(%s,n.oid,'USAGE')
+            AND has_function_privilege(%s,p.oid,'EXECUTE') ORDER BY 1,2,3""", (role, role))).fetchall()
+        expected_functions = {(schema, 'files_infrastructure', '')}
+        if role == app_role:
+            expected_functions.add((schema, 'generation_visible', 'wanted uuid'))
+        if {(r['nspname'], r['proname'], r['arguments']) for r in callable_functions} != expected_functions:
+            raise StorageUnavailable('Recovery callable authority outside the finite owner domain')
     relation = sql.Identifier(schema, 'blob_retirements').as_string(c)
     allowed = await (await c.execute('''SELECT has_table_privilege(%s,%s,
         'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR

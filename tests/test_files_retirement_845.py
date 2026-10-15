@@ -315,3 +315,33 @@ def test_operator_drain_waits_for_real_s3_worker_after_cancellation():
             await recovery.drain()
 
     asyncio.run(scenario())
+
+
+def test_read_result_is_not_published_after_access_revocation(monkeypatch):
+    from src.mcp_tools.storage import files_service
+    from src.mcp_tools.auth import access_runtime
+
+    async def scenario():
+        calls = []
+        service = object.__new__(FilesService)
+        service.calls = asyncio.Semaphore(1)
+
+        async def ready():
+            pass
+
+        async def refresh(tool):
+            calls.append(tool)
+            if len(calls) == 2:
+                raise ValueError('Access revoked or expired')
+
+        async def read(op, args):
+            return {'status': 'ok', 'content': 'must not escape'}
+
+        service.ready, service.read_operations = ready, read
+        monkeypatch.setattr(files_service, 'check_tool_access', lambda tool: None)
+        monkeypatch.setattr(access_runtime, 'refresh_access', refresh)
+        with pytest.raises(ValueError, match='revoked'):
+            await service.dispatch('read', {'path': 'owned'})
+        assert calls == ['files', 'files']
+
+    asyncio.run(scenario())

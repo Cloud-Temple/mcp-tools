@@ -483,7 +483,9 @@ class FilesService:
                         raise Conflict("Versioning à provisionner par opérateur avant app")
                     if op not in ("list","read","info","diff","versions","metadata_batch"):
                         raise Conflict("Opération non supportée")
-                    return {"operation":op, **await self.read_operations(op,args)}
+                    result = await self.read_operations(op,args)
+                    await refresh_access('files')
+                    return {"operation":op, **result}
         except Conflict as e:
             if op in ("write", "concat", "delete", "reconcile"):
                 return {"status":"incomplete","message":str(e),"remote_result":"uncertain",
