@@ -72,3 +72,21 @@ def test_client_rename_does_not_replace_actor_and_revocation_is_monotonic():
     validate_transition(Credential.from_row(renamed), Credential.from_row(revoked))
     with pytest.raises(TokenStoreUnavailable, match="transition invalid"):
         validate_transition(Credential.from_row(revoked), Credential.from_row({**revoked, "revoked_at": None, "version": 4}))
+
+
+@pytest.mark.parametrize("invalid", [None, [], "not-an-access-object", 1])
+def test_non_objects_cannot_be_decoded_as_access_metadata(invalid):
+    with pytest.raises(TokenStoreUnavailable, match="metadata invalid"):
+        Credential.from_row(invalid)
+
+
+@pytest.mark.parametrize("change", [
+    {"permissions": ["access", 1]}, {"tool_ids": [None]},
+    {"created_at": "2026-10-15T00:00:00"},
+    {"created_at": "2026-10-15T01:00:00+01:00"},
+    {"expires_at": "2026-10-14T00:00:00Z"},
+    {"revoked_at": "2026-10-14T00:00:00Z"},
+])
+def test_malformed_scope_and_timestamp_boundaries_fail_closed(change):
+    with pytest.raises(TokenStoreUnavailable):
+        authenticate_row(row(**change), HASH, NOW)
