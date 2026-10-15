@@ -1,0 +1,1891 @@
+{
+  "ddl_sha256": "0a7896aab9914401ec5a93e222faba99fa19e162f687e9a924bd827ffb185862",
+  "format_version": 1,
+  "snapshot": {
+    "acl": [
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:files_infrastructure",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:generation_visible",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "SCHEMA",
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "APP",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:blob_retirements:delete_ack_at",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:blob_retirements:delete_state",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:blob_retirements:recover_until",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:blob_retirements:retired_ack_at",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:files_infrastructure",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "SCHEMA",
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:capture_retirement",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:files_infrastructure",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:generation_visible",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_current_ref",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_operation",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_retirement",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_source_intent",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_source_pins",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "SCHEMA",
+        "privilege_type": "CREATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "SCHEMA",
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:blob_retirements",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:generations",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:operations",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:receipts",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:refs",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:replication_identities",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:schema_version",
+        "privilege_type": "UPDATE"
+      }
+    ],
+    "columns": [
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "generation",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "path",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "pin",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "jsonb",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "retired_at",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "timestamp with time zone",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "retired_ack_at",
+        "attnotnull": false,
+        "attnum": 5,
+        "datatype": "timestamp with time zone",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "recover_until",
+        "attnotnull": true,
+        "attnum": 6,
+        "datatype": "timestamp with time zone",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "delete_state",
+        "attnotnull": true,
+        "attnum": 7,
+        "datatype": "text",
+        "default_value": "'retained'::text",
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "delete_ack_at",
+        "attnotnull": false,
+        "attnum": 8,
+        "datatype": "timestamp with time zone",
+        "default_value": null,
+        "relname": "blob_retirements"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "id",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "operation",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "path",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "pin",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "jsonb",
+        "default_value": null,
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "manifest",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "jsonb",
+        "default_value": null,
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "created_at",
+        "attnotnull": true,
+        "attnum": 6,
+        "datatype": "timestamp with time zone",
+        "default_value": "clock_timestamp()",
+        "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "id",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "path",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "binding",
+        "attnotnull": false,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "request_digest",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "intent_digest",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "intent",
+        "attnotnull": true,
+        "attnum": 6,
+        "datatype": "jsonb",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "attempt",
+        "attnotnull": true,
+        "attnum": 7,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "generation",
+        "attnotnull": true,
+        "attnum": 8,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "expected_revision",
+        "attnotnull": true,
+        "attnum": 9,
+        "datatype": "bigint",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "phase",
+        "attnotnull": true,
+        "attnum": 10,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "publication_allowed",
+        "attnotnull": true,
+        "attnum": 11,
+        "datatype": "boolean",
+        "default_value": "true",
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "revocation",
+        "attnotnull": false,
+        "attnum": 12,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "closed",
+        "attnotnull": true,
+        "attnum": 13,
+        "datatype": "boolean",
+        "default_value": "false",
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "initial_confirmation",
+        "attnotnull": true,
+        "attnum": 14,
+        "datatype": "text",
+        "default_value": "'unknown'::text",
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "created_at",
+        "attnotnull": true,
+        "attnum": 15,
+        "datatype": "timestamp with time zone",
+        "default_value": "clock_timestamp()",
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "id",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "receipts"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "operation",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "receipts"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "kind",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "receipts"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "detail",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "jsonb",
+        "default_value": null,
+        "relname": "receipts"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "created_at",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "timestamp with time zone",
+        "default_value": "clock_timestamp()",
+        "relname": "receipts"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "path",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "revision",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "bigint",
+        "default_value": "0",
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "generation",
+        "attnotnull": false,
+        "attnum": 3,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "operation",
+        "attnotnull": false,
+        "attnum": 4,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "deleted",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "boolean",
+        "default_value": "true",
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "updated_at",
+        "attnotnull": true,
+        "attnum": 6,
+        "datatype": "timestamp with time zone",
+        "default_value": "clock_timestamp()",
+        "relname": "refs"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "name",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "replication_identities"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "role_name",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "replication_identities"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "address",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "replication_identities"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "slot",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "replication_identities"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "dn",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "replication_identities"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "singleton",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "boolean",
+        "default_value": null,
+        "relname": "schema_version"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "version",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "integer",
+        "default_value": null,
+        "relname": "schema_version"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "checksum",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "schema_version"
+      }
+    ],
+    "constraints": [
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((jsonb_typeof((pin -> 'key'::text)) = 'string'::text) AND ((pin ->> 'key'::text) = ('S3_PREFIX'::text || (generation)::text))))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_check1",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((recover_until >= (retired_at + '30 days'::interval)))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_check2",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((retired_ack_at IS NULL) OR (recover_until >= (retired_ack_at + '30 days'::interval))))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_check3",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((delete_state = 'retained'::text) OR (retired_ack_at IS NOT NULL)))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_check4",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((delete_state = 'deleted'::text) = (delete_ack_at IS NOT NULL)))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_delete_state_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((delete_state = ANY (ARRAY['retained'::text, 'delete_armed'::text, 'deleted'::text])))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_generation_fkey",
+        "contype": "f",
+        "convalidated": true,
+        "definition": "FOREIGN KEY (generation) REFERENCES generations(id)",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pin_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((jsonb_typeof(pin) = 'object'::text))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pin_check1",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((pin ?& ARRAY['version_id'::text, 'key'::text, 'sha256'::text, 'size'::text]))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pin_check2",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((jsonb_typeof((pin -> 'version_id'::text)) = 'string'::text) AND ((pin ->> 'version_id'::text) <> ALL (ARRAY[''::text, 'null'::text]))))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pin_check3",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((jsonb_typeof((pin -> 'sha256'::text)) = 'string'::text) AND (length((pin ->> 'sha256'::text)) = 64) AND ((pin ->> 'sha256'::text) ~ '^[a-f0-9]+$'::text)))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pin_check4",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((jsonb_typeof((pin -> 'size'::text)) = 'number'::text) AND (((pin ->> 'size'::text))::numeric >= (0)::numeric) AND (((pin ->> 'size'::text))::numeric = trunc(((pin ->> 'size'::text))::numeric))))",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "blob_retirements_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (generation)",
+        "relname": "blob_retirements"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "generations_operation_fkey",
+        "contype": "f",
+        "convalidated": true,
+        "definition": "FOREIGN KEY (operation) REFERENCES operations(id)",
+        "relname": "generations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "generations_operation_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (operation)",
+        "relname": "generations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "generations_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (id)",
+        "relname": "generations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((publication_allowed = (revocation IS NULL)))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_check1",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((NOT closed) OR (NOT publication_allowed)))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_initial_confirmation_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((initial_confirmation = 'unknown'::text))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_intent_digest_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((length(intent_digest) = 64))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_path_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((octet_length(path) >= 1) AND (octet_length(path) <= 1024)))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_phase_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((phase = ANY (ARRAY['INTENT_RESERVED'::text, 'CONTENT_DISPATCH_ARMED'::text, 'CONTENT_VERIFIED'::text, 'PUBLICATION_ARMED'::text, 'EFFECT_COMMITTED'::text, 'BARRIER_OBSERVED'::text])))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (id)",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "operations_request_digest_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((length(request_digest) = 64))",
+        "relname": "operations"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "receipts_operation_fkey",
+        "contype": "f",
+        "convalidated": true,
+        "definition": "FOREIGN KEY (operation) REFERENCES operations(id)",
+        "relname": "receipts"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "receipts_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (id)",
+        "relname": "receipts"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "refs_generation_fkey",
+        "contype": "f",
+        "convalidated": true,
+        "definition": "FOREIGN KEY (generation) REFERENCES generations(id)",
+        "relname": "refs"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "refs_operation_fkey",
+        "contype": "f",
+        "convalidated": true,
+        "definition": "FOREIGN KEY (operation) REFERENCES operations(id)",
+        "relname": "refs"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "refs_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (path)",
+        "relname": "refs"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "refs_revision_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((revision >= 0))",
+        "relname": "refs"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "replication_identities_address_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (address)",
+        "relname": "replication_identities"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "replication_identities_dn_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (dn)",
+        "relname": "replication_identities"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "replication_identities_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (name)",
+        "relname": "replication_identities"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "replication_identities_role_name_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (role_name)",
+        "relname": "replication_identities"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "replication_identities_slot_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (slot)",
+        "relname": "replication_identities"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "schema_version_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (singleton)",
+        "relname": "schema_version"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "schema_version_singleton_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (singleton)",
+        "relname": "schema_version"
+      }
+    ],
+    "defaults": [
+      {
+        "defaclobjtype": "f",
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "owner": "OWNER",
+        "privilege_type": "EXECUTE"
+      }
+    ],
+    "functions": [
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "capture_retirement",
+        "prosecdef": true,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "wanted uuid",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "generation_visible",
+        "prosecdef": true,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "s",
+        "return_type": "boolean"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "guard_current_ref",
+        "prosecdef": true,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "guard_operation",
+        "prosecdef": false,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "guard_retirement",
+        "prosecdef": false,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "guard_source_intent",
+        "prosecdef": true,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
+        "proname": "guard_source_pins",
+        "prosecdef": true,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      }
+    ],
+    "indexes": [
+      {
+        "definition": "CREATE UNIQUE INDEX blob_retirements_pkey ON SCHEMA.blob_retirements USING btree (generation)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "blob_retirements"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX generations_operation_key ON SCHEMA.generations USING btree (operation)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "generations"
+      },
+      {
+        "definition": "CREATE INDEX generations_path ON SCHEMA.generations USING btree (path, created_at, id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "generations"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX generations_pkey ON SCHEMA.generations USING btree (id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "generations"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX one_active_path ON SCHEMA.operations USING btree (path) WHERE (NOT closed)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "operations"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX operations_pkey ON SCHEMA.operations USING btree (id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "operations"
+      },
+      {
+        "definition": "CREATE INDEX receipts_operation ON SCHEMA.receipts USING btree (operation, created_at, id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "receipts"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX receipts_pkey ON SCHEMA.receipts USING btree (id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "receipts"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX refs_pkey ON SCHEMA.refs USING btree (path)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "refs"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX replication_identities_address_key ON SCHEMA.replication_identities USING btree (address)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "replication_identities"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX replication_identities_dn_key ON SCHEMA.replication_identities USING btree (dn)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "replication_identities"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX replication_identities_pkey ON SCHEMA.replication_identities USING btree (name)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "replication_identities"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX replication_identities_role_name_key ON SCHEMA.replication_identities USING btree (role_name)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "replication_identities"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX replication_identities_slot_key ON SCHEMA.replication_identities USING btree (slot)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "replication_identities"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX schema_version_pkey ON SCHEMA.schema_version USING btree (singleton)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "schema_version"
+      }
+    ],
+    "owner_memberships": [
+      {
+        "admin_option": false,
+        "inherit_option": true,
+        "rolname": "pg_read_all_stats",
+        "set_option": true
+      }
+    ],
+    "policies": [],
+    "relations": [
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "blob_retirements",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "blob_retirements_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "generations",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "generations_operation_key",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "generations_path",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "generations_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "one_active_path",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "operations",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "operations_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "receipts",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "receipts_operation",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "receipts_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "refs",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "refs_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "replication_identities",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "replication_identities_address_key",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "replication_identities_dn_key",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "replication_identities_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "replication_identities_role_name_key",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "replication_identities_slot_key",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "schema_version",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "schema_version_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      }
+    ],
+    "rules": [],
+    "triggers": [
+      {
+        "definition": "CREATE TRIGGER immutable_retirement BEFORE DELETE OR UPDATE ON SCHEMA.blob_retirements FOR EACH ROW EXECUTE FUNCTION guard_retirement()",
+        "relname": "blob_retirements",
+        "tgenabled": "O",
+        "tgname": "immutable_retirement"
+      },
+      {
+        "definition": "CREATE TRIGGER guard_source_pins BEFORE INSERT ON SCHEMA.generations FOR EACH ROW EXECUTE FUNCTION guard_source_pins()",
+        "relname": "generations",
+        "tgenabled": "O",
+        "tgname": "guard_source_pins"
+      },
+      {
+        "definition": "CREATE TRIGGER guard_source_intent BEFORE INSERT ON SCHEMA.operations FOR EACH ROW EXECUTE FUNCTION guard_source_intent()",
+        "relname": "operations",
+        "tgenabled": "O",
+        "tgname": "guard_source_intent"
+      },
+      {
+        "definition": "CREATE TRIGGER immutable_operation BEFORE UPDATE ON SCHEMA.operations FOR EACH ROW EXECUTE FUNCTION guard_operation()",
+        "relname": "operations",
+        "tgenabled": "O",
+        "tgname": "immutable_operation"
+      },
+      {
+        "definition": "CREATE TRIGGER capture_retirement AFTER UPDATE ON SCHEMA.refs FOR EACH ROW EXECUTE FUNCTION capture_retirement()",
+        "relname": "refs",
+        "tgenabled": "O",
+        "tgname": "capture_retirement"
+      },
+      {
+        "definition": "CREATE TRIGGER guard_current_ref BEFORE INSERT OR UPDATE ON SCHEMA.refs FOR EACH ROW EXECUTE FUNCTION guard_current_ref()",
+        "relname": "refs",
+        "tgenabled": "O",
+        "tgname": "guard_current_ref"
+      }
+    ],
+    "types": []
+  }
+}
