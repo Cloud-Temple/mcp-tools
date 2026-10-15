@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mcp_tools.storage.files_service import FilesService
+from src.mcp_tools.storage.files_service import FilesService
 
 
 class Catalog:
@@ -51,7 +51,7 @@ async def test_current_deletion_prevents_history_and_s3(monkeypatch, op):
 
 @pytest.mark.asyncio
 async def test_deletion_during_s3_read_prevents_content_publication(monkeypatch):
-    from mcp_tools.storage.files_postgres import Conflict
+    from src.mcp_tools.storage.files_postgres import Conflict
 
     service = object.__new__(FilesService)
     service.catalog = Catalog()
