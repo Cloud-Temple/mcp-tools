@@ -102,11 +102,56 @@ END $$;
 CREATE TRIGGER guard_source_pins BEFORE INSERT ON {schema}.generations
  FOR EACH ROW EXECUTE FUNCTION {schema}.guard_source_pins();
 
+CREATE FUNCTION {schema}.guard_source_intent() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE entry jsonb;
+BEGIN
+ IF jsonb_typeof(NEW.intent->'sources') IS DISTINCT FROM 'array' THEN
+  RAISE EXCEPTION 'source intent pins required';
+ END IF;
+ FOR entry IN SELECT value FROM jsonb_array_elements(NEW.intent->'sources')
+   ORDER BY value->>'path',value->>'generation' LOOP
+  PERFORM pg_advisory_xact_lock(hashtextextended('files-recovery:' ||
+    jsonb_build_array(entry->'pin'->>'key',entry->'pin'->>'version_id')::text,0));
+  PERFORM 1 FROM {schema}.refs r JOIN {schema}.generations g ON g.id=r.generation
+    WHERE r.path=entry->>'path' AND NOT r.deleted AND g.id=(entry->>'generation')::uuid
+      AND g.pin=entry->'pin' FOR UPDATE OF r;
+  IF NOT FOUND OR EXISTS(SELECT 1 FROM {schema}.blob_retirements
+      WHERE pin->>'key'=entry->'pin'->>'key' AND pin->>'version_id'=entry->'pin'->>'version_id'
+        AND delete_state IN ('delete_armed','deleted')) THEN
+   RAISE EXCEPTION 'source intent is not live';
+  END IF;
+ END LOOP;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER guard_source_intent BEFORE INSERT ON {schema}.operations
+ FOR EACH ROW EXECUTE FUNCTION {schema}.guard_source_intent();
+
+CREATE FUNCTION {schema}.guard_current_ref() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE candidate jsonb;
+BEGIN
+ IF NEW.generation IS NULL THEN
+  IF NOT NEW.deleted THEN RAISE EXCEPTION 'live generation required'; END IF;
+  RETURN NEW;
+ END IF;
+ SELECT pin INTO candidate FROM {schema}.generations WHERE id=NEW.generation AND path=NEW.path;
+ IF NOT FOUND THEN RAISE EXCEPTION 'reference generation belongs to another path'; END IF;
+ PERFORM pg_advisory_xact_lock(hashtextextended('files-recovery:' ||
+   jsonb_build_array(candidate->>'key',candidate->>'version_id')::text,0));
+ IF NOT NEW.deleted AND EXISTS(SELECT 1 FROM {schema}.blob_retirements WHERE generation=NEW.generation) THEN
+  RAISE EXCEPTION 'retired generation cannot become current';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER guard_current_ref BEFORE INSERT OR UPDATE ON {schema}.refs
+ FOR EACH ROW EXECUTE FUNCTION {schema}.guard_current_ref();
+
 REVOKE ALL ON {schema}.blob_retirements FROM PUBLIC,{app};
 REVOKE ALL ON FUNCTION {schema}.guard_retirement(),{schema}.capture_retirement(),
- {schema}.generation_visible(uuid),{schema}.guard_source_pins() FROM PUBLIC;
+ {schema}.generation_visible(uuid),{schema}.guard_source_pins(),{schema}.guard_source_intent(),{schema}.guard_current_ref() FROM PUBLIC;
 REVOKE ALL ON FUNCTION {schema}.guard_retirement(),{schema}.capture_retirement(),
- {schema}.guard_source_pins() FROM {app};
+ {schema}.guard_source_pins(),{schema}.guard_source_intent(),{schema}.guard_current_ref() FROM {app};
 GRANT EXECUTE ON FUNCTION {schema}.generation_visible(uuid) TO {app};
 GRANT USAGE ON SCHEMA {schema} TO {maintenance};
 GRANT SELECT ON {schema}.schema_version,{schema}.refs,{schema}.generations,{schema}.operations,{schema}.receipts,

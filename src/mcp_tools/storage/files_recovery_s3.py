@@ -12,7 +12,16 @@ from .files_s3 import MAX_BYTES, Blobs
 
 class RecoveryBlobs:
     def __init__(self, settings):
+        if not all((settings.s3_endpoint_url, settings.s3_bucket_name, settings.files_s3_prefix,
+                    settings.s3_access_key_id, settings.s3_secret_access_key)):
+            raise StorageUnavailable('Explicit owned S3 recovery profile required')
         self.io = Blobs(settings)
+
+    async def drain(self):
+        """Keep the domain lease until an admitted S3 worker actually finishes."""
+        import asyncio
+        if self.io.jobs:
+            await asyncio.shield(asyncio.gather(*tuple(self.io.jobs), return_exceptions=True))
 
     def checked(self, pin):
         if (not isinstance(pin, dict) or not isinstance(pin.get('key'), str)

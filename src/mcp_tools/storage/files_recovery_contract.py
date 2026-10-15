@@ -8,7 +8,7 @@ from .files_recovery_schema import DDL, render
 from .files_schema import DDL as BASE_DDL
 
 FUNCTIONS = ('guard_retirement', 'capture_retirement', 'generation_visible', 'guard_source_pins',
-             'guard_operation')
+             'guard_operation', 'guard_source_intent', 'guard_current_ref')
 
 
 async def snapshot(c, settings, *, app_role):
@@ -82,7 +82,7 @@ async def snapshot(c, settings, *, app_role):
             prosecdef,proleakproof,proconfig,prosrc,pg_get_userbyid(proowner) owner,
             format_type(prorettype,NULL) return_type FROM pg_proc WHERE pronamespace=%s
             AND proname IN ('guard_retirement','capture_retirement','generation_visible','guard_source_pins',
-                            'guard_operation')
+                            'guard_operation', 'guard_source_intent', 'guard_current_ref')
             ORDER BY proname,pg_get_function_identity_arguments(oid)''',
     }
     projection = {}

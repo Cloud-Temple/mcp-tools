@@ -7,12 +7,21 @@ Variables d'environnement chargées depuis .env.
 
 from functools import lru_cache
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Configuration MCP Tools."""
+
+    @model_validator(mode="after")
+    def validate_file_recovery(self):
+        if self.files_recovery_enabled and (
+                self.files_metadata_backend != "postgres"
+                or not self.files_recovery_maintenance_role
+                or self.files_recovery_maintenance_role == self.files_pg_owner):
+            raise ValueError("File recovery requires PostgreSQL and a separate maintenance role")
+        return self
 
     # --- Serveur MCP ---
     mcp_server_name: str = "mcp-tools"

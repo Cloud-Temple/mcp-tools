@@ -5,6 +5,7 @@ No SQL coordinates on argv, secret stdout, implicit restore, DDL or UNKNOWN retr
 import argparse
 import asyncio
 import json
+import importlib.util
 import os
 from pathlib import Path
 import stat
@@ -45,7 +46,19 @@ async def operation(args):
     if settings.files_credentials_mode != 'vault':
         raise ValueError('Vault-first recovery profile required')
     recovery = FileRecovery(settings, app_role=args.app_role)
+    if args.command == 'collect':
+        if not args.collection_code:
+            raise ValueError('explicit reviewed physical collection provider required')
+        spec = importlib.util.spec_from_file_location('pitr845_collection_control',
+                                                     args.collection_code / 'collection_control.py')
+        if spec is None or spec.loader is None:
+            raise ValueError('physical collection provider unavailable')
+        provider = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(provider)
+        from datetime import datetime, timezone
+        return await recovery.collect(provider.PitrCollection(args), now=datetime.now(timezone.utc), batch=args.batch)
     if args.command == 'ack-retirements':
+
         return await recovery.acknowledge(batch=args.batch)
     if not args.path or not args.version_id or not args.output:
         raise ValueError('exact owned path/version and private output required')
@@ -60,7 +73,7 @@ async def operation(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('ack-retirements', 'inspect', 'recover'))
+    parser.add_argument('command', choices=('ack-retirements', 'inspect', 'recover', 'collect'))
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--app-role', required=True)
     parser.add_argument('--intent-dir', type=Path, required=True)
@@ -68,13 +81,21 @@ def main():
     parser.add_argument('--version-id')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--batch', type=int, default=100)
+    parser.add_argument('--collection-code', type=Path)
+    parser.add_argument('--pitr-code', type=Path)
+    parser.add_argument('--pitr-domain', choices=('mission', 'teleport'))
+    parser.add_argument('--state-dir', type=Path)
+    parser.add_argument('--stack-source', type=Path)
+    parser.add_argument('--folder', type=Path)
     args = parser.parse_args()
     args.intent_dir.mkdir(mode=0o700, exist_ok=False)
     save(args.intent_dir / 'intent.json', json.dumps({'action': args.command, 'blind_replay': False}).encode())
     result = {'action': args.command, 'status': 'unknown_or_refused', 'blind_replay': False}
     try:
-        result.update(asyncio.run(operation(args)))
-        result['status'] = 'confirmed'
+        observed = asyncio.run(operation(args))
+        result.update(observed)
+        if not observed.get('inspection_required', False):
+            result['status'] = 'confirmed'
     except Exception:
         pass
     save(args.intent_dir / 'result.json', json.dumps(result).encode())
