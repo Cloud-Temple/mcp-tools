@@ -31,10 +31,14 @@ async def snapshot(c, settings, *, app_role):
         rolreplication,rolbypassrls FROM pg_roles WHERE rolname=%s''', (owner,))).fetchone()
     if not owner_flags or any(owner_flags.values()):
         raise StorageUnavailable('Recovery owner must be unprivileged NOLOGIN')
-    owner_members = await (await c.execute('SELECT EXISTS(SELECT 1 FROM pg_auth_members '
-        'WHERE member=%s::regrole) present', (owner,))).fetchone()
-    if owner_members['present']:
-        raise StorageUnavailable('Recovery owner membership forbidden')
+    owner_members = await (await c.execute('''SELECT r.rolname,m.admin_option,m.inherit_option,m.set_option
+        FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid
+        WHERE m.member=%s::regrole ORDER BY r.rolname''', (owner,))).fetchall()
+    # The delivered infrastructure probe reads authenticated replication statistics
+    # under its NOLOGIN owner. No application or maintenance membership is added.
+    if owner_members != [{'rolname': 'pg_read_all_stats', 'admin_option': False,
+                          'inherit_option': True, 'set_option': True}]:
+        raise StorageUnavailable('Recovery owner infrastructure membership differs')
     for role in (app_role, maintenance):
         databases = await (await c.execute('''SELECT EXISTS(SELECT 1 FROM pg_database
             WHERE datallowconn AND datname<>current_database()
@@ -106,7 +110,7 @@ async def snapshot(c, settings, *, app_role):
                             'guard_operation', 'guard_source_intent', 'guard_current_ref')
             ORDER BY proname,pg_get_function_identity_arguments(oid)''',
     }
-    projection = {}
+    projection = {'owner_memberships': owner_members}
     for name, query in queries.items():
         projection[name] = await (await c.execute(query, (namespace['oid'],))).fetchall()
     rendered = render(schema, app_role, maintenance, prefix=settings.files_s3_prefix,
