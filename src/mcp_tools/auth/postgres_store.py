@@ -17,6 +17,12 @@ from .token_store import TokenStoreUnavailable
 
 # Retenir les tâches jusqu'à leur terminaison, même pendant l'arrêt d'un appel.
 _ACTIVE: set[asyncio.Task] = set()
+_HUB_ACCESS_CONFIRM = 'SELECT * FROM tools_access.hub_access_confirm(%s,%s,%s,%s,%s,%s,%s,%s)'
+_HUB_ACCESS_REFUSALS = {'local access changed', 'local binding changed', 'local access or binding changed'}
+_HUB_ACCESS_ORIGIN = (
+    r'PL/pgSQL function tools_access\.hub_access_confirm\(text,bigint,uuid,bigint,text,text,text,text\) '
+    r'line [0-9]+ at RAISE'
+)
 
 
 class AccessMutationUncertain(TokenStoreUnavailable):
@@ -99,7 +105,14 @@ class PostgresAccessStore:
             return task.result()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
+            # Seul le refus métier connu de la décision finale devient un 403.
+            # Une ACL refusée, un autre SQL42501 ou un diagnostic inattendu reste panne.
+            if (query == _HUB_ACCESS_CONFIRM
+                    and isinstance(error, psycopg.errors.InsufficientPrivilege)
+                    and error.diag.message_primary in _HUB_ACCESS_REFUSALS
+                    and re.fullmatch(_HUB_ACCESS_ORIGIN, error.diag.context or '')):
+                raise ValueError('Current local hub access refused') from None
             # Aucun détail libpq/HTTP/conninfo ou résultat d'écriture sans ACK.
             raise TokenStoreUnavailable('Access operation unavailable or uncertain') from None
         finally:
@@ -331,7 +344,7 @@ class PostgresAccessStore:
 
     async def confirm_hub_access(self, requester, info, local, claims):
         """Une seule transaction verrouille et compare credential ET mapping."""
-        rows = await self._run('SELECT * FROM tools_access.hub_access_confirm(%s,%s,%s,%s,%s,%s,%s,%s)',
+        rows = await self._run(_HUB_ACCESS_CONFIRM,
             (requester, info['version'], str(local['id']), local['version'], claims['iss'],
              claims['sub'], claims['owner_id'], claims['tenant_id']))
         if len(rows) != 1:
