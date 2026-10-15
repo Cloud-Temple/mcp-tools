@@ -5,6 +5,8 @@ GC wiring requires the reviewed physical domain lease and inventory provider.
 """
 from datetime import datetime, timedelta, timezone
 import json
+import re
+from uuid import UUID
 
 from .files_credentials import StorageUnavailable
 from .files_postgres import Catalog
@@ -67,21 +69,56 @@ class FileRecovery:
 
     @staticmethod
     async def referenced(c, pin):
-        rows = await (await c.execute("""SELECT 1 FROM generations g JOIN refs r ON r.path=g.path
+        # One SQL snapshot for both live roots and admitted open intentions.
+        # Otherwise an intent could close/publish between two separate root reads.
+        roots = await (await c.execute("""SELECT jsonb_build_array(jsonb_build_object(
+                'generation',g.id::text,'path',g.path,'pin',g.pin)) sources
+            FROM generations g JOIN refs r ON r.path=g.path
             LEFT JOIN blob_retirements retired ON retired.generation=g.id
             WHERE NOT r.deleted AND (g.id=r.generation OR retired.generation IS NULL)
-              AND ((g.pin->>'key'=%s AND g.pin->>'version_id'=%s) OR EXISTS(
-                SELECT 1 FROM jsonb_array_elements(g.manifest) entry
-                WHERE entry->'pin'->>'key'=%s AND entry->'pin'->>'version_id'=%s)) LIMIT 1""",
-            (pin['key'], pin['version_id']) * 2)).fetchall()
-        if rows:
-            return True
-        pending = await (await c.execute("""SELECT 1 FROM operations o,
-            jsonb_array_elements(o.intent->'sources') entry
-            WHERE NOT o.closed AND o.phase<>'BARRIER_OBSERVED'
-             AND entry->'pin'->>'key'=%s AND entry->'pin'->>'version_id'=%s LIMIT 1""",
-            (pin['key'], pin['version_id']))).fetchall()
-        return bool(pending)
+            UNION ALL SELECT o.intent->'sources' sources FROM operations o
+            WHERE NOT o.closed AND o.phase<>'BARRIER_OBSERVED' LIMIT 10001""")).fetchall()
+        if len(roots) > 10000:
+            return True  # Incomplete graph never proves absence of dependencies.
+        pending = []
+        for root in roots:
+            if (not isinstance(root['sources'], list)
+                    or len(pending) + len(root['sources']) > 10000):
+                return True
+            pending.extend(root['sources'])
+        seen = set()
+        examined = 0
+        while pending:
+            examined += 1
+            if examined > 10000:
+                return True
+            entry = pending.pop()
+            if (not isinstance(entry, dict) or not isinstance(entry.get('path'), str)
+                    or not isinstance(entry.get('pin'), dict)):
+                return True
+            try:
+                generation = UUID(str(entry['generation']))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                return True
+            row = await (await c.execute('SELECT id,path,pin,manifest FROM generations WHERE id=%s',
+                                         (generation,))).fetchone()
+            if (row is None or row['path'] != entry['path'] or row['pin'] != entry['pin']
+                    or not isinstance(row['manifest'], list)
+                    or any(not isinstance(row['pin'].get(field), str) or not row['pin'][field]
+                           for field in ('key', 'version_id', 'sha256'))
+                    or row['pin']['version_id'] == 'null'
+                    or not re.fullmatch('[a-f0-9]{64}', row['pin']['sha256'])
+                    or type(row['pin'].get('size')) is not int or row['pin']['size'] < 0):
+                return True
+            if (row['pin'].get('key'), row['pin'].get('version_id')) == (pin['key'], pin['version_id']):
+                return True
+            if generation not in seen:
+                seen.add(generation)
+                # Retired intermediate generations still carry immutable provenance.
+                if len(pending) + len(row['manifest']) > 10000:
+                    return True
+                pending.extend(row['manifest'])
+        return False
 
     async def collect(self, control, *, now, batch=100):
         if (now.tzinfo is None or now.utcoffset() is None or type(batch) is not int
