@@ -63,6 +63,15 @@ class FilesService:
             await c.execute("SELECT path FROM refs WHERE path=%s FOR UPDATE", (path,))
         return await self.catalog.one(c, "SELECT r.*,g.pin,g.manifest FROM refs r LEFT JOIN generations g ON g.id=r.generation WHERE r.path=%s", (path,))
 
+    async def current_read(self, c, previous):
+        from ..auth.access_runtime import refresh_access
+        await refresh_access('files')
+        current = await self.ref(c, previous['path'])
+        fields = ('revision', 'generation', 'operation')
+        if (not current or current['deleted']
+                or any(current.get(name) != previous.get(name) for name in fields)):
+            raise Conflict("Référence retirée ou modifiée pendant la lecture")
+
     def cursor(self, operation, prefix, after):
         return base64.urlsafe_b64encode(json.dumps({"v": 1, "op": operation,
             "profile": self.s.files_s3_prefix, "prefix": prefix, "after": after},
@@ -126,6 +135,7 @@ class FilesService:
                             "truncated": False, "next_cursor": None}
                 return {"status": "ok", "path": path, "effect_state": "absent",
                         "durability_state": "unverified"}
+            current = dict(row)
             if op == "versions":
                 after = self.after(args.get("cursor"), op, path)
                 n = args["max_keys"]
@@ -139,6 +149,7 @@ class FilesService:
                     result.update(count=len(data),truncated=True,next_cursor=self.cursor(op,path,data[-1]["generation"]) if data else None)
                 if not data and rows:
                     raise Conflict("Budget réponse insuffisant")
+                await self.current_read(c, current)
                 return result
             if args.get("version_id"):
                 histories = await (await c.execute("SELECT id,pin,manifest FROM generations WHERE path=%s AND pin->>'version_id'=%s LIMIT 2", (path,args["version_id"]))).fetchall()
@@ -152,11 +163,16 @@ class FilesService:
                 return {"status": "ok", **public_ref(row)}
             second = await self.ref(c, key(args.get("path2"))) if op == "diff" else None
         body = await self.blobs.get(row["pin"])
+        async with cat.connection() as c:
+            await self.current_read(c, current)
         result = {"status": "ok", **public_ref(row)}
         if op == "diff":
             if not second or second["deleted"]:
                 raise Conflict("Seconde source absente")
             body2 = await self.blobs.get(second["pin"])
+            async with cat.connection() as c:
+                await self.current_read(c, current)
+                await self.current_read(c, second)
             text = "".join(difflib.unified_diff(body.decode("utf-8").splitlines(True), body2.decode("utf-8").splitlines(True), fromfile=path, tofile=args["path2"]))
             result["diff"] = text[:max(0, self.s.tool_max_output_chars-8192)]
             result["truncated"] = len(text) > self.s.tool_max_output_chars-8192

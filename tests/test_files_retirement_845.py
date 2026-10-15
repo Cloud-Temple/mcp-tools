@@ -47,3 +47,27 @@ async def test_current_deletion_prevents_history_and_s3(monkeypatch, op):
         assert result['versions'] == [] and result['count'] == 0
     else:
         assert result['effect_state'] == 'absent'
+
+
+@pytest.mark.asyncio
+async def test_deletion_during_s3_read_prevents_content_publication(monkeypatch):
+    from mcp_tools.storage.files_postgres import Conflict
+
+    service = object.__new__(FilesService)
+    service.catalog = Catalog()
+    service.s = SimpleNamespace(tool_max_output_chars=50000)
+    row = {'path': 'owned', 'deleted': False, 'generation': 'old', 'revision': 1,
+           'pin': {'version_id': 'v1', 'size': 4, 'sha256': 'a' * 64, 'etag': 'e'}}
+
+    async def ref(*args, **kwargs):
+        return dict(row)
+
+    async def deleting_get(*args):
+        row['deleted'] = True
+        row['revision'] += 1
+        return b'body'
+
+    monkeypatch.setattr(service, 'ref', ref)
+    service.blobs = SimpleNamespace(get=deleting_get)
+    with pytest.raises(Conflict, match='retirée ou modifiée'):
+        await service.read_operations('read', {'path': 'owned'})
