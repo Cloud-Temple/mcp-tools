@@ -81,3 +81,48 @@ def test_unavailable_transport_is_never_an_authentication_absence():
     store = Unavailable(Provider(), ca_file='ca', role='app', database='access')
     with pytest.raises(TokenStoreUnavailable):
         asyncio.run(store.authenticate('opaque'))
+
+
+@pytest.mark.parametrize('cancel_mode', ['raises', 'blocks', 'late'])
+def test_external_cancellation_during_commit_never_publishes_success(monkeypatch, cancel_mode):
+    import psycopg
+
+    async def scenario():
+        committing = asyncio.Event()
+        flags = {'closed': False}
+        class Cursor:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def execute(self, *args): pass
+            async def fetchall(self): return [{'admitted': True}]
+        def close(): flags['closed'] = True
+        class Connection:
+            pgconn = SimpleNamespace(finish=close)
+            def cursor(self): return Cursor()
+            async def commit(self):
+                committing.set()
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    if cancel_mode != 'late':
+                        raise
+                    await asyncio.sleep(.05)
+            async def cancel_safe(self, **kwargs):
+                if cancel_mode == 'raises':
+                    raise RuntimeError('PRIVATE-CANARY')
+                if cancel_mode == 'blocks':
+                    await asyncio.sleep(30)
+        async def connect(**kwargs): return Connection()
+        monkeypatch.setattr(psycopg.AsyncConnection, 'connect', connect)
+        monkeypatch.setattr(psycopg.capabilities, 'has_cancel_safe', lambda: True)
+        store = PostgresAccessStore(Provider(), ca_file='ca', role='app', database='access', timeout=2)
+        task = asyncio.create_task(store._run('SELECT mutation', ()))
+        await asyncio.wait_for(committing.wait(), .5)
+        before = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(.06)
+        assert flags['closed'] and not _ACTIVE
+        assert time.monotonic()-before < 1
+    asyncio.run(scenario())
