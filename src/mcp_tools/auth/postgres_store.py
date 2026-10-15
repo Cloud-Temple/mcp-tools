@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from .postgres_contract import authenticate_row
+from .access_cursors import AccessCursors
 from .token_store import TokenStoreUnavailable
 
 # Retenir les tâches jusqu'à leur terminaison, même pendant l'arrêt d'un appel.
@@ -25,7 +26,8 @@ def _finished(task):
 class PostgresAccessStore:
     """Le provider fourni lit Vault à chaque connexion ; aucun credential conservé."""
 
-    def __init__(self, credentials, *, ca_file, role, database, timeout=5.0):
+    def __init__(self, credentials, *, ca_file, role, database, timeout=5.0,
+                 cursor_ttl=60, cursor_capacity=1024):
         if not 2 <= timeout <= 5:
             raise ValueError('Access operation budget must be between 2 and 5 seconds')
         self.credentials = credentials
@@ -33,6 +35,7 @@ class PostgresAccessStore:
         self.role = role
         self.database = database
         self.timeout = timeout
+        self.cursors = AccessCursors(ttl=cursor_ttl, capacity=cursor_capacity)
 
     async def _run(self, query, parameters):
         import psycopg
@@ -98,10 +101,70 @@ class PostgresAccessStore:
         if not isinstance(bearer, str) or not bearer or len(bearer) > 8192:
             return None
         binding = hashlib.sha256(bearer.encode()).hexdigest()
+        return await self.authenticate_binding(binding)
+
+    async def authenticate_binding(self, binding):
         rows = await self._run('SELECT * FROM tools_access.credential_get(%s)', (binding,))
         if len(rows) > 1:
             raise TokenStoreUnavailable('Access credential multiplicity invalid')
         return authenticate_row(rows[0] if rows else None, binding, datetime.now(timezone.utc))
+
+    async def _reader(self, requester):
+        info = await self.authenticate_binding(requester)
+        if info is None:
+            raise ValueError('Current access required')
+        return info
+
+    async def list_credentials(self, requester, *, cursor=None, limit=50):
+        """Le hash de tri reste privé ; continuation opaque liée aux droits frais."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Access page limit invalid')
+        info = await self._reader(requester)
+        if 'admin' not in info['permissions']:
+            raise ValueError('Current admin required')
+        binding = (requester, info['actor_id'], info['tenant_id'], info['service_id'],
+                   info['version'], 'credentials', limit)
+        after = self.cursors.resolve(cursor, binding) if cursor is not None else None
+        rows = await self._run('SELECT * FROM tools_access.credential_list(%s,%s,%s)',
+                               (requester, after, limit))
+        # Aucune collection totale n'est annoncée : pages indépendantes et fraîches.
+        fields = ('token_prefix', 'actor_id', 'tenant_id', 'service_id', 'client_name',
+                  'permissions', 'tool_ids', 'created_at', 'expires_at', 'revoked', 'version')
+        public = [{k: row[k] for k in fields} for row in rows]
+        for row in public:
+            for key in ('actor_id', 'created_at', 'expires_at'):
+                if row.get(key) is not None:
+                    row[key] = str(row[key])
+        continuation = (self.cursors.issue(binding, rows[-1]['cursor_key'])
+                        if len(rows) == limit else None)
+        # Un changement de droits pendant la lecture ne publie pas l'ancienne page.
+        fresh = await self._reader(requester)
+        if fresh['version'] != info['version'] or 'admin' not in fresh['permissions']:
+            raise ValueError('Access changed during page read')
+        return {'status': 'success', 'tokens': public, 'count': len(public),
+                'next_cursor': continuation, 'page_complete': True}
+
+    async def activity_page(self, requester, *, cursor=None, limit=50):
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Activity page limit invalid')
+        info = await self._reader(requester)
+        binding = (requester, info['actor_id'], info['tenant_id'], info['service_id'],
+                   info['version'], 'activity', limit)
+        stamp, call_id = self.cursors.resolve(cursor, binding) if cursor is not None else (None, None)
+        rows = await self._run('SELECT * FROM tools_access.activity_page(%s,%s,%s,%s)',
+                               (requester, stamp, call_id, limit))
+        continuation = (self.cursors.issue(binding, (rows[-1]['created_at'], rows[-1]['call_id']))
+                        if len(rows) == limit else None)
+        fresh = await self._reader(requester)
+        if fresh['version'] != info['version']:
+            raise ValueError('Access changed during activity read')
+        fields = ('call_id', 'actor_id', 'tenant_id', 'service_id', 'tool', 'trace_id',
+                  'operation_id', 'mission_id', 'category', 'admission', 'created_at',
+                  'expires_at', 'outcome', 'target_actor_id')
+        public = [{k: str(row[k]) if isinstance(row[k], (UUID, datetime)) else row[k]
+                   for k in fields} for row in rows]
+        return {'status': 'ok', 'calls': public, 'count': len(public),
+                'next_cursor': continuation, 'page_complete': True}
 
     async def admit(self, *, call_id, bearer, tool, trace_id, operation_id=None):
         # UUIDs fournis avant toute écriture ; aucun renouvellement si incertitude.
