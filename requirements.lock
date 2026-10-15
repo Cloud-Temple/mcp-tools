@@ -34,8 +34,8 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
-mcp==2.1.1
-mcp-types==2.1.1
+mcp==2.2.0
+mcp-types==2.2.0
 mdurl==0.1.2
 opentelemetry-api==1.44.0
 packaging==26.3
