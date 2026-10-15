@@ -89,6 +89,8 @@ BEGIN
  SELECT c.* INTO actor FROM tools_access.access_credentials c WHERE c.token_hash=requested_hash
  AND c.revoked_at IS NULL AND (c.expires_at IS NULL OR c.expires_at>stamp) FOR SHARE;
  selected:=FOUND;
+ stamp:=clock_timestamp();
+ IF selected AND actor.expires_at IS NOT NULL AND actor.expires_at<=stamp THEN selected:=false; END IF;
  authorized:=selected AND ('admin'=ANY(actor.permissions) OR ('access'=ANY(actor.permissions) AND requested_tool=ANY(actor.tool_ids)));
  INSERT INTO tools_access.activity_calls(id,actor_id,tenant_id,service_id,tool,trace_id,operation_id,category,admission,created_at,expires_at)
  VALUES(requested_id,CASE WHEN selected THEN actor.actor_id END,CASE WHEN selected THEN actor.tenant_id END,
