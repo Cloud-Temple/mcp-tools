@@ -42,6 +42,20 @@ async def install(args):
             if not maintenance or not maintenance['rolcanlogin'] or any(v for k,v in maintenance.items() if k!='rolcanlogin') or memberships['present']:
                 raise StorageUnavailable("Rôle maintenance non privilégié sans membership requis")
         exists = await cat.one(c,"SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s) present",(args.schema,))
+        if getattr(args, 'prepare_recovery_probe', False):
+            if not s.files_recovery_enabled or not exists['present']:
+                raise StorageUnavailable("Extension recovery neuve installée requise")
+            row = await cat.one(c,sql.SQL("SELECT version,checksum FROM {}.schema_version WHERE singleton").format(sql.Identifier(args.schema)))
+            if row != {"version": VERSION, "checksum": CHECKSUM}:
+                raise StorageUnavailable("Schéma incompatible")
+            extension = await cat.one(c, "SELECT to_regclass(%s) present", (args.schema + '.blob_retirements',))
+            if not extension["present"]:
+                raise StorageUnavailable("Extension absente")
+            async with cat.transaction(c):
+                await c.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {}.files_infrastructure() TO {}").format(
+                    sql.Identifier(args.schema),sql.Identifier(s.files_recovery_maintenance_role)))
+                await cat.check_schema(c,role=args.app_role)
+            return {"status":"ok","action":"prepare-recovery-probe","granted":"infrastructure-only"}
         if args.check:
             if not exists["present"]:
                 raise StorageUnavailable("Schéma absent")
@@ -84,6 +98,7 @@ def main():
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check",action="store_true")
     group.add_argument("--apply",action="store_true")
+    group.add_argument("--prepare-recovery-probe",action="store_true")
     args=parser.parse_args()
     try:
         result=asyncio.run(install(args))

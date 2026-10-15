@@ -130,7 +130,7 @@ async def snapshot(c, settings, *, app_role):
         UNION ALL SELECT 'COLUMN:'||t.relname||':'||a.attname,a.attacl FROM pg_attribute a
         JOIN pg_class t ON t.oid=a.attrelid WHERE t.relnamespace=%s AND a.attnum>0 AND NOT a.attisdropped
         ) objects CROSS JOIN LATERAL aclexplode(objects.acl) a ORDER BY 1,2,3,4,5'''
-    projection['acl'] = await (await c.execute(acl, (namespace['oid'], namespace['oid'], list(FUNCTIONS),
+    projection['acl'] = await (await c.execute(acl, (namespace['oid'], namespace['oid'], [*FUNCTIONS, 'files_infrastructure'],
                                                    namespace['oid'], namespace['oid']))).fetchall()
     for row in projection['acl']:
         for name in ('grantee', 'grantor'):

@@ -184,3 +184,33 @@ async def test_collection_dispatches_one_exact_version_delete_and_observes_absen
     exact = {'Bucket': 'owned', 'Key': pin['key'], 'VersionId': 'exact'}
     assert deletes == [exact] and reads == [exact, exact]
     assert bodies[0].closed
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_rechecks_restored_pin_after_s3():
+    from src.mcp_tools.storage.files_recovery import FileRecovery
+    from src.mcp_tools.storage.files_credentials import StorageUnavailable
+
+    seen = []
+
+    class Recovery(FileRecovery):
+        async def reference(self, **kwargs):
+            seen.append(kwargs)
+            return {'pin': {'version_id': 'before' if len(seen) == 1 else 'changed'}}
+
+    async def read(pin):
+        assert pin == {'version_id': 'before'}
+        return b'owned'
+
+    recovery = object.__new__(Recovery)
+    recovery.blobs = SimpleNamespace(read=read)
+    with pytest.raises(StorageUnavailable, match='changed during recovery'):
+        await recovery.recover(path='owned', version_id='exact')
+    assert seen == [{'path': 'owned', 'version_id': 'exact'}] * 2
+
+
+def test_operator_profile_never_inherits_runtime_environment(monkeypatch):
+    from src.mcp_tools.storage.files_recovery_cli import RecoverySettings
+
+    monkeypatch.setenv('FILES_PG_ROLE', 'neighbor')
+    assert RecoverySettings(_env_file=None, files_pg_role='maintenance').files_pg_role == 'maintenance'
