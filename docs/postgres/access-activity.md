@@ -170,7 +170,9 @@ service/mission/root et outils actuellement accessibles, y compris pour un
 lecteur admin (aucun élargissement inter-acteurs via ce batch). Les curseurs
 restent liés à l'accès/version, mission et mapping/version/expiry ; la délégation
 courte est renouvelée pour chaque requête. Vérification live avant lecture et
-immédiatement avant réponse, avec relecture locale accès/mapping : expiration,
+immédiatement avant réponse, puis décision locale unique SQL verrouillant
+credential et mapping jusqu'au COMMIT et comparant leurs versions attendues
+(les versions et échéances sont rendues ensemble à l'app) : expiration,
 révocation ou changement => zéro donnée. Seules les métadonnées du journal sont
 restituées, sans hash complet, empreinte du corps, contenu ou bearer ; no-store.
 

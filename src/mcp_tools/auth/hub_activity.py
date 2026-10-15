@@ -217,20 +217,13 @@ class HubActivityMiddleware:
         binding = await store.hub_binding(requester, c)
         page = await store.hub_activity_page(requester, info, binding, c,
                                               cursor=body.get('cursor'), limit=body['limit'])
-        fresh = await store.authenticate_binding(requester)
-        check = await store.hub_binding(requester, c)
-        if fresh is None or fresh['version'] != info['version'] or check != binding:
-            raise ValueError('Local access or binding changed')
         await delegation.active()
-        # Le contrôle réseau peut attendre pendant une révocation locale.
-        # Relecture après cette dernière attente, jamais uniquement avant.
-        fresh = await store.authenticate_binding(requester)
-        check = await store.hub_binding(requester, c)
-        if fresh is None or fresh['version'] != info['version'] or check != binding:
-            raise ValueError('Local access or binding changed before response')
+        # Dernière décision locale unique, cohérente et versionnée : aucun autre
+        # await d'autorité ne sépare sa lecture du credential et du mapping.
+        confirmed = await store.confirm_hub_access(requester, info, binding, c)
         now = datetime.now(timezone.utc)
-        if (time.time() >= c['exp'] or binding['expires_at'] <= now
-                or (fresh.get('expires_at') is not None
-                    and datetime.fromisoformat(str(fresh['expires_at'])) <= now)):
+        if (time.time() >= c['exp'] or confirmed['binding_expires_at'] <= now
+                or (confirmed['credential_expires_at'] is not None
+                    and confirmed['credential_expires_at'] <= now)):
             raise ValueError('Local access expired before response')
         return await response(send, 200, 'TOOLS_ACTIVITY', **page)

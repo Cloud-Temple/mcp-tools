@@ -329,6 +329,20 @@ class PostgresAccessStore:
             raise ValueError('Mission admission refused')
         return True
 
+    async def confirm_hub_access(self, requester, info, local, claims):
+        """Une seule transaction verrouille et compare credential ET mapping."""
+        rows = await self._run('SELECT * FROM tools_access.hub_access_confirm(%s,%s,%s,%s,%s,%s,%s,%s)',
+            (requester, info['version'], str(local['id']), local['version'], claims['iss'],
+             claims['sub'], claims['owner_id'], claims['tenant_id']))
+        if len(rows) != 1:
+            raise ValueError('Final local access unavailable')
+        row = rows[0]
+        if (row.get('credential_version') != info['version'] or str(row.get('binding_id')) != str(local['id'])
+                or row.get('binding_version') != local['version']):
+            raise ValueError('Final local access version changed')
+        return {**row, 'credential_expires_at': utc(row['credential_expires_at']) if row['credential_expires_at'] is not None else None,
+                'binding_expires_at': utc(row['binding_expires_at'])}
+
     async def hub_activity_page(self, requester, info, local, claims, *, cursor=None, limit=50):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('Invalid batch limit')

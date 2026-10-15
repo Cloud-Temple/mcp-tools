@@ -89,6 +89,14 @@ class Store:
             raise ValueError('Binding refused')
         return dict(self.binding)
 
+    async def confirm_hub_access(self, requester, info, binding, claims):
+        if (self.change in {'opaque', 'mapping'} or self.info['version'] != info['version']
+                or self.binding != binding or claims['tenant_id'] != self.info['tenant_id']):
+            raise ValueError('Final local access changed')
+        return dict(credential_version=self.info['version'], binding_id=binding['id'],
+            binding_version=binding['version'], credential_expires_at=None,
+            binding_expires_at=binding['expires_at'])
+
     async def hub_activity_page(self, *args, **kwargs):
         self.reads += 1
         if hasattr(self, 'on_read'):
@@ -306,3 +314,66 @@ def test_local_revocation_during_last_live_wait_returns_zero_batch(monkeypatch, 
         await pending
     asyncio.run(scenario())
     assert sent[0]['status'] == 403 and 'calls' not in json.loads(sent[1]['body'])
+
+
+def test_rights_change_during_final_local_validation_never_returns_old_page(monkeypatch):
+    monkeypatch.setattr(hub.ssl, 'create_default_context', lambda **kwargs: object())
+    body = json.dumps({'mission_id': 'mis_1', 'root_agent_id': 'ag_root', 'limit': 10}).encode()
+    token, keys, _ = issuer(body)
+    sent = []
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class ConcurrentStore(Store):
+            mapping_reads = 0
+            async def hub_binding(self, requester, claims):
+                self.mapping_reads += 1
+                if self.mapping_reads == 3:  # ancien credential puis dernier mapping séparés
+                    entered.set()
+                    await release.wait()
+                return await super().hub_binding(requester, claims)
+            async def confirm_hub_access(self, requester, info, binding, claims):
+                entered.set()
+                await release.wait()  # l'unique décision versionnée a lieu après l'attente
+                return await super().confirm_hub_access(requester, info, binding, claims)
+        store, client = ConcurrentStore(), Client(keys)
+        async def receive(): return {'type': 'http.request', 'body': body}
+        async def send(value): sent.append(value)
+        middleware = hub.HubActivityMiddleware(None, cfg(), client_factory=lambda **kwargs: client,
+                                               store_factory=lambda: store)
+        pending = asyncio.create_task(middleware({'type': 'http', 'path': hub.PATH, 'method': 'POST',
+            'headers': [(b'authorization', b'Bearer local-opaque'),
+                        (b'x-tools-activity-context', token.encode())]}, receive, send))
+        await asyncio.wait_for(entered.wait(), 1)
+        store.info['tool_ids'] = []
+        store.info['version'] += 1
+        release.set()
+        await pending
+    asyncio.run(scenario())
+    assert sent[0]['status'] == 403 and 'calls' not in json.loads(sent[1]['body'])
+
+
+@pytest.mark.parametrize('changed', [None, 'credential_version', 'binding_version', 'binding_id'])
+def test_store_confirmation_is_one_versioned_sql_decision(changed):
+    from src.mcp_tools.auth.postgres_store import PostgresAccessStore
+    info, local = Store().info, Store().binding
+    claims = dict(iss='https://issuer.test', sub='reader', owner_id='owner', tenant_id='tenant')
+    decision = dict(credential_version=info['version'], binding_id=local['id'],
+        binding_version=local['version'], credential_expires_at=None, binding_expires_at=local['expires_at'])
+    if changed:
+        decision[changed] = str(uuid4()) if changed == 'binding_id' else 2
+    class SQLStore(PostgresAccessStore):
+        async def _run(self, query, params):
+            self.calls.append((query, params))
+            return [decision]
+        async def authenticate_binding(self, *args): raise AssertionError('No split credential read')
+        async def hub_binding(self, *args): raise AssertionError('No split mapping read')
+    store = SQLStore(None, ca_file='ca', role='app', database='access')
+    store.calls = []
+    if changed:
+        with pytest.raises(ValueError):
+            asyncio.run(store.confirm_hub_access('a'*64, info, local, claims))
+    else:
+        assert asyncio.run(store.confirm_hub_access('a'*64, info, local, claims)) == decision
+    assert len(store.calls) == 1 and 'hub_access_confirm' in store.calls[0][0]
+    assert store.calls[0][1] == ('a'*64, info['version'], local['id'], local['version'],
+                                  claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id'])

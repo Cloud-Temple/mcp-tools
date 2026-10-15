@@ -84,6 +84,35 @@ BEGIN
  'mission','admitted',stamp,stamp+interval '8760 hours');
  RETURN true;
 END $$;
+CREATE FUNCTION tools_access.hub_access_confirm(requester text, expected_credential_version bigint,
+ requested_binding uuid, expected_binding_version bigint, requested_issuer text,
+ requested_subject text, requested_owner text, requested_tenant text)
+RETURNS TABLE(credential_version bigint, binding_id uuid, binding_version bigint,
+ credential_expires_at timestamptz, binding_expires_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE actor tools_access.access_credentials%ROWTYPE; binding tools_access.hub_actor_bindings%ROWTYPE;
+ stamp timestamptz;
+BEGIN
+ -- Les deux lignes restent verrouillées jusqu'au COMMIT de cette décision.
+ -- Une attente sur le mapping ne peut donc séparer lecture des droits/version
+ -- et décision finale ; toute échéance est recontrôlée après les deux locks.
+ SELECT c.* INTO actor FROM tools_access.access_credentials c WHERE c.token_hash=requester FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'local access changed' USING ERRCODE='42501'; END IF;
+ SELECT b.* INTO binding FROM tools_access.hub_actor_bindings b WHERE b.id=requested_binding FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'local binding changed' USING ERRCODE='42501'; END IF;
+ stamp:=clock_timestamp();
+ IF expected_credential_version IS NULL OR actor.version<>expected_credential_version
+ OR expected_binding_version IS NULL OR binding.version<>expected_binding_version
+ OR actor.revoked_at IS NOT NULL OR binding.revoked_at IS NOT NULL
+ OR NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions))
+ OR (actor.expires_at IS NOT NULL AND actor.expires_at<=stamp) OR binding.expires_at<=stamp
+ OR ROW(binding.actor_id,binding.tenant_id,binding.service_id)
+    IS DISTINCT FROM ROW(actor.actor_id,actor.tenant_id,actor.service_id)
+ OR ROW(binding.issuer,binding.subject,binding.owner_id,binding.tenant_id)
+    IS DISTINCT FROM ROW(requested_issuer,requested_subject,requested_owner,requested_tenant)
+ THEN RAISE EXCEPTION 'local access or binding changed' USING ERRCODE='42501'; END IF;
+ RETURN QUERY SELECT actor.version,binding.id,binding.version,actor.expires_at,binding.expires_at;
+END $$;
 CREATE FUNCTION tools_access.hub_activity_page(requester text, requested_issuer text,
  requested_subject text, requested_owner text, requested_tenant text, requested_mission text,
  requested_root text, before_stamp timestamptz, before_id uuid, requested_limit integer)
@@ -116,5 +145,6 @@ HUB_ROUTINES = (
     'hub_binding_revoke(text,uuid,uuid,bigint)', 'hub_binding_list(text,uuid,uuid,integer)',
     'hub_binding_get(text,text,text,text,text)',
     'admit_mission(uuid,text,text,uuid,uuid,text,text,text,text,text,text,text,timestamptz)',
+    'hub_access_confirm(text,bigint,uuid,bigint,text,text,text,text)',
     'hub_activity_page(text,text,text,text,text,text,text,timestamptz,uuid,integer)',
 )
