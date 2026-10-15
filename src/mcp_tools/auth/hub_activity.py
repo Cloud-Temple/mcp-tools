@@ -91,6 +91,7 @@ class Delegation:
 def check_expiry(claims, confirmed):
     now = datetime.now(timezone.utc)
     if (time.time() >= claims['exp'] or confirmed['binding_expires_at'] <= now
+            or ('activity_expires_at' in confirmed and confirmed['activity_expires_at'] <= now)
             or (confirmed['credential_expires_at'] is not None
                 and confirmed['credential_expires_at'] <= now)):
         raise ValueError('Local access expired before response')
@@ -237,7 +238,7 @@ class HubActivityMiddleware:
 
             async def check():
                 await delegation.active()
-                confirmed = await store.confirm_hub_access(requester, info, binding, c)
+                confirmed = await store.confirm_hub_files(requester, info, binding, c, calls)
                 check_expiry(c, confirmed)
 
             page = await read_hub_files(calls, body, self.cfg, check)
@@ -247,6 +248,7 @@ class HubActivityMiddleware:
         await delegation.active()
         # Dernière décision locale unique, cohérente et versionnée : aucun autre
         # await d'autorité ne sépare sa lecture du credential et du mapping.
-        confirmed = await store.confirm_hub_access(requester, info, binding, c)
+        confirmed = (await store.confirm_hub_files(requester, info, binding, c, calls) if file_read
+                     else await store.confirm_hub_access(requester, info, binding, c))
         check_expiry(c, confirmed)
         return await response(send, 200, 'TOOLS_FILES' if file_read else 'TOOLS_ACTIVITY', **page)

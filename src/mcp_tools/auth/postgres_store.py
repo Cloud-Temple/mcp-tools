@@ -18,6 +18,11 @@ from .token_store import TokenStoreUnavailable
 # Retenir les tâches jusqu'à leur terminaison, même pendant l'arrêt d'un appel.
 _ACTIVE: set[asyncio.Task] = set()
 _HUB_ACCESS_CONFIRM = 'SELECT * FROM tools_access.hub_access_confirm(%s,%s,%s,%s,%s,%s,%s,%s)'
+_HUB_FILES_CONFIRM = 'SELECT * FROM tools_access.hub_files_confirm(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'
+_HUB_FILES_ORIGIN = (
+    r'PL/pgSQL function tools_access\.hub_files_confirm\(text,bigint,uuid,bigint,text,text,text,text,text,text,uuid\[\],uuid\[\]\) '
+    r'line [0-9]+ at RAISE'
+)
 _HUB_ACCESS_REFUSALS = {'local access changed', 'local binding changed', 'local access or binding changed'}
 _HUB_ACCESS_ORIGIN = (
     r'PL/pgSQL function tools_access\.hub_access_confirm\(text,bigint,uuid,bigint,text,text,text,text\) '
@@ -108,10 +113,13 @@ class PostgresAccessStore:
         except Exception as error:
             # Seul le refus métier connu de la décision finale devient un 403.
             # Une ACL refusée, un autre SQL42501 ou un diagnostic inattendu reste panne.
-            if (query == _HUB_ACCESS_CONFIRM
-                    and isinstance(error, psycopg.errors.InsufficientPrivilege)
+            if (isinstance(error, psycopg.errors.InsufficientPrivilege) and (
+                    query == _HUB_ACCESS_CONFIRM
                     and error.diag.message_primary in _HUB_ACCESS_REFUSALS
-                    and re.fullmatch(_HUB_ACCESS_ORIGIN, error.diag.context or '')):
+                    and re.fullmatch(_HUB_ACCESS_ORIGIN, error.diag.context or '')
+                    or query == _HUB_FILES_CONFIRM
+                    and error.diag.message_primary == 'current hub file access refused'
+                    and re.fullmatch(_HUB_FILES_ORIGIN, error.diag.context or ''))):
                 raise ValueError('Current local hub access refused') from None
             # Aucun détail libpq/HTTP/conninfo ou résultat d'écriture sans ACK.
             raise TokenStoreUnavailable('Access operation unavailable or uncertain') from None
@@ -372,6 +380,20 @@ class PostgresAccessStore:
                   for key in fields} for row in rows]
         cursor = self.cursors.issue(binding, (rows[-1]['created_at'], rows[-1]['call_id'])) if len(rows) == limit else None
         return {'calls': calls, 'count': len(calls), 'next_cursor': cursor, 'page_complete': True}
+
+    async def confirm_hub_files(self, requester, info, local, claims, calls):
+        rows = await self._run(_HUB_FILES_CONFIRM,
+            (requester, info['version'], str(local['id']), local['version'], claims['iss'],
+             claims['sub'], claims['owner_id'], claims['tenant_id'], claims['mission_id'],
+             claims['root_agent_id'], list(calls), list(calls.values())))
+        if len(rows) != 1:
+            raise ValueError('Current hub file access refused')
+        row = rows[0]
+        if (row.get('credential_version') != info['version'] or str(row.get('binding_id')) != str(local['id'])
+                or row.get('binding_version') != local['version']):
+            raise ValueError('Final local file version changed')
+        return {**row, 'credential_expires_at': utc(row['credential_expires_at']) if row['credential_expires_at'] is not None else None,
+                'binding_expires_at': utc(row['binding_expires_at']), 'activity_expires_at': utc(row['activity_expires_at'])}
 
     async def hub_file_calls(self, requester, claims, calls):
         ids = [str(UUID(value)) for value in calls]

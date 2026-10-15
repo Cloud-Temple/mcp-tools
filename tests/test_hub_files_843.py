@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -76,11 +77,19 @@ class FileStore(Store):
         super().__init__()
         self.info['permissions'] = ['hub_read']
         self.call, self.operation = call, operation
+        self.retained = True
+        self.deadline = datetime.now(timezone.utc) + timedelta(days=1)
 
     async def hub_file_calls(self, requester, claims, calls):
-        if calls != [self.call]:
+        if calls != [self.call] or not self.retained:
             raise ValueError('Other call refused')
         return {self.call: self.operation}
+
+    async def confirm_hub_files(self, requester, info, binding, claims, calls):
+        if not self.retained:
+            raise ValueError('Activity no longer retained')
+        confirmed = await self.confirm_hub_access(requester, info, binding, claims)
+        return {**confirmed, 'activity_expires_at': self.deadline}
 
 
 async def request(store, body, monkeypatch, *, permission='tools.files.read', live=None):
@@ -194,4 +203,42 @@ def test_real_blob_primitive_uses_hub_authority_without_opening_mcp_access(monke
         finally:
             current_token_info.reset(info)
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('change', ['purge', 'expire'])
+@pytest.mark.parametrize('surface', ['metadata', 'content'])
+def test_activity_purged_or_expired_during_s3_is_not_projected(monkeypatch, change, surface):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def get_hub(pin, check):
+            await check()
+            entered.set()
+            await release.wait()
+            return files.content
+        if surface == 'content':
+            files.blobs = SimpleNamespace(get_hub=get_hub)
+        else:
+            original = files.one
+            async def read_metadata(*args):
+                entered.set()
+                await release.wait()
+                return await original(*args)
+            files.one = read_metadata
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
+        if surface == 'content':
+            body.update(content=True, offset=0, limit=30)
+        pending = asyncio.create_task(request(store, body, monkeypatch))
+        await entered.wait()
+        if change == 'purge':
+            store.retained = False
+        else:
+            store.deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+        release.set()
+        code, data = await pending
+        assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
+        assert 'CANARY' not in json.dumps(data)
     asyncio.run(scenario())

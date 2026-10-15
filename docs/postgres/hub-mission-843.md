@@ -36,7 +36,10 @@ physique S3. Une génération historique utilise son pin version/ETag/taille/SHA
 pas la référence courante. Le contenu est une plage base64 ; `next_offset/end`
 décrivent sa couverture. Métadonnées possibles sans S3, contenu indisponible503
 si la source échoue. Révocation, changement de version ou expiry sont vérifiés
-après les attentes, puis SQL confirme credential et mapping ensemble avant sortie.
+après les attentes. La décision SQL finale Files verrouille credential, mapping
+et appels retenus dans la même transaction ; disparition/purge, modification du
+lien ou expiry ferme la restitution. Son échéance d'activité minimale est encore
+comparée à l'horloge fraîche avant projection, sans nouvelle attente d'autorité.
 
 Les schémas sont installés par les opérateurs existants sur un domaine neuf,
 avec checksum actualisé. Aucun DDL runtime, migration ou fallback ancien magasin.
