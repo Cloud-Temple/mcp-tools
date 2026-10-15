@@ -18,7 +18,7 @@ async def published(files, call_id, operation_id):
             """, (operation_id, call_id))
 
 
-async def read_hub_files(calls, body, cfg, *, files_factory=None):
+async def read_hub_files(calls, body, cfg, check, *, files_factory=None):
     """Les calls ont déjà été filtrés par l'autorité SQL31, pas par des paths UI."""
     files = (files_factory or get_files_service)()
     result = []
@@ -32,7 +32,7 @@ async def read_hub_files(calls, body, cfg, *, files_factory=None):
         # public_ref ne restitue jamais la physical_key ni les credentials S3.
         if body.get('content'):
             offset, limit = body['offset'], min(body['limit'], cfg.hub_files_page_bytes)
-            data = await files.blobs.get(row['pin'])  # taille/hash/version vérifiés chez Tools
+            data = await files.blobs.get_hub(row['pin'], check)  # taille/hash/version vérifiés chez Tools
             if offset > len(data):
                 raise ValueError('Invalid content range')
             part = data[offset:offset+limit]

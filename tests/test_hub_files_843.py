@@ -1,7 +1,9 @@
 """Seam HTTP843 avec vraies signatures, catalogue/S3 contrôlés ; PG natif distinct."""
 
 import base64
+import asyncio
 import hashlib
+import io
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from src.mcp_tools.auth.context import check_tool_access, current_token_info
 from src.mcp_tools.auth.postgres_contract import authenticate_row
 from src.mcp_tools.auth.token_store import TokenStoreUnavailable
 from src.mcp_tools.storage import hub_files
+from src.mcp_tools.storage.files_s3 import Blobs
 
 
 @pytest.mark.parametrize('permissions', [['hub_read', 'access'], ['admin', 'hub_read'], ['hub_read', 'admin', 'access']])
@@ -41,9 +44,9 @@ class Files:
         self.generation = str(uuid4())
         self.content = b'PRIVATE-FILE-CANARY'
         self.pin = dict(version_id='historical-version', etag='old-etag', size=len(self.content),
-                        sha256=hashlib.sha256(self.content).hexdigest(), physical_key='NEVER-PUBLIC')
+                        sha256=hashlib.sha256(self.content).hexdigest(), key='NEVER-PUBLIC')
         self.catalog = self
-        self.blobs = SimpleNamespace(get=self.get)
+        self.blobs = SimpleNamespace(get_hub=self.get_hub)
         self.reads = 0
         self.unavailable = self.removed = False
 
@@ -63,6 +66,10 @@ class Files:
             raise RuntimeError('S3 unavailable CANARY')
         return self.content
 
+    async def get_hub(self, pin, check):
+        await check()
+        return await self.get(pin)
+
 
 class FileStore(Store):
     def __init__(self, call, operation):
@@ -79,7 +86,7 @@ class FileStore(Store):
 async def request(store, body, monkeypatch, *, permission='tools.files.read', live=None):
     raw = json.dumps(body).encode()
     token, keys, _ = issuer(raw, permission)
-    client = Client(keys, live)
+    client = Client(keys, live or [True, True, True])
     monkeypatch.setattr(hub.ssl, 'create_default_context', lambda **kw: object())
     settings = cfg()
     settings.hub_files_page_bytes = 30000
@@ -98,53 +105,93 @@ async def request(store, body, monkeypatch, *, permission='tools.files.read', li
     return sent[0]['status'], json.loads(sent[1]['body'])
 
 
-@pytest.mark.asyncio
-async def test_file_route_reads_exact_origin_and_pin_without_exposing_physical_location(monkeypatch):
-    call, operation = str(uuid4()), str(uuid4())
-    files, store = Files(call, operation), FileStore(call, operation)
-    monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
-    body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
-    code, data = await request(store, body, monkeypatch)
-    assert code == 200 and data['files'][0]['version_id'] == 'historical-version'
-    assert files.reads == 0 and 'PRIVATE' not in json.dumps(data) and 'NEVER-PUBLIC' not in json.dumps(data)
-    code, data = await request(store, dict(**body, content=True, offset=3, limit=4), monkeypatch)
-    assert code == 200 and base64.b64decode(data['files'][0]['content_base64']) == files.content[3:7]
-    assert data['files'][0]['next_offset'] == 7 and data['files'][0]['end'] is False
-    # Un call différent ne rattache pas une opération connue à une autre publication.
-    code, data = await request(store, {**body, 'call_ids': [str(uuid4())]}, monkeypatch)
-    assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
+def test_file_route_reads_exact_origin_and_pin_without_exposing_physical_location(monkeypatch):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        files, store = Files(call, operation), FileStore(call, operation)
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
+        code, data = await request(store, body, monkeypatch)
+        assert code == 200 and data['files'][0]['version_id'] == 'historical-version'
+        assert files.reads == 0 and 'PRIVATE' not in json.dumps(data) and 'NEVER-PUBLIC' not in json.dumps(data)
+        code, data = await request(store, dict(**body, content=True, offset=3, limit=4), monkeypatch)
+        assert code == 200 and base64.b64decode(data['files'][0]['content_base64']) == files.content[3:7]
+        assert data['files'][0]['next_offset'] == 7 and data['files'][0]['end'] is False
+        # Un call différent ne rattache pas une opération connue à une autre publication.
+        code, data = await request(store, {**body, 'call_ids': [str(uuid4())]}, monkeypatch)
+        assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
+
+    asyncio.run(scenario())
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['opaque', 'mapping-after', 'permission', 'live', 'capability', 'range'])
-async def test_revocation_capability_and_bad_range_never_return_private_projection(monkeypatch, failure):
-    call, operation = str(uuid4()), str(uuid4())
-    store, files = FileStore(call, operation), Files(call, operation)
-    monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
-    body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True, offset=0, limit=30)
-    if failure in {'opaque', 'mapping-after'}:
-        store.change = 'mapping' if failure == 'mapping-after' else 'opaque'
-    if failure == 'permission':
-        store.info['permissions'] = ['access']
-    if failure == 'range':
-        body['limit'] = 30001
-    code, data = await request(store, body, monkeypatch,
-                               permission='tools.activity.read' if failure == 'capability' else 'tools.files.read',
-                               live=[True, False] if failure == 'live' else None)
-    assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
-    assert 'CANARY' not in json.dumps(data)
+def test_revocation_capability_and_bad_range_never_return_private_projection(monkeypatch, failure):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True, offset=0, limit=30)
+        if failure in {'opaque', 'mapping-after'}:
+            store.change = 'mapping' if failure == 'mapping-after' else 'opaque'
+        if failure == 'permission':
+            store.info['permissions'] = ['access']
+        if failure == 'range':
+            body['limit'] = 30001
+        code, data = await request(store, body, monkeypatch,
+                                   permission='tools.activity.read' if failure == 'capability' else 'tools.files.read',
+                                   live=[True, False] if failure == 'live' else None)
+        assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
+        assert 'CANARY' not in json.dumps(data)
+
+    asyncio.run(scenario())
 
 
-@pytest.mark.asyncio
-async def test_s3_fault_preserves_catalogue_metadata_but_content_is_unavailable(monkeypatch):
-    call, operation = str(uuid4()), str(uuid4())
-    store, files = FileStore(call, operation), Files(call, operation)
-    files.unavailable = True
-    monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
-    body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
-    assert (await request(store, body, monkeypatch))[0] == 200
-    code, data = await request(store, dict(**body, content=True, offset=0, limit=30), monkeypatch)
-    assert code == 503 and 'files' not in data and 'CANARY' not in json.dumps(data)
-    files.removed = True
-    code, data = await request(store, body, monkeypatch)
-    assert code == 200 and data['files'] == [dict(call_id=call, reference_state='unavailable')]
+def test_s3_fault_preserves_catalogue_metadata_but_content_is_unavailable(monkeypatch):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        files.unavailable = True
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
+        assert (await request(store, body, monkeypatch))[0] == 200
+        code, data = await request(store, dict(**body, content=True, offset=0, limit=30), monkeypatch)
+        assert code == 503 and 'files' not in data and 'CANARY' not in json.dumps(data)
+        files.removed = True
+        code, data = await request(store, body, monkeypatch)
+        assert code == 200 and data['files'] == [dict(call_id=call, reference_state='unavailable')]
+
+    asyncio.run(scenario())
+
+
+def test_real_blob_primitive_uses_hub_authority_without_opening_mcp_access(monkeypatch):
+    async def scenario():
+        from src.mcp_tools.auth import access_runtime
+
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        blob = object.__new__(Blobs)
+        blob.slots, blob.jobs, blob.data_signature, blob.bucket = asyncio.Semaphore(1), set(), 's3v4', 'test'
+        reads = []
+        def get_object(**kwargs):
+            reads.append(kwargs)
+            return dict(VersionId=files.pin['version_id'], Body=io.BytesIO(files.content))
+        blob.clients = {'s3v4': SimpleNamespace(get_object=get_object)}
+        files.blobs = blob
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        async def refresh(tool):
+            check_tool_access(tool)
+        monkeypatch.setattr(access_runtime, 'refresh_access', refresh)
+        info = current_token_info.set(dict(store.info))
+        try:
+            with pytest.raises(ValueError, match="permission 'access'"):
+                await blob.get(files.pin)
+            assert reads == []
+            body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True, offset=0, limit=30)
+            code, data = await request(store, body, monkeypatch)
+            assert code == 200 and base64.b64decode(data['files'][0]['content_base64']) == files.content
+            assert reads == [dict(Bucket='test', Key=files.pin['key'], VersionId='historical-version')]
+            assert not blob.jobs and not blob.slots.locked()
+        finally:
+            current_token_info.reset(info)
+
+    asyncio.run(scenario())

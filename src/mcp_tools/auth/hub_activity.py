@@ -88,6 +88,14 @@ class Delegation:
                 raise ValueError('Delegation revoked or expired')
 
 
+def check_expiry(claims, confirmed):
+    now = datetime.now(timezone.utc)
+    if (time.time() >= claims['exp'] or confirmed['binding_expires_at'] <= now
+            or (confirmed['credential_expires_at'] is not None
+                and confirmed['credential_expires_at'] <= now)):
+        raise ValueError('Local access expired before response')
+
+
 async def response(send, status, code, **body):
     raw = json.dumps({'status': 'ok' if status == 200 else 'error', 'code': code, **body}).encode()
     await send({'type': 'http.response.start', 'status': status, 'headers': [
@@ -226,7 +234,13 @@ class HubActivityMiddleware:
         if file_read:
             from ..storage.hub_files import read_hub_files
             calls = await store.hub_file_calls(requester, c, body['call_ids'])
-            page = await read_hub_files(calls, body, self.cfg)
+
+            async def check():
+                await delegation.active()
+                confirmed = await store.confirm_hub_access(requester, info, binding, c)
+                check_expiry(c, confirmed)
+
+            page = await read_hub_files(calls, body, self.cfg, check)
         else:
             page = await store.hub_activity_page(requester, info, binding, c,
                                                   cursor=body.get('cursor'), limit=body['limit'])
@@ -234,9 +248,5 @@ class HubActivityMiddleware:
         # Dernière décision locale unique, cohérente et versionnée : aucun autre
         # await d'autorité ne sépare sa lecture du credential et du mapping.
         confirmed = await store.confirm_hub_access(requester, info, binding, c)
-        now = datetime.now(timezone.utc)
-        if (time.time() >= c['exp'] or confirmed['binding_expires_at'] <= now
-                or (confirmed['credential_expires_at'] is not None
-                    and confirmed['credential_expires_at'] <= now)):
-            raise ValueError('Local access expired before response')
+        check_expiry(c, confirmed)
         return await response(send, 200, 'TOOLS_FILES' if file_read else 'TOOLS_ACTIVITY', **page)
