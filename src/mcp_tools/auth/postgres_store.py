@@ -373,6 +373,18 @@ class PostgresAccessStore:
         cursor = self.cursors.issue(binding, (rows[-1]['created_at'], rows[-1]['call_id'])) if len(rows) == limit else None
         return {'calls': calls, 'count': len(calls), 'next_cursor': cursor, 'page_complete': True}
 
+    async def hub_file_calls(self, requester, claims, calls):
+        ids = [str(UUID(value)) for value in calls]
+        if not 1 <= len(ids) <= 64 or len(set(ids)) != len(ids):
+            raise ValueError('Invalid hub file batch')
+        rows = await self._run('SELECT * FROM tools_access.hub_file_calls(%s,%s,%s,%s,%s,%s,%s,%s)',
+            (requester, claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id'],
+             claims['mission_id'], claims['root_agent_id'], ids))
+        if {str(r['call_id']) for r in rows} != set(ids) or len(rows) != len(ids):
+            raise ValueError('Hub file reference refused')
+        return {str(r['call_id']): str(r['operation_id']) if r['operation_id'] is not None else None
+                for r in rows}
+
     async def create_hub_binding(self, requester, *, actor_id, issuer, subject, owner_id, tenant_id, expires_at):
         # Expiry et identités sont ensuite contraintes par SQL ; pas de mapping implicite.
         operation = current_access_operation.get() or str(uuid4())

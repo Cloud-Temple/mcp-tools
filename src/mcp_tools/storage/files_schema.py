@@ -7,7 +7,7 @@ DDL = r'''
 CREATE TABLE schema_version (singleton bool PRIMARY KEY CHECK(singleton), version int NOT NULL, checksum text NOT NULL);
 CREATE TABLE operations (
  id uuid PRIMARY KEY, path text NOT NULL CHECK(octet_length(path) BETWEEN 1 AND 1024),
- binding text, request_digest text NOT NULL CHECK(length(request_digest)=64),
+ binding text, origin_call_id uuid, request_digest text NOT NULL CHECK(length(request_digest)=64),
  intent_digest text NOT NULL CHECK(length(intent_digest)=64), intent jsonb NOT NULL,
  attempt uuid NOT NULL, generation uuid NOT NULL, expected_revision bigint NOT NULL,
  phase text NOT NULL CHECK(phase IN ('INTENT_RESERVED','CONTENT_DISPATCH_ARMED','CONTENT_VERIFIED','PUBLICATION_ARMED','EFFECT_COMMITTED','BARRIER_OBSERVED')),
@@ -35,8 +35,8 @@ CREATE TABLE receipts (
 CREATE INDEX receipts_operation ON receipts(operation,created_at,id);
 CREATE FUNCTION guard_operation() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN
- IF ROW(OLD.id,OLD.path,OLD.binding,OLD.request_digest,OLD.intent_digest,OLD.intent,OLD.attempt,OLD.generation,OLD.expected_revision,OLD.initial_confirmation,OLD.created_at)
- IS DISTINCT FROM ROW(NEW.id,NEW.path,NEW.binding,NEW.request_digest,NEW.intent_digest,NEW.intent,NEW.attempt,NEW.generation,NEW.expected_revision,NEW.initial_confirmation,NEW.created_at)
+ IF ROW(OLD.id,OLD.path,OLD.binding,OLD.origin_call_id,OLD.request_digest,OLD.intent_digest,OLD.intent,OLD.attempt,OLD.generation,OLD.expected_revision,OLD.initial_confirmation,OLD.created_at)
+ IS DISTINCT FROM ROW(NEW.id,NEW.path,NEW.binding,NEW.origin_call_id,NEW.request_digest,NEW.intent_digest,NEW.intent,NEW.attempt,NEW.generation,NEW.expected_revision,NEW.initial_confirmation,NEW.created_at)
  OR (NOT OLD.publication_allowed AND NEW.publication_allowed)
  OR (OLD.revocation IS NOT NULL AND NEW.revocation IS DISTINCT FROM OLD.revocation)
  OR (OLD.closed AND NOT NEW.closed) THEN RAISE EXCEPTION 'immutable operation history'; END IF;

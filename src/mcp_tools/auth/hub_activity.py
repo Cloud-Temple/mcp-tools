@@ -19,6 +19,7 @@ from jwt.algorithms import ECAlgorithm
 from .token_store import TokenStoreUnavailable
 
 PATH = '/internal/hub/tools-activity'
+FILES_PATH = '/internal/hub/tools-files'
 PURPOSE = 'hub-tools-activity-v1'
 current_hub_context = ContextVar('tools_hub_context', default=None)
 
@@ -111,18 +112,18 @@ class HubActivityMiddleware:
         path = scope.get('path')
         headers = [(k.lower(), v) for k, v in scope.get('headers', [])]
         tokens = [v.decode('latin-1') for k, v in headers if k == b'x-tools-activity-context']
-        if path != PATH and not tokens:
+        if path not in {PATH, FILES_PATH} and not tokens:
             return await self.app(scope, receive, send)
         if not self.cfg.hub_activity_enabled:
-            return await response(send, 404 if path == PATH else 403, 'DELEGATION_DISABLED')
-        if path not in {PATH, '/mcp'} or scope.get('method') != 'POST' or scope.get('query_string'):
+            return await response(send, 404 if path in {PATH, FILES_PATH} else 403, 'DELEGATION_DISABLED')
+        if path not in {PATH, FILES_PATH, '/mcp'} or scope.get('method') != 'POST' or scope.get('query_string'):
             return await response(send, 400, 'INVALID_DELEGATION_REQUEST')
         if len(tokens) != 1 or not 1 <= len(tokens[0]) <= 16384:
             return await response(send, 403, 'DELEGATION_REFUSED')
         if self.slots.locked():
             return await response(send, 503, 'DELEGATION_UNAVAILABLE')
         async with self.slots:
-            return await self.handle(scope, receive, send, tokens[0], path == PATH)
+            return await self.handle(scope, receive, send, tokens[0], path in {PATH, FILES_PATH})
 
     async def handle(self, scope, receive, send, token, batch):
         cfg = self.cfg
@@ -162,7 +163,8 @@ class HubActivityMiddleware:
                     keys = jwks.get('keys')
                     if not isinstance(keys, list) or len(keys) > 64:
                         raise ValueError('Delegation keys invalid')
-                    permission = 'tools.activity.read' if batch else 'tools.activity.context'
+                    permission = ('tools.files.read' if scope.get('path') == FILES_PATH else
+                                  'tools.activity.read' if batch else 'tools.activity.context')
                     claims = validate_claims(token, keys, cfg, raw, permission)
                     delegation = Delegation(client, token, claims, cfg)
                 if batch:
@@ -200,7 +202,8 @@ class HubActivityMiddleware:
 
     async def batch(self, scope, send, body, delegation):
         c = delegation.claims
-        if (set(body)-{'mission_id', 'root_agent_id', 'limit', 'cursor'}
+        file_read = scope.get('path') == FILES_PATH
+        if not file_read and (set(body)-{'mission_id', 'root_agent_id', 'limit', 'cursor'}
                 or body.get('mission_id') != c['mission_id']
                 or body.get('root_agent_id') != c['root_agent_id']
                 or type(body.get('limit')) is not int or not 1 <= body['limit'] <= 100):
@@ -212,11 +215,21 @@ class HubActivityMiddleware:
         info = await store.authenticate(auth[0][7:])
         if info is None:
             raise ValueError('Local access refused')
+        if file_read:
+            from ..storage.hub_files import validate_request
+            validate_request(body, c)
+            if info['permissions'] != ['hub_read'] or 'files' not in info['tool_ids']:
+                raise ValueError('Local hub read required')
         requester = info['credential_binding'].partition(':')[2]
         await delegation.active()
         binding = await store.hub_binding(requester, c)
-        page = await store.hub_activity_page(requester, info, binding, c,
-                                              cursor=body.get('cursor'), limit=body['limit'])
+        if file_read:
+            from ..storage.hub_files import read_hub_files
+            calls = await store.hub_file_calls(requester, c, body['call_ids'])
+            page = await read_hub_files(calls, body, self.cfg)
+        else:
+            page = await store.hub_activity_page(requester, info, binding, c,
+                                                  cursor=body.get('cursor'), limit=body['limit'])
         await delegation.active()
         # Dernière décision locale unique, cohérente et versionnée : aucun autre
         # await d'autorité ne sépare sa lecture du credential et du mapping.
@@ -226,4 +239,4 @@ class HubActivityMiddleware:
                 or (confirmed['credential_expires_at'] is not None
                     and confirmed['credential_expires_at'] <= now)):
             raise ValueError('Local access expired before response')
-        return await response(send, 200, 'TOOLS_ACTIVITY', **page)
+        return await response(send, 200, 'TOOLS_FILES' if file_read else 'TOOLS_ACTIVITY', **page)
