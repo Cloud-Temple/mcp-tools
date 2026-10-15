@@ -39,7 +39,7 @@ from ..observability import bind_activity, record_activity, traced_tool
 # Constantes
 # =============================================================================
 
-ALLOWED_OPERATIONS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat")
+ALLOWED_OPERATIONS = ("list", "read", "write", "delete", "info", "diff", "versions", "enable_versioning", "concat", "metadata_batch", "operation_info", "reconcile")
 FILES_MAX_TIMEOUT = 60
 # Limite de contenu pour write (5 MB en texte)
 FILES_MAX_CONTENT_SIZE = 5_000_000
@@ -797,7 +797,7 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("files")
     async def files(
-        operation: Annotated[str, Field(description="Opération S3 : list, read, write, delete, info, diff, versions, enable_versioning ou concat")],
+        operation: Annotated[str, Field(description="Opération files : list, read, write, delete, info, diff, versions, enable_versioning, concat ; catalogue : metadata_batch, operation_info, reconcile")],
         path: Annotated[Optional[str], Field(default=None, description="Chemin (clé) de l'objet S3 ; destination requise pour read, write, delete, info, diff et concat")] = None,
         content: Annotated[Optional[str], Field(default=None, description="Contenu à écrire dans l'objet S3 (requis pour write, max 5 MB)")] = None,
         path2: Annotated[Optional[str], Field(default=None, description="Second chemin S3 pour l'opération diff")] = None,
@@ -815,12 +815,35 @@ def register(mcp: MCPServer) -> None:
         bucket: Annotated[Optional[str], Field(default=None, description="Nom du bucket S3 (optionnel, défaut depuis config serveur)")] = None,
         region: Annotated[Optional[str], Field(default=None, description="Région S3 (optionnel, défaut depuis config serveur)")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max 60)")] = 30,
+        cursor: Annotated[Optional[str], Field(default=None, description="Curseur opaque de catalogue list/versions (PostgreSQL)")] = None,
+        operation_id: Annotated[Optional[str], Field(default=None, description="UUID de mutation ou journal ; retry = inspection, sans replay")] = None,
+        expected_revision: Annotated[Optional[StrictInt], Field(default=None, description="CAS de destination du catalogue, facultatif")] = None,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
         try:
             check_tool_access("files")
             settings = get_settings()
+
+            # Autorité unique choisie au démarrage. Aucun override credentials/cible en catalogue.
+            backend = getattr(settings, "files_metadata_backend", "s3")
+            if backend == "postgres":
+                if any(v is not None for v in (endpoint, access_key, secret_key, bucket, region)):
+                    return {"status": "error", "message": "Override S3 interdit en mode catalogue"}
+                from ..storage.files_service import get_files_service
+                result = await get_files_service().dispatch(operation, {
+                    "path": path, "path2": path2, "content": content, "paths": paths,
+                    "separator": separator, "prefix": prefix, "version_id": version_id,
+                    "offset": offset, "limit": limit, "if_match": if_match,
+                    "max_keys": max(1, min(max_keys, FILES_MAX_KEYS)), "cursor": cursor,
+                    "operation_id": operation_id, "expected_revision": expected_revision,
+                    "timeout": timeout,
+                })
+                return {"operation": operation, **result}
+            if backend != "s3":
+                return {"status": "error", "message": "Autorité fichiers invalide"}
+            if operation in {"metadata_batch", "operation_info", "reconcile"} or cursor is not None or operation_id is not None or expected_revision is not None:
+                return {"status": "error", "message": "Paramètres/opération réservés au catalogue PostgreSQL"}
 
             # --- Validation opération ---
             if operation not in ALLOWED_OPERATIONS:

@@ -71,6 +71,8 @@ jobs:
         # version de pytest finissent toujours par diverger.
         run: |
           python -m pip install --quiet -r requirements.lock
+          python -m pip install --quiet --no-deps --require-hashes -r requirements-postgres.lock
+          python -m pip check
           python -m pip install --quiet -r requirements-dev.txt
 
       - name: Vérifier que la suite n'a pas rétréci

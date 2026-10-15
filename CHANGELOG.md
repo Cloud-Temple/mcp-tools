@@ -4,6 +4,20 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0] — 2026-10-14
+
+### Added
+
+- Catalogue PostgreSQL optionnel pour `files` : contenu S3 versionné,
+  pagination, métadonnées batch et réconciliation explicite des opérations.
+- Installation et sauvegarde logiques publiques, credentials SQL directs ou
+  Vault explicitement configurés, avec contrôles de rôles et de cible.
+
+### Qualification
+
+- Version préparée, sans tag ni release ; qualification PostgreSQL/S3 finale
+  en cours. Le backend S3 existant reste le choix par défaut.
+
 ## [0.9.0] — 2026-10-13
 
 ### Fixed
