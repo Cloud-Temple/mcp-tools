@@ -107,7 +107,8 @@ async def exercise(args, save):
 
     async def observe(pin, label):
         before = await state()
-        async with catalog.connection() as c:
+        reader = FixtureCatalog(cfg.model_copy(update={'files_pg_role': args.maintenance}))
+        async with reader.connection() as c:
             red = await original(c, pin)
             green = await FileRecovery.referenced(c, pin)
         after = await state()
