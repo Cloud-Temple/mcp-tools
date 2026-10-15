@@ -77,7 +77,7 @@ class FileRecovery:
             LEFT JOIN blob_retirements retired ON retired.generation=g.id
             WHERE NOT r.deleted AND (g.id=r.generation OR retired.generation IS NULL)
             UNION ALL SELECT o.intent->'sources' sources FROM operations o
-            WHERE NOT o.closed AND o.phase<>'BARRIER_OBSERVED' LIMIT 10001""")).fetchall()
+            WHERE NOT o.closed LIMIT 10001""")).fetchall()
         if len(roots) > 10000:
             return True  # Incomplete graph never proves absence of dependencies.
         pending = []
