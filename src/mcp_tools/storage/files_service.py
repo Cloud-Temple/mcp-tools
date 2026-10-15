@@ -118,6 +118,14 @@ class FilesService:
                     raise Conflict("Batch dépasse le budget réponse ; réduire paths")
                 return result
             path = key(path)
+            # A physical historical version is not permission to undo a logical deletion.
+            row = await self.ref(c, path)
+            if not row or row["deleted"] or not row["generation"]:
+                if op == "versions":
+                    return {"status": "ok", "versions": [], "count": 0,
+                            "truncated": False, "next_cursor": None}
+                return {"status": "ok", "path": path, "effect_state": "absent",
+                        "durability_state": "unverified"}
             if op == "versions":
                 after = self.after(args.get("cursor"), op, path)
                 n = args["max_keys"]
@@ -132,7 +140,6 @@ class FilesService:
                 if not data and rows:
                     raise Conflict("Budget réponse insuffisant")
                 return result
-            row = await self.ref(c, path)
             if args.get("version_id"):
                 histories = await (await c.execute("SELECT id,pin,manifest FROM generations WHERE path=%s AND pin->>'version_id'=%s LIMIT 2", (path,args["version_id"]))).fetchall()
                 if len(histories)!=1:
