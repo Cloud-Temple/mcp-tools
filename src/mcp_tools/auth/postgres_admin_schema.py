@@ -54,6 +54,10 @@ BEGIN
  tool_ids=requested_tools,version=version+1 WHERE token_hash=requested_hash AND version=expected_version
  AND revoked_at IS NULL RETURNING actor_id INTO changed_actor;
  IF NOT FOUND THEN RAISE EXCEPTION 'access version conflict'; END IF;
+ -- FOR SHARE conserve les droits/revocations externes jusqu'à la fin de TX ;
+ -- l'horloge serveur peut toutefois dépasser l'expiration pendant UPDATE.
+ IF admin_actor.expires_at IS NOT NULL AND admin_actor.expires_at<=clock_timestamp()
+ THEN RAISE EXCEPTION 'current admin required' USING ERRCODE='42501'; END IF;
  PERFORM tools_access.record_admin(admin_actor,requested_operation,'access_update',changed_actor);
  RETURN true;
 END $$;
@@ -67,6 +71,8 @@ BEGIN
  WHERE token_hash=requested_hash AND version=expected_version AND revoked_at IS NULL
  RETURNING actor_id INTO changed_actor;
  IF NOT FOUND THEN RAISE EXCEPTION 'access version conflict'; END IF;
+ IF admin_actor.expires_at IS NOT NULL AND admin_actor.expires_at<=clock_timestamp()
+ THEN RAISE EXCEPTION 'current admin required' USING ERRCODE='42501'; END IF;
  PERFORM tools_access.record_admin(admin_actor,requested_operation,'access_revoke',changed_actor);
  RETURN true;
 END $$;
@@ -95,6 +101,7 @@ BEGIN
  OR (before_stamp IS NULL)<>(before_id IS NULL) THEN RAISE EXCEPTION 'invalid page'; END IF;
  SELECT c.* INTO actor FROM tools_access.access_credentials c WHERE c.token_hash=requester FOR SHARE;
  IF NOT FOUND OR actor.revoked_at IS NOT NULL OR
+ NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions)) OR
  (actor.expires_at IS NOT NULL AND actor.expires_at<=clock_timestamp())
  THEN RAISE EXCEPTION 'current access required' USING ERRCODE='42501'; END IF;
  RETURN QUERY SELECT c.id,c.actor_id,c.tenant_id,c.service_id,c.tool,c.trace_id,c.operation_id,
@@ -104,7 +111,7 @@ BEGIN
  ORDER BY (event.phase='terminal') DESC LIMIT 1) e ON true
  WHERE (c.expires_at>clock_timestamp())
  AND ('admin'=ANY(actor.permissions) OR (c.actor_id=actor.actor_id AND c.tenant_id=actor.tenant_id
- AND c.service_id=actor.service_id))
+ AND c.service_id=actor.service_id AND c.tool=ANY(actor.tool_ids)))
  AND (before_stamp IS NULL OR ROW(c.created_at,c.id)<ROW(before_stamp,before_id))
  ORDER BY c.created_at DESC,c.id DESC LIMIT requested_limit;
 END $$;
