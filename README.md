@@ -6,6 +6,14 @@
 
 MCP Tools est un serveur MCP passif qui expose des **outils** (shell, réseau, HTTP, recherche IA…) aux agents autonomes via le protocole **Streamable HTTP**. C'est la « boîte à outils » de l'écosystème Cloud Temple.
 
+## Accès et activité PostgreSQL (candidat #31)
+
+Le profil explicite `ACCESS_BACKEND=postgres` prépare l'authentification fraîche,
+les mutations administratives sous CAS et l'activité durable, avec API, CLI et
+console. Le [guide accès/activité](docs/postgres/access-activity.md) décrit
+l'opérateur, le premier admin offline et les limites de qualification restantes.
+Ce candidat n'est pas encore prêt au déploiement.
+
 ## Catalogue fichiers PostgreSQL (optionnel)
 
 Le pilote S3 historique reste le défaut. `FILES_METADATA_BACKEND=postgres`

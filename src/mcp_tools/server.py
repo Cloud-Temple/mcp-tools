@@ -102,10 +102,16 @@ async def system_activity(
     limit: int = 100,
     trace_id: Optional[str] = None,
     call_id: Optional[str] = None,
+    cursor: Optional[str] = None,
 ) -> dict:
     """Retourne les traces d'activité corrélées, filtrables par trace ou call (administrateurs uniquement, secrets exclus)."""
     try:
         check_tool_access("system_activity")
+        if get_settings().access_backend == 'postgres':
+            from .auth.access_runtime import get_access_store, current_binding
+            if trace_id is not None or call_id is not None:
+                return {'status': 'error', 'message': 'Utiliser la pagination activité PG'}
+            return await get_access_store().activity_page(current_binding(), cursor=cursor, limit=limit)
         token_info = current_token_info.get() or {}
         if "admin" not in token_info.get("permissions", []):
             return {"status": "error", "message": "Permission admin requise pour consulter l'activité."}
@@ -140,6 +146,8 @@ def create_app():
 
     app = mcp.streamable_http_app(host=settings.mcp_server_host)
     app = AuthMiddleware(app)
+    from .auth.hub_activity import HubActivityMiddleware
+    app = HubActivityMiddleware(app, settings)
     app = HealthCheckMiddleware(app)
     app = AdminMiddleware(app, mcp)  # /admin, /admin/static/*, /admin/api/*
     # Doit envelopper AdminMiddleware : sinon les appels /admin/api sont
@@ -167,9 +175,19 @@ class HealthCheckMiddleware:
                 version = version_file.read_text().strip()
             from .storage.files_lifecycle import lifecycle
             ready = await lifecycle.probe(settings) if scope.get("path") == "/ready" else True
+            access = None
+            if scope.get("path") == "/ready" and settings.access_backend == 'postgres':
+                from .auth.access_runtime import get_access_store
+                from .auth.token_store import TokenStoreUnavailable
+                try:
+                    access = 'ready' if await get_access_store().ready() else 'unavailable'
+                except TokenStoreUnavailable:
+                    access = 'unavailable'
+                ready = ready and access == 'ready'
             body = json.dumps({
                 "status": "healthy" if ready else "not_ready",
                 **({"storage": lifecycle.state} if scope.get("path") == "/ready" else {}),
+                **({"access": access} if access is not None else {}),
                 "service": settings.mcp_server_name,
                 "version": version,
                 "transport": "streamable-http",
@@ -247,7 +265,7 @@ def _security_checks():
     """Vérifications de sécurité au démarrage (§3.7, sandbox)."""
 
     # §3.7 — Bootstrap key par défaut = risque critique
-    if settings.admin_bootstrap_key == "change_me_in_production":
+    if settings.access_backend == 's3' and settings.admin_bootstrap_key == "change_me_in_production":
         print(
             "\n"
             "  ╔══════════════════════════════════════════════════╗\n"
@@ -281,8 +299,9 @@ def main():
     _security_checks()
 
     # Initialiser le Token Store (charge les tokens depuis S3)
-    from .auth.token_store import init_token_store
-    init_token_store()
+    if settings.access_backend == 's3':
+        from .auth.token_store import init_token_store
+        init_token_store()
 
     app = create_app()
 

@@ -6,7 +6,7 @@ Variables d'environnement chargées depuis .env.
 """
 
 from functools import lru_cache
-from typing import Optional
+from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -22,6 +22,34 @@ class Settings(BaseSettings):
 
     # --- Auth ---
     admin_bootstrap_key: str = "change_me_in_production"
+
+    # --- Autorité accès/activité PG explicite #31 (aucun fallback S3) ---
+    access_backend: Literal["s3", "postgres"] = "s3"
+    access_pg_database: str = "tools"
+    access_pg_role: str = "tools_access_app"
+    access_pg_owner: str = "tools_access_owner"
+    access_pg_hosts: str = ""
+    access_pg_ca_file: str = ""
+    access_operation_timeout: float = Field(default=5, ge=2, le=5)
+    access_cursor_ttl_seconds: int = Field(default=60, ge=1, le=300)
+    access_cursor_capacity: int = Field(default=1024, ge=1, le=10000)
+    access_vault_url: str = ""
+    access_vault_id: str = ""
+    access_vault_path: str = "connection"
+    access_vault_token_file: str = ""
+    access_vault_ca_file: str = ""
+
+    # Destinataire hub facultatif, séparé du bearer opaque Tools.
+    hub_activity_enabled: bool = False
+    hub_activity_issuer: str = ""
+    hub_activity_audience: str = ""
+    hub_activity_owner: str = ""
+    hub_activity_jwks_url: str = ""
+    hub_activity_check_url: str = ""
+    hub_activity_ca_file: str = ""
+    hub_activity_timeout_seconds: float = Field(default=10, ge=2, le=30)
+    hub_activity_max_inflight: int = Field(default=16, ge=1, le=64)
+    hub_activity_max_body_bytes: int = Field(default=8388608, ge=16384, le=16777216)
 
     # --- S3 (tokens MCP uniquement) ---
     s3_endpoint_url: str = ""

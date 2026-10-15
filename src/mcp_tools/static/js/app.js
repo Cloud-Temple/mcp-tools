@@ -98,7 +98,7 @@ function updateNavVisibility() {
     document.querySelectorAll('.nav-item').forEach(item => {
         const view = item.dataset.view;
         if (view === 'tokens' || view === 'logs') {
-            item.style.display = isAdmin ? '' : 'none';
+            item.style.display = isAdmin || (view === 'logs' && app.me?.access_backend === 'postgres') ? '' : 'none';
         }
     });
     // Mettre à jour le titre du header

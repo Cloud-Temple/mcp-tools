@@ -117,6 +117,7 @@ class Reglages:
         self.token_store_stale_grace = 300
         self.token_store_fail_mode = "fail_close"
         self.admin_bootstrap_key = "cle-bootstrap-de-test"
+        self.access_backend = 's3'
         self.__dict__.update(surcharges)
 
 

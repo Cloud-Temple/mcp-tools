@@ -4,6 +4,22 @@ All notable changes to MCP Tools will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Candidat #31 : accès PostgreSQL explicites, contrôle frais avant admission,
+  audit des mutations atomique, pages d'activité filtrées par droits courants.
+- Opérateur public install/verify/bootstrap/purge, API/CLI et console avec
+  pagination opaque et versions requises pour les mutations.
+- Destinataire hub optionnel avec mapping local administré, contexte ES256
+  limité à l'admission et batch de métadonnées revalidé avant restitution.
+
+### Qualification
+
+- Delta SQL admin qualifié sur PostgreSQL17 isolé (29 groupes) ; raccords
+  publics, TLS/Vault, délégation hub et rollback encore non qualifiés/non prêts.
+
 ## [0.10.0] — 2026-10-14
 
 ### Added

@@ -9,6 +9,8 @@ from typing import Optional
 
 # --- Context variables injectées par le middleware ---
 current_token_info: ContextVar[Optional[dict]] = ContextVar("current_token_info", default=None)
+# Créé par le serveur avant admission, jamais rempli depuis une métadonnée client.
+current_access_operation: ContextVar[Optional[str]] = ContextVar("current_access_operation", default=None)
 
 def check_tool_access(tool_name: str) -> None:
     """

@@ -18,7 +18,7 @@ from src.mcp_tools.storage.files_s3 import Blobs
 class RightsContracts(IsolatedAsyncioTestCase):
     async def test_http_readiness_fails_closed_while_liveness_remains_live(self):
         from src.mcp_tools import server
-        fake=SimpleNamespace(files_metadata_backend="invalid",mcp_server_name="tools")
+        fake=SimpleNamespace(files_metadata_backend="invalid",access_backend="s3",mcp_server_name="tools")
         app=server.HealthCheckMiddleware(AsyncMock())
         async def receive(): return {"type":"http.request","body":b""}
         with patch.object(server,"settings",fake):

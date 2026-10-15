@@ -98,15 +98,18 @@ def about_cmd(ctx, output_json):
               help="Nombre maximal d'événements récents (administrateur requis)")
 @click.option("--trace-id", help="Restituer une trace précise, sans la tronquer")
 @click.option("--call-id", help="Restituer un appel agent/CLI précis, sans la tronquer")
+@click.option("--cursor", help="Profil PG : continuation opaque de la page précédente")
 @click.option("--details", is_flag=True, help="Afficher toutes les étapes de chaque appel")
 @click.option("--all", "include_protocol", is_flag=True, help="Inclure les échanges MCP de protocole")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def activity_cmd(ctx, limit, trace_id, call_id, details, include_protocol, output_json):
+def activity_cmd(ctx, limit, trace_id, call_id, cursor, details, include_protocol, output_json):
     """📋 Consulter les traces corrélées d'activité (administrateur requis)."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
         params = {"limit": limit}
+        if cursor:
+            params['cursor'] = cursor
         if trace_id:
             params["trace_id"] = trace_id
         if call_id:
@@ -801,9 +804,12 @@ def token_group(ctx):
               help="Expiration en jours (0 = jamais). Défaut: 90.")
 @click.option("--email", default="",
               help="Email du propriétaire (optionnel, pour traçabilité)")
+@click.option("--tenant-id", help="Profil PG : tenant explicite")
+@click.option("--service-id", help="Profil PG : service explicite")
+@click.option("--actor-id", help="Profil PG : UUID acteur existant pour rotation")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def token_create(ctx, name, tool_ids_str, permissions, expires, email, output_json):
+def token_create(ctx, name, tool_ids_str, permissions, expires, email, tenant_id, service_id, actor_id, output_json):
     """Créer un nouveau token.
 
     \b
@@ -837,6 +843,9 @@ def token_create(ctx, name, tool_ids_str, permissions, expires, email, output_js
         }
         if email:
             params["email"] = email
+        for key, value in (('tenant_id',tenant_id), ('service_id',service_id), ('actor_id',actor_id)):
+            if value is not None:
+                params[key] = value
         result = await client.call_tool("token", params)
         if output_json:
             show_json(result)
@@ -846,13 +855,18 @@ def token_create(ctx, name, tool_ids_str, permissions, expires, email, output_js
 
 
 @token_group.command("list")
+@click.option("--cursor", help="Profil PG : continuation opaque")
+@click.option("--limit", default=50, type=click.IntRange(1,100), help="Profil PG : taille de page")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def token_list(ctx, output_json):
+def token_list(ctx, cursor, limit, output_json):
     """Lister tous les tokens (métadonnées seulement, jamais en clair)."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
-        result = await client.call_tool("token", {"operation": "list"})
+        params = {'operation':'list', 'limit':limit}
+        if cursor:
+            params['cursor'] = cursor
+        result = await client.call_tool("token", params)
         if output_json:
             show_json(result)
         else:
@@ -862,13 +876,17 @@ def token_list(ctx, output_json):
 
 @token_group.command("info")
 @click.argument("name")
+@click.option("--token-prefix", help="Profil PG : référence exacte de list")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def token_info(ctx, name, output_json):
+def token_info(ctx, name, token_prefix, output_json):
     """Détails d'un token par nom client."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
-        result = await client.call_tool("token", {"operation": "info", "client_name": name})
+        params = {'operation':'info', 'client_name':name}
+        if token_prefix is not None:
+            params['token_prefix'] = token_prefix
+        result = await client.call_tool("token", params)
         if output_json:
             show_json(result)
         else:
@@ -884,9 +902,11 @@ def token_info(ctx, name, output_json):
               help="Nouvelles permissions (access, admin). Remplace les permissions existantes.")
 @click.option("--email", default=None,
               help="Nouvel email du propriétaire")
+@click.option("--token-prefix", help="Profil PG : référence exacte de list")
+@click.option("--expected-version", type=click.IntRange(1), help="Profil PG : version lue, requise")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def token_update(ctx, name, tool_ids_str, permissions, email, output_json):
+def token_update(ctx, name, tool_ids_str, permissions, email, token_prefix, expected_version, output_json):
     """Mettre à jour un token existant (tool_ids, permissions, email).
 
     \b
@@ -918,6 +938,9 @@ def token_update(ctx, name, tool_ids_str, permissions, email, output_json):
             params["permissions"] = [p.strip() for p in permissions.split(",") if p.strip()]
         if email is not None:
             params["email"] = email
+        for key, value in (('token_prefix',token_prefix), ('expected_version',expected_version)):
+            if value is not None:
+                params[key] = value
         result = await client.call_tool("token", params)
         if output_json:
             show_json(result)
@@ -928,13 +951,19 @@ def token_update(ctx, name, tool_ids_str, permissions, email, output_json):
 
 @token_group.command("revoke")
 @click.argument("name")
+@click.option("--token-prefix", help="Profil PG : référence exacte de list")
+@click.option("--expected-version", type=click.IntRange(1), help="Profil PG : version lue, requise")
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
-def token_revoke(ctx, name, output_json):
+def token_revoke(ctx, name, token_prefix, expected_version, output_json):
     """Révoquer (supprimer) un token par nom client."""
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
-        result = await client.call_tool("token", {"operation": "revoke", "client_name": name})
+        params = {'operation':'revoke', 'client_name':name}
+        for key, value in (('token_prefix',token_prefix), ('expected_version',expected_version)):
+            if value is not None:
+                params[key] = value
+        result = await client.call_tool("token", params)
         if output_json:
             show_json(result)
         else:

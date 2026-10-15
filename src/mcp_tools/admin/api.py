@@ -164,6 +164,10 @@ async def handle_admin_api(scope, receive, send, mcp_instance):
     Routeur principal pour /admin/api/*.
     Vérifie l'auth admin puis dispatch vers le bon handler.
     """
+    if get_settings().access_backend == 'postgres':
+        from .postgres_api import handle_postgres_admin
+        return await handle_postgres_admin(scope, receive, send, mcp_instance)
+
     path = scope.get("path", "")
     method = scope.get("method", "GET")
 

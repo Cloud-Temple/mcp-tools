@@ -52,7 +52,11 @@ class AuthMiddleware:
 
         if token:
             try:
-                token_info = self._validate_token(token)
+                if get_settings().access_backend == 'postgres':
+                    from .access_runtime import get_access_store
+                    token_info = await get_access_store().authenticate(token)
+                else:
+                    token_info = self._validate_token(token)
             except TokenStoreUnavailable:
                 # Ne pas pouvoir vérifier un accès n'est pas la même chose
                 # que le refuser. Un 401 ferait croire à un token invalide et
