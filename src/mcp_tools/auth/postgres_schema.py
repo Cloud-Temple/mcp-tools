@@ -4,6 +4,7 @@ import hashlib
 
 from .postgres_admin_schema import ADMIN_DDL, ADMIN_ROUTINES
 from .postgres_admin_lookup import LOOKUP_DDL, LOOKUP_ROUTINES
+from .postgres_hub_schema import HUB_DDL, HUB_ROUTINES
 
 VERSION = 1
 DDL = r'''
@@ -22,11 +23,15 @@ CREATE TABLE tools_access.schema_version (
 CREATE TABLE tools_access.hub_actor_bindings (
  id uuid PRIMARY KEY, issuer text NOT NULL CHECK(octet_length(issuer) BETWEEN 1 AND 2048),
  subject text NOT NULL CHECK(subject ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
+ owner_id text NOT NULL CHECK(owner_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
  actor_id uuid NOT NULL, tenant_id text NOT NULL CHECK(tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
  service_id text NOT NULL CHECK(service_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
- enabled boolean NOT NULL, version bigint NOT NULL CHECK(version>0), created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- UNIQUE(issuer,subject,tenant_id,service_id)
+ version bigint NOT NULL CHECK(version>0), created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ expires_at timestamptz NOT NULL, revoked_at timestamptz,
+ CHECK(expires_at>created_at), CHECK(revoked_at IS NULL OR revoked_at>=created_at)
 );
+CREATE UNIQUE INDEX hub_binding_current ON tools_access.hub_actor_bindings(issuer,subject,owner_id,tenant_id,service_id)
+ WHERE revoked_at IS NULL;
 CREATE TABLE tools_access.access_credentials (
  token_hash text PRIMARY KEY CHECK(token_hash ~ '^[0-9a-f]{64}$'), actor_id uuid NOT NULL,
  tenant_id text NOT NULL CHECK(tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
@@ -43,12 +48,17 @@ CREATE TABLE tools_access.access_credentials (
 CREATE TABLE tools_access.activity_calls (
  id uuid PRIMARY KEY, actor_id uuid, tenant_id text, service_id text,
  tool text NOT NULL CHECK(tool ~ '^[a-z][a-z0-9_]{0,63}$'),
- trace_id uuid NOT NULL, operation_id uuid, mission_id text,
+ trace_id uuid NOT NULL, operation_id uuid, mission_id text, root_agent_id text,
+ request_sha256 text, hub_binding_id uuid, hub_binding_version bigint,
  category text NOT NULL CHECK(category IN ('technical','mission')),
  admission text NOT NULL CHECK(admission IN ('admitted','denied')),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), expires_at timestamptz NOT NULL,
  CHECK(expires_at=created_at+CASE category WHEN 'technical' THEN interval '720 hours' ELSE interval '8760 hours' END),
  CHECK((category='technical' AND mission_id IS NULL) OR (category='mission' AND mission_id IS NOT NULL AND mission_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')),
+ CHECK((category='technical' AND root_agent_id IS NULL AND request_sha256 IS NULL AND hub_binding_id IS NULL AND hub_binding_version IS NULL)
+ OR (category='mission' AND root_agent_id ~ '^ag_[A-Za-z0-9_-]+$' AND root_agent_id IS NOT NULL
+ AND request_sha256 ~ '^[0-9a-f]{64}$' AND request_sha256 IS NOT NULL
+ AND hub_binding_id IS NOT NULL AND hub_binding_version>0 AND hub_binding_version IS NOT NULL)),
  CHECK((actor_id IS NULL AND tenant_id IS NULL AND service_id IS NULL AND admission='denied')
     OR (actor_id IS NOT NULL AND tenant_id IS NOT NULL AND service_id IS NOT NULL AND tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
         AND service_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'))
@@ -71,6 +81,16 @@ BEGIN
 END $$;
 CREATE TRIGGER credential_identity BEFORE UPDATE ON tools_access.access_credentials
  FOR EACH ROW EXECUTE FUNCTION tools_access.guard_credential();
+CREATE FUNCTION tools_access.guard_hub_binding() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF ROW(OLD.id,OLD.issuer,OLD.subject,OLD.owner_id,OLD.actor_id,OLD.tenant_id,OLD.service_id,OLD.created_at,OLD.expires_at)
+ IS DISTINCT FROM ROW(NEW.id,NEW.issuer,NEW.subject,NEW.owner_id,NEW.actor_id,NEW.tenant_id,NEW.service_id,NEW.created_at,NEW.expires_at)
+ OR NEW.version<>OLD.version+1 OR OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL
+ THEN RAISE EXCEPTION 'immutable binding identity or expiry'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER hub_binding_identity BEFORE UPDATE ON tools_access.hub_actor_bindings
+ FOR EACH ROW EXECUTE FUNCTION tools_access.guard_hub_binding();
 CREATE FUNCTION tools_access.guard_history() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN RAISE EXCEPTION 'append only activity'; END $$;
 CREATE TRIGGER immutable_calls BEFORE UPDATE ON tools_access.activity_calls FOR EACH ROW EXECUTE FUNCTION tools_access.guard_history();
@@ -130,11 +150,11 @@ BEGIN
  DELETE FROM tools_access.access_credentials c WHERE c.token_hash=ANY(hashes); GET DIAGNOSTICS credentials=ROW_COUNT;
  RETURN NEXT;
 END $$;
-''' + ADMIN_DDL + LOOKUP_DDL + r'''
+''' + ADMIN_DDL + LOOKUP_DDL + HUB_DDL + r'''
 REVOKE ALL ON ALL TABLES IN SCHEMA tools_access FROM PUBLIC;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA tools_access FROM PUBLIC;
 '''
 CHECKSUM = hashlib.sha256(DDL.encode()).hexdigest()
 
-APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)") + ADMIN_ROUTINES + LOOKUP_ROUTINES
+APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)") + ADMIN_ROUTINES + LOOKUP_ROUTINES + HUB_ROUTINES
 MAINTENANCE_ROUTINES = ("purge_expired(integer)",)

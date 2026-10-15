@@ -112,7 +112,7 @@ def get_activity_context() -> dict:
     """Expose les corrélateurs de la trace courante aux journaux admin."""
     allowed = {
         "trace_id", "server_generation", "process_id", "upstream_request_id",
-        "mcp_session_ref", "rpc_request_id", "call_id", "actor", "agent_id",
+        "mcp_session_ref", "rpc_request_id", "call_id", "operation_id", "actor", "agent_id",
         "model", "generation", "client_kind", "tool", "rpc_method",
     }
     return {key: value for key, value in _activity_context.get().items() if key in allowed}
@@ -479,7 +479,8 @@ class ActivityMiddleware:
         headers = dict(scope.get("headers", []))
         upstream_request_id = _safe_meta_value(headers.get(b"x-request-id", b"").decode("latin-1"))
         session_ref = _safe_session_ref(headers.get(b"mcp-session-id", b"").decode("latin-1"))
-        trace_id = f"tr_{uuid.uuid4().hex[:16]}"
+        trace_id = (str(uuid.uuid4()) if _SETTINGS.access_backend == 'postgres'
+                    else f"tr_{uuid.uuid4().hex[:16]}")
         trace_token = _activity_context.set({
             "trace_id": trace_id,
             "server_generation": _SERVER_GENERATION,

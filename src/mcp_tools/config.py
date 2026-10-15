@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     access_vault_token_file: str = ""
     access_vault_ca_file: str = ""
 
+    # Destinataire hub facultatif, séparé du bearer opaque Tools.
+    hub_activity_enabled: bool = False
+    hub_activity_issuer: str = ""
+    hub_activity_audience: str = ""
+    hub_activity_owner: str = ""
+    hub_activity_jwks_url: str = ""
+    hub_activity_check_url: str = ""
+    hub_activity_ca_file: str = ""
+    hub_activity_timeout_seconds: float = Field(default=10, ge=2, le=30)
+    hub_activity_max_inflight: int = Field(default=16, ge=1, le=64)
+    hub_activity_max_body_bytes: int = Field(default=8388608, ge=16384, le=16777216)
+
     # --- S3 (tokens MCP uniquement) ---
     s3_endpoint_url: str = ""
     s3_access_key_id: str = ""

@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit des mutations atomique, pages d'activité filtrées par droits courants.
 - Opérateur public install/verify/bootstrap/purge, API/CLI et console avec
   pagination opaque et versions requises pour les mutations.
+- Destinataire hub optionnel avec mapping local administré, contexte ES256
+  limité à l'admission et batch de métadonnées revalidé avant restitution.
 
 ### Qualification
 

@@ -25,6 +25,7 @@ from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access, current_token_info
 from ..auth.token_store import TokenStoreUnavailable
+from ..auth.postgres_store import AccessMutationUncertain
 from ..observability import traced_tool
 
 
@@ -165,6 +166,9 @@ def register(mcp: MCPServer) -> None:
 
             return {"status": "error", "message": f"Opération '{operation}' non implémentée."}
 
+        except AccessMutationUncertain as e:
+            return {'status': 'uncertain', 'operation_id': e.operation_id,
+                    'message': 'Access mutation not confirmed; inspect without replay'}
         except TokenStoreUnavailable as e:
             # Distinct du fourre-tout ci-dessous, et volontairement : « le
             # magasin est injoignable » et « l'opération a échoué » appellent

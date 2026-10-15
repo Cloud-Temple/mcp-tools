@@ -8,7 +8,9 @@ présenter ce candidat comme prêt au déploiement.
 Le runtime n'initialise pas `_tokens/`, ne charge aucun ancien token et n'utilise
 pas la clé `ADMIN_BOOTSTRAP_KEY`. Chaque opération relit le credential PG avec
 un credential SQL obtenu auprès du Vault public ; pas de cache positif ni de
-secours S3. `/health` reste une sonde de vie, pas une preuve d'autorisation.
+secours S3. `/health` reste une sonde de vie. `/ready` exige aussi le contrat
+PG, l'identité SQL et les routines app accessibles avec une connexion fraîche.
+Une panne accès PG produit503 ; la liveness reste indépendante.
 
 ## Installation autonome
 
@@ -61,7 +63,8 @@ fermée et faire réconcilier cet état par l'opérateur, sans rejouer le bootst
 La console détecte le profil depuis `/admin/api/me`. La création demande tenant
 et service ; acteur UUID optionnel pour une rotation explicite. Tenant, service,
 acteur et échéance d'un credential existant ne sont pas modifiables. Un renommage
-ne remplace pas l'acteur. Le brut ne revient qu'à la création.
+ne remplace pas l'acteur. Le brut ne revient qu'à la création. La réponse de
+création n'invente pas `created_at` : lire sa valeur canonique SQL par list/info.
 
 En profil PG, les références sont les préfixes12hex retournés par `list/info`,
 jamais un nom client utilisé pour choisir silencieusement une cible. Une collision
@@ -100,11 +103,78 @@ contient l'identifiant de l'admission à inspecter. Une révocation ne supprime 
 un effet déjà produit. Les attentes de slots S3 sont suivies d'une revalidation
 avant dispatch. Le journal SQL conserve uniquement des métadonnées autorisées,
 jamais arguments, corps, stdout, bearer ni contenu de fichier.
+Les UUID call/trace/op sont établis avant admission. L'opération files PG et
+l'audit atomique d'une mutation d'accès partagent cet operation_id ; l'appel
+diagnostic et l'en-tête HTTP de trace utilisent le même trace_id. Les refus
+anonymes restent dans le diagnostic borné, sans identité client libre conservée.
 
-Standalone : rétention technique30j, immuable. L'annotation annuelle et le batch
-hub restent non raccordés à ce stade ; une metadata Mission libre ne devient
-jamais une corrélation de confiance. Le profil ne revendique pas une qualification
-flotte déléguée. Aucune dépendance fonctionnelle à179/844 n'est ajoutée.
+Standalone : rétention technique30j, immuable. Une metadata Mission libre ne
+devient jamais une corrélation de confiance. Aucune dépendance fonctionnelle
+à179/844 n'est ajoutée.
+
+## Destinataire hub optionnel
+
+Le destinataire Tools est candidat et testé sur un émetteur ES256 contrôlé.
+Il ne modifie pas l'émetteur Mission/Agent. L'émetteur courant doit prendre en
+charge le contrat Tools ci-dessous pour activer ce profil ; le contrat Agent
+`hub-agent-reports-v1` ne convient pas. La qualification flotte déléguée reste
+non livrée tant que ce raccord réel n'a pas été testé. Laisser le profil désactivé
+n'affecte pas le standalone.
+
+Configurer `HUB_ACTIVITY_ENABLED=true`, `HUB_ACTIVITY_ISSUER`, audience exacte
+`HUB_ACTIVITY_AUDIENCE` de cette instance Tools, owner producteur
+`HUB_ACTIVITY_OWNER`, URLs HTTPS `HUB_ACTIVITY_JWKS_URL` et
+`HUB_ACTIVITY_CHECK_URL` du même processus émetteur, et CA
+`HUB_ACTIVITY_CA_FILE`. Le contrôle live doit exposer le contrat828 : POST
+avec Authorization Bearer du JWT et objet vide, réponse exacte `{"active":true}`.
+Un jti inconnu/expiré/révoqué, un redémarrage ou une panne ferme l'accès. Pas de
+redirection, d'URL découverte depuis le JWT ni de clé secrète Mission côté Tools.
+Timeout10s (2–30), maximum16 requêtes en vol (1–64), corps de contexte8MiB
+(16KiB–16MiB) ; le batch est borné à16KiB. Aucun JWT n'est retourné ou persisté.
+
+L'administrateur Tools crée d'abord un mapping explicite local, sous bearer
+opaque admin PG, par `POST /admin/api/hub-bindings` : objet exact `actor_id`
+(UUID Tools existant), `issuer`, `subject`, `owner_id`, `tenant_id`, `expires_at`
+(ISO8601 UTC futur). Aucun rapprochement par nom client. Consulter par
+`GET /admin/api/hub-bindings?actor_id=UUID&limit=50` et suivre `next_cursor`.
+Révoquer par `DELETE /admin/api/hub-bindings/UUID?expected_version=N` ; mutation
+et audit sont atomiques. L'association/rétention n'est jamais prolongée par une
+lecture ; après révocation, une nouvelle association demande une création
+explicite. Ces routes HTTP servent à l'administration opérateur ; la console
+de tokens n'expose pas de mapping automatique.
+
+Les deux usages portent un JWT ES256/P-256 avec kid JWKS unique, issuer/audience
+épinglés, `sub`, `jti`, `iat`, `nbf`, `exp` entiers, `nbf=iat`, TTL positif<=30s
+et plafonné par l'accès source de l'émetteur. Claims exacts de capacité :
+`purpose=hub-tools-activity-v1`, `permissions=["tools.activity.context"]` ou
+`["tools.activity.read"]`, owner/tenant correspondants, `mission_id=mis_…`,
+`root_agent_id=ag_…`, `resources=[mission_id]`, `request_sha256` SHA256 des octets
+UTF-8 exacts du corps HTTP. Les propriétés JSON dupliquées sont refusées.
+Le JWT va dans `X-Tools-Activity-Context` ; Authorization reste le bearer opaque
+Tools, jamais le JWT hub. Ce JWT ne donne aucun droit d'exécution MCP/admin.
+
+Contexte : POST `/mcp` avec une seule requête JSON-RPC `tools/call`, plus claims
+`tool_id` égal au nom appelé et `call_id` UUID unique choisi avant émission.
+Un contexte signé est consommé une fois. Juste avant admission, Tools contrôle
+signature/contrôle live, mapping non expiré/révoqué et droits opaques frais.
+SQL vérifie encore les expirations au point d'insertion. L'admission annuelle
+conserve mission/root/call/empreinte et version du mapping, jamais le corps.
+L'expiration du contexte pendant un outil long ne réécrit pas son historique et
+ne remet pas en cause un effet déjà produit. L'accès Tools est revalidé avant
+effet, même avec un contexte valide ; une annotation invérifiable refuse l'appel.
+
+Batch : POST `/internal/hub/tools-activity`, corps exact `mission_id`,
+`root_agent_id`, `limit` entier1–100, `cursor` opaque facultatif. Le JWT porte
+uniquement `tools.activity.read`. La lecture exige l'intersection acteur/tenant/
+service/mission/root et outils actuellement accessibles, y compris pour un
+lecteur admin (aucun élargissement inter-acteurs via ce batch). Les curseurs
+restent liés à l'accès/version, mission et mapping/version/expiry ; la délégation
+courte est renouvelée pour chaque requête. Vérification live avant lecture et
+immédiatement avant réponse, avec relecture locale accès/mapping : expiration,
+révocation ou changement => zéro donnée. Seules les métadonnées du journal sont
+restituées, sans hash complet, empreinte du corps, contenu ou bearer ; no-store.
+
+## Maintenance et rollback
 
 La purge appartient au rôle maintenance, pas à l'app ni à la console :
 

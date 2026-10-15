@@ -36,6 +36,8 @@ BEGIN
  AND ROW(c.tenant_id,c.service_id) IS DISTINCT FROM ROW(requested_tenant,requested_service))
  OR EXISTS(SELECT 1 FROM tools_access.activity_calls c WHERE c.actor_id=requested_actor
  AND ROW(c.tenant_id,c.service_id) IS DISTINCT FROM ROW(requested_tenant,requested_service))
+ OR EXISTS(SELECT 1 FROM tools_access.hub_actor_bindings b WHERE b.actor_id=requested_actor
+ AND ROW(b.tenant_id,b.service_id) IS DISTINCT FROM ROW(requested_tenant,requested_service))
  THEN RAISE EXCEPTION 'actor identity cannot move'; END IF;
  INSERT INTO tools_access.access_credentials(token_hash,actor_id,tenant_id,service_id,client_name,
  permissions,tool_ids,expires_at,version)

@@ -146,6 +146,8 @@ def create_app():
 
     app = mcp.streamable_http_app(host=settings.mcp_server_host)
     app = AuthMiddleware(app)
+    from .auth.hub_activity import HubActivityMiddleware
+    app = HubActivityMiddleware(app, settings)
     app = HealthCheckMiddleware(app)
     app = AdminMiddleware(app, mcp)  # /admin, /admin/static/*, /admin/api/*
     # Doit envelopper AdminMiddleware : sinon les appels /admin/api sont
@@ -173,9 +175,19 @@ class HealthCheckMiddleware:
                 version = version_file.read_text().strip()
             from .storage.files_lifecycle import lifecycle
             ready = await lifecycle.probe(settings) if scope.get("path") == "/ready" else True
+            access = None
+            if scope.get("path") == "/ready" and settings.access_backend == 'postgres':
+                from .auth.access_runtime import get_access_store
+                from .auth.token_store import TokenStoreUnavailable
+                try:
+                    access = 'ready' if await get_access_store().ready() else 'unavailable'
+                except TokenStoreUnavailable:
+                    access = 'unavailable'
+                ready = ready and access == 'ready'
             body = json.dumps({
                 "status": "healthy" if ready else "not_ready",
                 **({"storage": lifecycle.state} if scope.get("path") == "/ready" else {}),
+                **({"access": access} if access is not None else {}),
                 "service": settings.mcp_server_name,
                 "version": version,
                 "transport": "streamable-http",

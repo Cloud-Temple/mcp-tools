@@ -4,6 +4,7 @@ from urllib.parse import parse_qs
 
 from ..auth.access_runtime import get_access_store
 from ..auth.context import current_token_info
+from ..auth.postgres_store import AccessMutationUncertain
 
 
 async def handle_postgres_admin(scope, receive, send, mcp):
@@ -41,12 +42,22 @@ async def handle_postgres_admin(scope, receive, send, mcp):
             return await _send_json(send, await store.activity_page(requester, cursor=cursor, limit=limit))
         if path == '/admin/api/tokens' and method == 'GET':
             return await _send_json(send, await store.list_credentials(requester, cursor=cursor, limit=limit))
+        if path == '/admin/api/hub-bindings' and method == 'GET':
+            return await _send_json(send, await store.list_hub_bindings(requester,
+                query.get('actor_id', [''])[0], cursor=cursor, limit=limit))
         data = None
         if method in ('POST', 'PUT'):
             data = json.loads(await _read_body(receive))
             if not isinstance(data, dict):
                 raise ValueError('Access object required')
-        if path == '/admin/api/tokens' and method == 'POST':
+        if path == '/admin/api/hub-bindings' and method == 'POST':
+            if set(data) != {'actor_id', 'issuer', 'subject', 'owner_id', 'tenant_id', 'expires_at'}:
+                raise ValueError('Exact binding fields required')
+            result = await store.create_hub_binding(requester, **data)
+        elif path.startswith('/admin/api/hub-bindings/') and method == 'DELETE':
+            result = await store.revoke_hub_binding(requester, path.rsplit('/', 1)[-1],
+                int(query.get('expected_version', [''])[0]))
+        elif path == '/admin/api/tokens' and method == 'POST':
             allowed = {'client_name', 'tenant_id', 'service_id', 'actor_id', 'permissions', 'tool_ids', 'expires_days'}
             if set(data)-allowed:
                 raise ValueError('Unsupported access field')
@@ -72,6 +83,9 @@ async def handle_postgres_admin(scope, receive, send, mcp):
         else:
             return await _send_json(send, {'status': 'error', 'message': 'Unknown route'}, 404)
         return await _send_json(send, result)
+    except AccessMutationUncertain as error:
+        return await _send_json(send, {'status': 'uncertain', 'operation_id': error.operation_id,
+            'message': 'Access mutation not confirmed; inspect without replay'}, 503)
     except (ValueError, TypeError):
         return await _send_json(send, {'status': 'error', 'message': 'Invalid access request or stale version'}, 400)
     finally:

@@ -71,7 +71,8 @@ RUN ARCH=$(dpkg --print-architecture) && \
 COPY requirements.txt requirements.lock requirements-postgres.txt requirements-postgres.lock ./
 RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir --no-deps --require-hashes -r requirements-postgres.lock \
-    && pip check
+    && pip check \
+    && python -c "import psycopg; assert psycopg.capabilities.has_cancel_safe(), 'libpq 17+ required'"
 
 # Créer un utilisateur non-root pour la sécurité
 RUN groupadd -r mcp && useradd -r -g mcp -d /app -s /sbin/nologin mcp

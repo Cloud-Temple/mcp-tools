@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.mcp_tools.auth.postgres_store import PostgresAccessStore
+from src.mcp_tools.auth.postgres_store import PostgresAccessStore, AccessMutationUncertain
 from src.mcp_tools.auth.token_store import TokenStoreUnavailable
 
 
@@ -44,11 +44,14 @@ def test_create_returns_raw_only_after_commit_and_never_sends_it_to_sql():
         assert raw and raw not in json.dumps(store.calls, default=str)
         assert store.calls[0][1][2] == hashlib.sha256(raw.encode()).hexdigest()
         assert 'token_hash' not in result
+        assert 'created_at' not in result  # seule la liste/info restitue l'horloge SQL canonique
         store.uncertain = True
-        with pytest.raises(TokenStoreUnavailable):
+        with pytest.raises(AccessMutationUncertain) as unknown:
             await store.create('requester', client_name='reader2', tenant_id='tenant',
                 service_id='tools', permissions=['access'], tool_ids=['files'])
         assert len(store.calls) == 2
+        assert unknown.value.operation_id == store.calls[-1][1][1]
+        assert raw not in str(unknown.value)
     asyncio.run(scenario())
 
 

@@ -1,11 +1,12 @@
 """Raccord async explicite PG ; aucune lecture S3 ni bypass bootstrap dans ce profil."""
 import asyncio
+import inspect
 from functools import lru_cache
 import re
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from ..config import get_settings
-from .context import current_token_info, check_tool_access
+from .context import current_token_info, current_access_operation, check_tool_access
 from .postgres_credentials import AccessCredentials
 from .postgres_store import PostgresAccessStore
 from .token_store import TokenStoreUnavailable
@@ -45,13 +46,42 @@ async def run_durable_tool(tool, function, args, kwargs):
     if get_settings().access_backend != 'postgres':
         return await function(*args, **kwargs)
     store = get_access_store()
-    call_id, trace_id = str(uuid4()), str(uuid4())
+    from ..observability import get_activity_context, bind_activity
+    from .hub_activity import current_hub_context
+    delegation = current_hub_context.get()
+    call_id = str(uuid4())
+    if delegation is not None:
+        if delegation.consumed or delegation.claims['tool_id'] != tool:
+            raise ValueError('Delegation does not match this admission')
+        delegation.consumed = True
+        call_id = delegation.claims['call_id']
+    try:
+        trace_id = str(UUID(get_activity_context().get('trace_id', '')))
+    except (ValueError, AttributeError, TypeError):
+        trace_id = str(uuid4())
+    operation_id = str(uuid4())
+    bound = inspect.signature(function).bind_partial(*args, **kwargs)
+    if tool == 'files' and 'operation_id' in inspect.signature(function).parameters:
+        requested = bound.arguments.get('operation_id')
+        if requested is not None:
+            operation_id = str(UUID(str(requested)))
+        elif (bound.arguments.get('operation') in {'write', 'concat', 'delete'}
+              and get_settings().files_metadata_backend == 'postgres'):
+            bound.arguments['operation_id'] = operation_id
+        args, kwargs = bound.args, bound.kwargs
+    bind_activity(trace_id=trace_id, call_id=call_id, operation_id=operation_id)
     binding = current_binding()
-    admitted = await store.admit_binding(call_id=call_id, binding=binding,
-                                         tool=tool, trace_id=trace_id)
+    if delegation is not None:
+        await delegation.active()
+        admitted = await store.admit_mission(call_id=call_id, binding=binding,
+            tool=tool, trace_id=trace_id, operation_id=operation_id, claims=delegation.claims)
+    else:
+        admitted = await store.admit_binding(call_id=call_id, binding=binding,
+                                             tool=tool, trace_id=trace_id, operation_id=operation_id)
     if not admitted:
         await store.finish(call_id, 'denied')
         return {'status': 'error', 'message': 'Access denied', 'activity_call_id': call_id}
+    context = current_access_operation.set(operation_id)
     try:
         await refresh_access(tool)
         result = await function(*args, **kwargs)
@@ -68,6 +98,8 @@ async def run_durable_tool(tool, function, args, kwargs):
         except TokenStoreUnavailable:
             raise TokenStoreUnavailable('Activity terminal unavailable or uncertain') from None
         raise
+    finally:
+        current_access_operation.reset(context)
     status = result.get('status') if isinstance(result, dict) else None
     outcome = ('uncertain' if status in {'unavailable', 'uncertain'} else
                'failed' if status in {'error', 'failed'} else 'completed')

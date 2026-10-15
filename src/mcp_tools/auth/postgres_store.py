@@ -12,10 +12,18 @@ from uuid import UUID, uuid4
 
 from .postgres_contract import Credential, authenticate_row, utc
 from .access_cursors import AccessCursors
+from .context import current_access_operation
 from .token_store import TokenStoreUnavailable
 
 # Retenir les tâches jusqu'à leur terminaison, même pendant l'arrêt d'un appel.
 _ACTIVE: set[asyncio.Task] = set()
+
+
+class AccessMutationUncertain(TokenStoreUnavailable):
+    """Référence publique disponible même si le COMMIT n'est pas confirmé."""
+    def __init__(self, operation_id):
+        super().__init__('Access mutation unavailable or uncertain; inspect without replay')
+        self.operation_id = operation_id
 
 
 def _finished(task):
@@ -120,6 +128,16 @@ class PostgresAccessStore:
         binding = hashlib.sha256(bearer.encode()).hexdigest()
         return await self.authenticate_binding(binding)
 
+    async def ready(self):
+        """Contrat, identité et privilèges frais, sans credential utilisateur."""
+        from .postgres_schema import APP_ROUTINES
+        routines = ['tools_access.' + name for name in APP_ROUTINES]
+        rows = await self._run("SELECT bool_and(has_function_privilege(current_user,r,'EXECUTE')) AS allowed "
+            "FROM unnest(%s::text[]) r", (routines,))
+        if rows != [{'allowed': True}]:
+            raise TokenStoreUnavailable('Access SQL grants unavailable')
+        return True
+
     async def authenticate_binding(self, binding):
         rows = await self._run('SELECT * FROM tools_access.credential_get(%s)', (binding,))
         if len(rows) > 1:
@@ -193,6 +211,15 @@ class PostgresAccessStore:
             raise ValueError('Access reference absent or ambiguous; refresh the list')
         return Credential.from_row(rows[0])
 
+    async def _mutation(self, query, parameters, operation, *, changed=True):
+        try:
+            rows = await self._run(query, parameters)
+            if changed:
+                self._changed(rows)
+            return rows
+        except TokenStoreUnavailable:
+            raise AccessMutationUncertain(operation) from None
+
     async def info(self, requester, reference):
         current = await self._target(requester, reference)
         return {'status': 'success', **current.public_view(),
@@ -211,14 +238,17 @@ class PostgresAccessStore:
             permissions=permissions, tool_ids=tool_ids, created_at=now,
             expires_at=now+timedelta(days=expires_days) if expires_days else None,
             revoked_at=None, version=1))
-        operation = str(uuid4())
-        rows = await self._run('SELECT tools_access.credential_create(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS changed',
+        operation = current_access_operation.get() or str(uuid4())
+        await self._mutation('SELECT tools_access.credential_create(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS changed',
             (requester, operation, current.token_hash, current.actor_id, tenant_id, service_id,
-             client_name, list(current.permissions), list(current.tool_ids), current.expires_at))
-        self._changed(rows)
+             client_name, list(current.permissions), list(current.tool_ids), current.expires_at), operation)
         # Le brut n'est publié qu'après l'ACK confirmé de COMMIT par _run.
+        public = current.public_view()
+        # created_at est DEFAULT clock_timestamp() en SQL : ne pas fabriquer
+        # une date canonique depuis l'horloge du processus avant l'insertion.
+        public.pop('created_at', None)
         return {'status': 'success', 'token': raw, 'token_prefix': current.token_hash[:12],
-                'operation_id': operation, **current.public_view()}
+                'operation_id': operation, **public}
 
     @staticmethod
     def _request_credential(row):
@@ -242,21 +272,19 @@ class PostgresAccessStore:
             'permissions': list(current.permissions) if permissions is None else permissions,
             'tool_ids': list(current.tool_ids) if tool_ids is None else tool_ids,
             'client_name': current.client_name if client_name is None else client_name})
-        operation = str(uuid4())
-        rows = await self._run('SELECT tools_access.credential_update(%s,%s,%s,%s,%s,%s,%s) AS changed',
+        operation = current_access_operation.get() or str(uuid4())
+        await self._mutation('SELECT tools_access.credential_update(%s,%s,%s,%s,%s,%s,%s) AS changed',
             (requester, operation, current.token_hash, expected_version, proposed.client_name,
-             list(proposed.permissions), list(proposed.tool_ids)))
-        self._changed(rows)
+             list(proposed.permissions), list(proposed.tool_ids)), operation)
         return {'status': 'success', 'operation_id': operation, 'version': expected_version+1}
 
     async def revoke(self, requester, reference, expected_version):
         current = await self._target(requester, reference)
         if type(expected_version) is not int or expected_version != current.version:
             raise ValueError('Access version conflict; refresh before retrying')
-        operation = str(uuid4())
-        rows = await self._run('SELECT tools_access.credential_revoke(%s,%s,%s,%s) AS changed',
-            (requester, operation, current.token_hash, expected_version))
-        self._changed(rows)
+        operation = current_access_operation.get() or str(uuid4())
+        await self._mutation('SELECT tools_access.credential_revoke(%s,%s,%s,%s) AS changed',
+            (requester, operation, current.token_hash, expected_version), operation)
         return {'status': 'success', 'operation_id': operation, 'version': expected_version+1,
                 'revoked': True}
 
@@ -280,3 +308,80 @@ class PostgresAccessStore:
         if len(rows) != 1 or type(rows[0].get('inserted')) is not bool:
             raise TokenStoreUnavailable('Access terminal invalid')
         return rows[0]['inserted']
+
+    async def hub_binding(self, requester, claims):
+        rows = await self._run('SELECT * FROM tools_access.hub_binding_get(%s,%s,%s,%s,%s)',
+            (requester, claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id']))
+        if len(rows) != 1:
+            raise ValueError('Current local hub binding required')
+        row = rows[0]
+        if (row['revoked_at'] is not None or utc(row['expires_at']) <= datetime.now(timezone.utc)):
+            raise ValueError('Local hub binding expired or revoked')
+        return row
+
+    async def admit_mission(self, *, call_id, binding, tool, trace_id, operation_id, claims):
+        ids = tuple(str(UUID(str(value))) for value in (call_id, trace_id, operation_id))
+        rows = await self._run('SELECT tools_access.admit_mission(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS admitted',
+            (ids[0], binding, tool, ids[1], ids[2], claims['iss'], claims['sub'], claims['owner_id'],
+             claims['tenant_id'], claims['mission_id'], claims['root_agent_id'], claims['request_sha256'],
+             datetime.fromtimestamp(claims['exp'], timezone.utc)))
+        if rows != [{'admitted': True}]:
+            raise ValueError('Mission admission refused')
+        return True
+
+    async def hub_activity_page(self, requester, info, local, claims, *, cursor=None, limit=50):
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Invalid batch limit')
+        binding = (requester, info['actor_id'], info['tenant_id'], info['service_id'], info['version'],
+            'hub-activity', str(local['id']), local['version'], str(local['expires_at']),
+            claims['iss'], claims['sub'], claims['owner_id'], claims['mission_id'], claims['root_agent_id'], limit)
+        stamp, call = self.cursors.resolve(cursor, binding) if cursor is not None else (None, None)
+        rows = await self._run('SELECT * FROM tools_access.hub_activity_page(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+            (requester, claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id'],
+             claims['mission_id'], claims['root_agent_id'], stamp, call, limit))
+        fields = ('call_id', 'actor_id', 'tenant_id', 'service_id', 'tool', 'trace_id', 'operation_id',
+                  'mission_id', 'category', 'admission', 'created_at', 'expires_at', 'outcome', 'target_actor_id')
+        calls = [{key: str(row[key]) if isinstance(row[key], (UUID, datetime)) else row[key]
+                  for key in fields} for row in rows]
+        cursor = self.cursors.issue(binding, (rows[-1]['created_at'], rows[-1]['call_id'])) if len(rows) == limit else None
+        return {'calls': calls, 'count': len(calls), 'next_cursor': cursor, 'page_complete': True}
+
+    async def create_hub_binding(self, requester, *, actor_id, issuer, subject, owner_id, tenant_id, expires_at):
+        # Expiry et identités sont ensuite contraintes par SQL ; pas de mapping implicite.
+        operation = current_access_operation.get() or str(uuid4())
+        expiry = utc(datetime.fromisoformat(expires_at))
+        rows = await self._mutation('SELECT tools_access.hub_binding_create(%s,%s,%s,%s,%s,%s,%s,%s) AS binding_id',
+            (requester, operation, str(UUID(actor_id)), issuer, subject, owner_id, tenant_id, expiry), operation, changed=False)
+        if len(rows) != 1 or not rows[0].get('binding_id'):
+            raise AccessMutationUncertain(operation)
+        return {'status': 'success', 'binding_id': str(rows[0]['binding_id']), 'version': 1,
+                'operation_id': operation}
+
+    async def revoke_hub_binding(self, requester, binding_id, expected_version):
+        if type(expected_version) is not int or expected_version < 1:
+            raise ValueError('Expected binding version required')
+        operation = current_access_operation.get() or str(uuid4())
+        await self._mutation('SELECT tools_access.hub_binding_revoke(%s,%s,%s,%s) AS changed',
+            (requester, operation, str(UUID(binding_id)), expected_version), operation)
+        return {'status': 'success', 'binding_id': binding_id, 'version': expected_version+1,
+                'revoked': True, 'operation_id': operation}
+
+    async def list_hub_bindings(self, requester, actor_id, *, cursor=None, limit=50):
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Invalid binding page limit')
+        actor_id = str(UUID(actor_id))
+        info = await self._reader(requester)
+        if 'admin' not in info['permissions']:
+            raise ValueError('Current admin required')
+        binding = (requester, info['version'], 'hub-bindings', actor_id, limit)
+        after = self.cursors.resolve(cursor, binding) if cursor is not None else None
+        rows = await self._run('SELECT * FROM tools_access.hub_binding_list(%s,%s,%s,%s)',
+                                (requester, actor_id, after, limit))
+        fresh = await self._reader(requester)
+        if fresh['version'] != info['version'] or 'admin' not in fresh['permissions']:
+            raise ValueError('Admin changed during read')
+        public = [{key: str(value) if isinstance(value, (datetime, UUID)) else value
+                   for key, value in row.items()} for row in rows]
+        cursor = self.cursors.issue(binding, rows[-1]['id']) if len(rows) == limit else None
+        return {'status': 'success', 'bindings': public, 'count': len(public),
+                'next_cursor': cursor, 'page_complete': True}
