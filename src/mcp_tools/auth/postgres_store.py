@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 import time
-from datetime import datetime, timezone
-from uuid import UUID
+from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
 
-from .postgres_contract import authenticate_row
+from .postgres_contract import Credential, authenticate_row
 from .access_cursors import AccessCursors
 from .token_store import TokenStoreUnavailable
 
@@ -165,6 +166,72 @@ class PostgresAccessStore:
                    for k in fields} for row in rows]
         return {'status': 'ok', 'calls': public, 'count': len(public),
                 'next_cursor': continuation, 'page_complete': True}
+
+    async def _target(self, requester, reference):
+        rows = await self._run('SELECT * FROM tools_access.credential_target(%s,%s)',
+                               (requester, reference))
+        if len(rows) != 1:
+            raise ValueError('Access reference absent or ambiguous; refresh the list')
+        return Credential.from_row(rows[0])
+
+    async def info(self, requester, reference):
+        current = await self._target(requester, reference)
+        return {'status': 'success', 'token': current.public_view(),
+                'token_prefix': current.token_hash[:12]}
+
+    async def create(self, requester, *, client_name, tenant_id, service_id,
+                     permissions, tool_ids, expires_days=90, actor_id=None):
+        if type(expires_days) is not int or not 0 <= expires_days <= 3650:
+            raise ValueError('Access expiry must be between 0 and 3650 days')
+        raw = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        current = Credential.from_row(dict(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            actor_id=str(UUID(str(actor_id))) if actor_id is not None else str(uuid4()),
+            tenant_id=tenant_id, service_id=service_id, client_name=client_name,
+            permissions=permissions, tool_ids=tool_ids, created_at=now,
+            expires_at=now+timedelta(days=expires_days) if expires_days else None,
+            revoked_at=None, version=1))
+        operation = str(uuid4())
+        rows = await self._run('SELECT tools_access.credential_create(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS changed',
+            (requester, operation, current.token_hash, current.actor_id, tenant_id, service_id,
+             client_name, list(current.permissions), list(current.tool_ids), current.expires_at))
+        self._changed(rows)
+        # Le brut n'est publié qu'après l'ACK confirmé de COMMIT par _run.
+        return {'status': 'success', 'token': raw, 'token_prefix': current.token_hash[:12],
+                'operation_id': operation, **current.public_view()}
+
+    @staticmethod
+    def _changed(rows):
+        if len(rows) != 1 or rows[0].get('changed') is not True:
+            raise TokenStoreUnavailable('Access mutation unconfirmed')
+
+    async def update(self, requester, reference, expected_version, *, permissions=None,
+                     tool_ids=None, client_name=None):
+        current = await self._target(requester, reference)
+        if type(expected_version) is not int or expected_version != current.version:
+            raise ValueError('Access version conflict; refresh before retrying')
+        # Validation locale stricte ; la routine SQL vérifie à nouveau ses contraintes.
+        proposed = Credential.from_row({**current.__dict__,
+            'permissions': list(current.permissions) if permissions is None else permissions,
+            'tool_ids': list(current.tool_ids) if tool_ids is None else tool_ids,
+            'client_name': current.client_name if client_name is None else client_name})
+        operation = str(uuid4())
+        rows = await self._run('SELECT tools_access.credential_update(%s,%s,%s,%s,%s,%s,%s) AS changed',
+            (requester, operation, current.token_hash, expected_version, proposed.client_name,
+             list(proposed.permissions), list(proposed.tool_ids)))
+        self._changed(rows)
+        return {'status': 'success', 'operation_id': operation, 'version': expected_version+1}
+
+    async def revoke(self, requester, reference, expected_version):
+        current = await self._target(requester, reference)
+        if type(expected_version) is not int or expected_version != current.version:
+            raise ValueError('Access version conflict; refresh before retrying')
+        operation = str(uuid4())
+        rows = await self._run('SELECT tools_access.credential_revoke(%s,%s,%s,%s) AS changed',
+            (requester, operation, current.token_hash, expected_version))
+        self._changed(rows)
+        return {'status': 'success', 'operation_id': operation, 'version': expected_version+1,
+                'revoked': True}
 
     async def admit(self, *, call_id, bearer, tool, trace_id, operation_id=None):
         # UUIDs fournis avant toute écriture ; aucun renouvellement si incertitude.

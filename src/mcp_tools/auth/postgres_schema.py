@@ -3,6 +3,7 @@
 import hashlib
 
 from .postgres_admin_schema import ADMIN_DDL, ADMIN_ROUTINES
+from .postgres_admin_lookup import LOOKUP_DDL, LOOKUP_ROUTINES
 
 VERSION = 1
 DDL = r'''
@@ -129,11 +130,11 @@ BEGIN
  DELETE FROM tools_access.access_credentials c WHERE c.token_hash=ANY(hashes); GET DIAGNOSTICS credentials=ROW_COUNT;
  RETURN NEXT;
 END $$;
-''' + ADMIN_DDL + r'''
+''' + ADMIN_DDL + LOOKUP_DDL + r'''
 REVOKE ALL ON ALL TABLES IN SCHEMA tools_access FROM PUBLIC;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA tools_access FROM PUBLIC;
 '''
 CHECKSUM = hashlib.sha256(DDL.encode()).hexdigest()
 
-APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)") + ADMIN_ROUTINES
+APP_ROUTINES = ("credential_get(text)", "admit_technical(uuid,text,text,uuid,uuid)", "finish_activity(uuid,text)") + ADMIN_ROUTINES + LOOKUP_ROUTINES
 MAINTENANCE_ROUTINES = ("purge_expired(integer)",)
