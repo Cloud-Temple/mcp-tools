@@ -212,11 +212,10 @@ MUTATIONS = [
 
     dict(id="M17", fichier=MW,
          titre="C2 le middleware MCP ne traite plus l'indisponibilite",
-         avant="""            try:
-                token_info = self._validate_token(token)
-            except TokenStoreUnavailable:""",
-         apres="""            token_info = self._validate_token(token)
-            if False:"""),
+         # Le dispatch async PG et le profil S3 partagent ce même handler.
+         # Désactiver sa capture conserve la mutation fonctionnelle de503.
+         avant="""            except TokenStoreUnavailable:""",
+         apres="""            except ():"""),
 
     dict(id="M18", fichier=AM,
          titre="C2 le routeur admin ne traite plus l'indisponibilite",
