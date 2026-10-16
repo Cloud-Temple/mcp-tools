@@ -37,7 +37,8 @@ CREATE TABLE tools_access.access_credentials (
  tenant_id text NOT NULL CHECK(tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
  service_id text NOT NULL CHECK(service_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
  client_name text NOT NULL CHECK(client_name ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
- permissions text[] NOT NULL CHECK(permissions <@ ARRAY['access','admin']::text[] AND array_position(permissions,NULL) IS NULL
+ permissions text[] NOT NULL CHECK(permissions <@ ARRAY['access','admin','hub_read']::text[] AND array_position(permissions,NULL) IS NULL
+    AND (NOT ('hub_read'=ANY(permissions)) OR permissions=ARRAY['hub_read']::text[])
     AND cardinality(permissions)<=2 AND (cardinality(permissions)=0 OR (array_ndims(permissions)=1 AND array_lower(permissions,1)=1))
     AND (cardinality(permissions)<2 OR permissions[1]<>permissions[2])),
  tool_ids text[] NOT NULL CHECK(tools_access.valid_tools(tool_ids)),

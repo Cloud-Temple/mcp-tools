@@ -27,7 +27,8 @@ def utc(value):
 def _strings(value, *, permissions=False):
     if (not isinstance(value, list) or not all(isinstance(v, str) for v in value)
             or len(value) != len(set(value))
-            or (not set(value) <= {"access", "admin"} if permissions else any(not _TOOL.fullmatch(v) for v in value))):
+            or (not set(value) <= {"access", "admin", "hub_read"} if permissions else any(not _TOOL.fullmatch(v) for v in value))
+            or (permissions and "hub_read" in value and value != ["hub_read"])):
         raise TokenStoreUnavailable("Access scopes invalid")
     return tuple(value)
 

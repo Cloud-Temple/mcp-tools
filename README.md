@@ -1,5 +1,9 @@
 # 🔧 MCP Tools
 
+Lecture hub [Mission843](docs/postgres/hub-mission-843.md) : lecteur `hub_read`
+sans exécution MCP, activité filtrée et références/contenu des publications Files
+exactes. Candidat désactivé avec le hub ; qualification native843 encore attendue.
+
 > **Bibliothèque d'outils exécutables pour agents IA** — Serveur MCP Cloud Temple
 >
 > [English version](README.EN.md)

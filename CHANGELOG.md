@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mission #846 (préparation) : segments techniques UTC privés, issus des codes
   du diagnostic existant sans payload, et nettoyage opérateur borné à30jours.
   La politique annuelle d'activité et les échéances de sécurité restent séparées.
+- Candidat Mission843 : lecteur local `hub_read` sans exécution MCP/admin,
+  lookup des appels autorisés et lecture du pin Files publié, avec origine
+  serveur immuable. Métadonnées distinctes du contenu S3 ; recette native à venir.
 
 - Candidat #31 : accès PostgreSQL explicites, contrôle frais avant admission,
   audit des mutations atomique, pages d'activité filtrées par droits courants.
