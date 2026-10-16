@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Candidat Mission843 : lecteur local `hub_read` sans exécution MCP/admin,
   lookup des appels autorisés et lecture du pin Files publié, avec origine
   serveur immuable. Métadonnées distinctes du contenu S3 ; recette native à venir.
+- #845 : retrait logique ferme aussi les lectures historiques/version_id ;
+  registre privé maintenance et récupération opérateur du pin exact conservé
+  au moins trente jours après ACK. Collecte protégée par les dépendances et
+  inventaires PITR frais, aucun DELETE répété après réponse inconnue.
+  Extension neuve non qualifiée nativement ; projection SQL absente refuse
+  l'installation et l'activation.
 
 - Candidat #31 : accès PostgreSQL explicites, contrôle frais avant admission,
   audit des mutations atomique, pages d'activité filtrées par droits courants.
