@@ -25,13 +25,15 @@ class Blobs:
                     s3={"addressing_style": "path"}, retries={"total_max_attempts": 1},
                     connect_timeout=s.files_connect_timeout, read_timeout=10))
 
-    async def run(self, work, *, authorize=True):
+    async def run(self, work, *, authorize=True, hub_read_check=None):
         # Après timeout/annulation le thread peut encore muter S3 : garder son admission
         # jusqu'à sa vraie fin. La réservation/intention survit indépendamment.
         await self.slots.acquire()
         try:
             from ..auth.access_runtime import refresh_access
-            if authorize:
+            if hub_read_check is not None:
+                await hub_read_check()
+            elif authorize:
                 await refresh_access('files')
         except BaseException:
             self.slots.release()
@@ -76,6 +78,15 @@ class Blobs:
         return pin
 
     async def get(self, pin):
+        return await self._get(pin)
+
+    async def get_hub(self, pin, check):
+        """Lecture843 : contrôle hub frais sous le slot, sans simuler access MCP."""
+        if not callable(check):
+            raise StorageUnavailable("Autorité hub de lecture requise")
+        return await self._get(pin, hub_read_check=check)
+
+    async def _get(self, pin, *, hub_read_check=None):
         if pin.get("version_id") in (None, "", "null") or not 0 <= pin.get("size", -1) <= MAX_BYTES:
             raise StorageUnavailable("Pin S3 invalide")
         def consume():
@@ -85,7 +96,7 @@ class Blobs:
                 return r, body.read(pin["size"] + 1)
             finally:
                 body.close()
-        r, b = await self.run(consume)
+        r, b = await self.run(consume, hub_read_check=hub_read_check)
         if r.get("VersionId") != pin["version_id"] or len(b) != pin["size"] or hashlib.sha256(b).hexdigest() != pin["sha256"]:
             raise StorageUnavailable("Contenu S3 non conforme au pin catalogue")
         return b

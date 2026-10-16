@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import psycopg
 import pytest
 from psycopg.pq import DiagnosticField as F
-from src.mcp_tools.auth.postgres_store import _ACTIVE, _HUB_ACCESS_CONFIRM, PostgresAccessStore
+from src.mcp_tools.auth.postgres_store import _ACTIVE, _HUB_ACCESS_CONFIRM, _HUB_FILES_CONFIRM, PostgresAccessStore
 from src.mcp_tools.auth.token_store import TokenStoreUnavailable
 
 from test_hub_activity_31 import Client, Store, cfg, hub, issuer
@@ -72,6 +72,22 @@ def test_only_known_final_sql_business_refusals_become_domain_refusals(monkeypat
     with pytest.raises(ValueError, match="Current local hub access refused"):
         asyncio.run(store._run(_HUB_ACCESS_CONFIRM, ()))
     assert state == {"closed": 1, "operations": 1} and not _ACTIVE
+
+
+@pytest.mark.parametrize('kind', ['known', 'acl', 'schema', 'cancel', 'wrong_origin', 'unexpected'])
+def test_files_final_confirmation_keeps_business_refusal_translation_narrow(monkeypatch, kind):
+    origin = ('PL/pgSQL function tools_access.hub_files_confirm(text,bigint,uuid,bigint,text,text,text,text,text,text,uuid[],uuid[]) '
+              'line 42 at RAISE')
+    error_type = {'schema': psycopg.errors.UndefinedFunction, 'cancel': psycopg.errors.QueryCanceled}.get(
+        kind, psycopg.errors.InsufficientPrivilege)
+    message = ('current hub file access refused' if kind not in {'acl', 'unexpected'} else
+               'permission denied for function hub_files_confirm' if kind == 'acl' else 'other failure')
+    context = origin.replace('tools_access.', 'other.') if kind == 'wrong_origin' else origin
+    state = install_transport(monkeypatch, sql_error(message, context, error_type))
+    store = PostgresAccessStore(Provider(), ca_file='ca', role='app', database='access')
+    with pytest.raises(ValueError if kind == 'known' else TokenStoreUnavailable):
+        asyncio.run(store._run(_HUB_FILES_CONFIRM, ()))
+    assert state == {'closed': 1, 'operations': 1} and not _ACTIVE
 
 
 @pytest.mark.parametrize(
