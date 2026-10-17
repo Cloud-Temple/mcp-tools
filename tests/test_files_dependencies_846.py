@@ -732,8 +732,6 @@ def test_capture_hash_covers_base_recovery_and_dependency_ddl(monkeypatch, tmp_p
         contract.expected_projection(profile)
 
 
-@pytest.mark.xfail(strict=True, reason='files_recovery_contract.json antérieure à operations.origin_call_id '
-                   '(#843) : recapture PG17 845 en attente, j0/run846-dep-r2')
 def test_committed_recovery_capture_matches_the_current_base_schema():
     """Retirer ce marqueur avec la recapture : strict, il échoue dès que la capture est à jour."""
     from src.mcp_tools.storage import files_recovery_contract as contract
