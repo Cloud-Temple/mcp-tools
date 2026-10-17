@@ -23,6 +23,11 @@ class Settings(BaseSettings):
             raise ValueError("File recovery requires PostgreSQL and a separate maintenance role")
         if self.files_mission_dependencies_enabled and not self.files_recovery_enabled:
             raise ValueError("Mission file dependencies require the file recovery extension")
+        # #846 : face à une autorité Access PG, une dépendance Files n'a de sens que
+        # si les calls mission sont retenus jusqu'au retrait vérifié (extension holds846).
+        if (self.files_mission_dependencies_enabled and self.access_backend == "postgres"
+                and not self.access_mission_retention_enabled):
+            raise ValueError("Mission file dependencies require the Access retention extension")
         return self
 
     # --- Serveur MCP ---
@@ -50,6 +55,12 @@ class Settings(BaseSettings):
     access_vault_path: str = "connection"
     access_vault_token_file: str = ""
     access_vault_ca_file: str = ""
+    # #846 : extension holds846 (domaine Access neuf, coordination Mission requise).
+    access_mission_retention_enabled: bool = False
+    access_retention_issuer: str = ""
+    access_retention_jwks_url: str = ""
+    access_retention_audience: str = ""
+    access_retention_callback_seconds: float = Field(default=10, ge=2, le=30)
 
     # Destinataire hub facultatif, séparé du bearer opaque Tools.
     hub_activity_enabled: bool = False

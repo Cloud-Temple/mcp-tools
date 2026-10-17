@@ -69,6 +69,8 @@ async def snapshot(c, settings, *, app_role):
         base_tables.add('mission_file_dependencies')
     for role in (app_role, maintenance):
         expected_tables = base_tables | ({'blob_retirements'} if role == maintenance else set())
+        if dependencies and role == maintenance:
+            expected_tables.add('mission_dependency_closures')  # #846, registre de clôture
         accessible = await (await c.execute("""SELECT n.nspname,c.relname FROM pg_class c
             JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%%'
             AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f')

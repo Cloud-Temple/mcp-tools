@@ -19,7 +19,8 @@ def get_access_store():
         raise TokenStoreUnavailable('PostgreSQL access profile incomplete')
     return PostgresAccessStore(AccessCredentials(s), ca_file=s.access_pg_ca_file,
         role=s.access_pg_role, database=s.access_pg_database, timeout=s.access_operation_timeout,
-        cursor_ttl=s.access_cursor_ttl_seconds, cursor_capacity=s.access_cursor_capacity)
+        cursor_ttl=s.access_cursor_ttl_seconds, cursor_capacity=s.access_cursor_capacity,
+        retention=s.access_mission_retention_enabled)
 
 
 def current_binding():

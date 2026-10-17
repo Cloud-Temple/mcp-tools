@@ -1,7 +1,8 @@
 # Coordination Mission #846 dans Tools
 
-Ce document couvre deux tranches : les journaux techniques (ci-dessous) et les
-dépendances Files d'une Mission (section suivante). Les sources 843 et 845 sont
+Ce document couvre trois tranches : les dépendances Files d'une Mission, la
+rétention Access des calls Mission avec le retrait coordonné, et les journaux
+techniques. Les sources 843 et 845 sont
 composées par fusion normale dans cette branche, pas copiées. Aucun nouvel
 endpoint public ni d'administration.
 
@@ -100,9 +101,8 @@ Mission reste non supprimable tant que `retire-dependencies` n'est pas passé su
 son scope, et la consultation historique peut survivre au call qui la justifie
 ou disparaître avant lui.
 
-Pas encore couvert ici : l'échéance effective des calls d'activité (fin de
-Mission plus 365 jours) côté Access 31, les holds et les reçus de clôture
-Mission, le DTO vers Mission et le retrait automatique des dépendances.
+L'échéance des calls d'activité, le retrait coordonné et le reçu Mission sont
+décrits dans la section « Rétention Access d'une Mission ».
 
 ### Limites connues (P3)
 
@@ -131,6 +131,131 @@ correctif de publication c'était le cas normal d'une course lecture contre
 suppression ; le run PG17 r1 l'a montré (T10b bloqué sur `one_active_path`). Le
 run r2 (`j0/run846-dep-r2`, source `ea8f8bc`) passe T7 à T10c sur PG17, S3 en
 mémoire.
+
+## Rétention Access d'une Mission (holds846)
+
+Problème corrigé. Avec le schéma Access 31 seul, `admit_mission` fixe
+`expires_at = admission + 8760 h` et quatre lectures filtrent sur cette date.
+Une Mission de plus d'un an perdait son historique Tools avant sa propre fin, et
+`purge_expired` supprimait un call encore utile à une dépendance Files.
+
+### Installation
+
+`ACCESS_MISSION_RETENTION_ENABLED=true` fait installer l'extension
+`postgres_retention_846.py` par `postgres_operator install`, dans la transaction du
+DDL v1, sur un domaine neuf seulement. Le DDL v1 et son `CHECKSUM` ne changent pas.
+Un domaine v1 existant ne reçoit pas l'extension : il faut un domaine neuf.
+L'extension n'a de sens que face à un domaine Mission `coordination_required=true`.
+
+- Marqueur `retention_846_version` (`coordination_required=true`), immuable.
+- Cinq routines de remplacement : `activity_page_846`, `hub_activity_page_846`,
+  `hub_file_calls_846`, `hub_files_confirm_846`, `purge_expired_846`. Les routines
+  v1 remplacées restent dans le schéma et ne sont accordées à personne.
+- `verify` contrôle le marqueur dans les deux sens, les grants du profil, l'absence
+  de droit direct sur les trois tables 846, la projection catalogue figée
+  (`CATALOG` : triggers d'`activity_calls` avec `tgenabled`, contraintes, index,
+  `prosecdef`, `proconfig`) et le `prosrc` de chaque fonction 846. Un trigger
+  désactivé est refusé.
+- Profil et domaine discordants : le store échoue fermé. `/ready` répond
+  `Access SQL grants unavailable`, chaque appel métier rend une indisponibilité
+  sans diagnostic. Le store lit aussi `retention_846_contract()` à chaque connexion.
+- `FILES_MISSION_DEPENDENCIES_ENABLED=true` avec `ACCESS_BACKEND=postgres` exige
+  `ACCESS_MISSION_RETENTION_ENABLED=true`.
+
+### Sémantique
+
+Un call `mission` n'a plus d'échéance par date. Il reste lisible sous les droits
+courants et n'est jamais purgé par `purge_expired_846`, qui ne touche que les calls
+`technical` (720 h) et les credentials expirés. Les échéances de credential, de
+mapping et de JWT refusent toujours : une rétention prolongée n'autorise aucun accès.
+`activity_page_846`, `hub_activity_page_846` et `hub_files_confirm_846` rendent
+`expires_at` NULL pour un call `mission`, jamais une date passée.
+
+Le retrait passe par une claim Mission vérifiée et seulement si
+`clock_timestamp() > max(expires_at, retain_until)` pour chaque call du scope.
+
+### Retrait : cinq étapes
+
+```
+python -m src.mcp_tools.retention_846 <étape> --operation-id UUID \
+  --state-dir DIR_PRIVE --proof-file PREUVE_0600 --files-app-role ROLE [--batch N]
+```
+
+Profil : `ACCESS_PG_ROLE` = rôle de maintenance Access, `FILES_PG_ROLE` = rôle de
+maintenance Files, `ACCESS_RETENTION_ISSUER`, `ACCESS_RETENTION_JWKS_URL` (même
+origine HTTPS), `ACCESS_RETENTION_AUDIENCE` (audience `tools` du domaine Mission).
+
+1. `access-prepare` : verrou du scope, `FOR UPDATE` sur ses calls, refus si un call
+   du scope a un autre root (root vide : il faut zéro call), registre `prepared`.
+   Inéligible : rien n'est écrit, `not_yet_eligible` et la date. Effet : admissions
+   et lectures hub du scope refusées.
+2. `files-prepare` : registre `mission_dependency_closures`. Toute nouvelle
+   acquisition du scope est refusée. Root vide : zéro ligne de dépendance sur
+   (tenant, mission) exigée, registre scellé à zéro.
+3. `access-retire` : lots de 500 au plus. Le dernier lot scelle le registre dans la
+   même transaction (compteurs, empreintes).
+4. `files-retire` : refusé tant que `access-retire` n'est pas scellé. Lots de 1000
+   au plus, le dernier scelle.
+5. `receipt` : relit les deux registres scellés sous verrou, écrit
+   `receipt.private.json` et `envelope.json` en 0600. `composed_at` vient du
+   `sealed_at` en base : une réémission donne le même reçu.
+
+Chaque étape vérifie la preuve (callback `claim-check`), passe son échéance de
+30 s aux routines SQL, revérifie la preuve avant le COMMIT. COMMIT sans ACK :
+`<étape>.unknown.json`, code non nul, toute étape suivante refusée jusqu'à
+`reconcile`. `reconcile` (sans preuve) prend le même verrou de scope, lit les deux
+registres et donne `next_step`. Un registre présent prouve le COMMIT ; absent ou
+resté à l'état précédent, l'étape n'a pas commité et se relance avec le même
+`operation_id`.
+
+Le reçu porte trois références agrégées, toujours présentes, même à zéro :
+`tools_activity_calls`, `tools_activity_events`, `tools_file_dependencies`.
+`id` vaut `sha256:` suivi du SHA-256 des identifiants retirés triés en
+`COLLATE "C"` et joints par `\n` (UUID pour Access, `call_id:generation:revision`
+pour Files). `revision` porte le nombre d'éléments. C'est un détournement assumé du
+champ : l'enveloppe Mission `9ded160c` ne change pas et Tools consomme 3
+références du budget partagé de 1000.
+
+### Absence de claim (option A, décision FGE en attente)
+
+Sans claim, les calls `mission` restent sans limite de durée : identifiants
+d'acteur et de binding, tenant, `mission_id`, root, hash de requête. Aucun contenu.
+Requête de suivi, à lancer par l'owner en lecture seule, à la place d'un
+diagnostic `retention-status` reporté :
+
+```sql
+SELECT c.tenant_id, c.mission_id, count(*) calls, min(c.created_at) oldest,
+       min(c.created_at) < clock_timestamp() - interval '8760 hours' older_than_one_year
+FROM tools_access.activity_calls c
+WHERE c.category = 'mission' AND NOT EXISTS (SELECT 1 FROM tools_access.mission_retirements_846 r
+  WHERE r.tenant_id = c.tenant_id AND r.mission_id = c.mission_id)
+GROUP BY 1, 2 ORDER BY oldest;
+```
+
+Chemin d'effacement hors claim (demande de suppression, Mission perdue). Il
+contourne la preuve, donc il passe par l'owner sous contrôle de changement, sur un
+scope exact, dans une seule transaction :
+
+```sql
+BEGIN;
+ALTER TABLE tools_access.activity_calls DISABLE TRIGGER retention_846_delete;
+DELETE FROM tools_access.activity_events e USING tools_access.activity_calls c
+ WHERE e.call_id = c.id AND c.tenant_id = :tenant AND c.mission_id = :mission;
+DELETE FROM tools_access.activity_calls WHERE tenant_id = :tenant AND mission_id = :mission;
+ALTER TABLE tools_access.activity_calls ENABLE TRIGGER retention_846_delete;
+COMMIT;
+```
+
+`verify` refuse le domaine si le trigger reste désactivé. Aucun registre n'est
+écrit : une admission ultérieure sur ce scope reste possible, ce qui convient à
+un effacement, pas à une clôture. Aucun reçu Mission n'est produit.
+
+### Ce qui reste conservé
+
+Les registres scellés et `mission_retired_refs_846` ne contiennent que des
+identifiants. `mission_file_dependencies.path` reste conservé avec les lignes
+retirées : c'est un nom de fichier choisi par l'utilisateur, pas un identifiant
+opaque. Leur durée de conservation n'est pas bornée par ce lot (P3).
 
 ## Journaux techniques
 

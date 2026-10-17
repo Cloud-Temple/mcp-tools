@@ -664,7 +664,9 @@ def test_dependency_ddl_grants_and_hash_are_finite():
     assert ddl.count('SECURITY DEFINER') == 2 and 'FOR SHARE' in ddl
     assert "'files-recovery:' ||" in ddl and 'generation_visible(NEW.generation)' in ddl
     # P3-3 : l'acquisition prend le verrou de pin en mode partagé, jamais exclusif.
-    assert ddl.count('pg_advisory_xact_lock_shared(') == 1 and 'pg_advisory_xact_lock(' not in ddl
+    # #846 Access : le verrou de clôture du scope est lui aussi partagé dans l'acquisition.
+    assert ddl.count('pg_advisory_xact_lock_shared(') == 2 and 'pg_advisory_xact_lock(' not in ddl
+    assert "pg_advisory_xact_lock_shared(hashtextextended('files-closure-846:' ||" in ddl
     with pytest.raises(ValueError):
         schema.render('tools_files', 'same', 'same')
 

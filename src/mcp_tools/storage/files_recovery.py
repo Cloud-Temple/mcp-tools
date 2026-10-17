@@ -112,6 +112,95 @@ class FileRecovery:
                 'rows': [{'call_id': str(r['call_id']), 'generation': str(r['generation']),
                           'revision': r['revision']} for r in rows]}
 
+    # #846 closure registry. The caller owns the transaction (BEGIN, proof check, COMMIT).
+    _CLOSURE_LOCK = ("SELECT pg_advisory_xact_lock(hashtextextended('files-closure-846:' || "
+                     "jsonb_build_array(%s::text,%s::text)::text,0))")
+    _CLOSURE_DIGEST = r"""SELECT count(*) n,encode(sha256(convert_to(coalesce(string_agg(
+        d.call_id::text||':'||d.generation::text||':'||d.revision::text,E'\n'
+        ORDER BY d.call_id::text||':'||d.generation::text||':'||d.revision::text COLLATE "C"),''),'UTF8')),'hex') sha256
+        FROM mission_file_dependencies d WHERE d.tenant_id=%s AND d.mission_id=%s AND d.root_agent_id=%s
+        AND d.state='retired'"""
+
+    @staticmethod
+    def closure_view(row):
+        return {'operation_id': str(row['operation_id']), 'state': row['state'], 'claim_sha256': row['claim_sha256'],
+                'dependencies': row['dependencies'], 'dependencies_sha256': row['dependencies_sha256'],
+                'sealed_at': row['sealed_at'].isoformat() if row['sealed_at'] else None}
+
+    async def closure_prepare(self, c, *, operation_id, tenant_id, mission_id, root_agent_id, claim_sha256):
+        if root_agent_id:
+            self.mission_scope(tenant_id, mission_id, root_agent_id, 1)
+        elif (not getattr(self.settings, 'files_mission_dependencies_enabled', False)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', tenant_id or '')
+                or not re.fullmatch(r'mis_[A-Za-z0-9_-]+', mission_id or '')):
+            raise StorageUnavailable('Exact Mission scope required')
+        await c.execute(self._CLOSURE_LOCK, (tenant_id, mission_id))
+        row = await (await c.execute('SELECT * FROM mission_dependency_closures WHERE tenant_id=%s AND mission_id=%s',
+                                     (tenant_id, mission_id))).fetchone()
+        if row is not None:
+            if (str(row['operation_id']), row['root_agent_id'], row['claim_sha256']) != (
+                    operation_id, root_agent_id, claim_sha256):
+                raise StorageUnavailable('Closure bound to another operation or claim; protected')
+            return self.closure_view(row)
+        # Root vide (P2-2) : aucune ligne du scope, tous roots et états confondus.
+        # Root présent : aucune ligne d'un autre root sur le même (tenant, mission).
+        foreign = await (await c.execute('SELECT count(*) n FROM mission_file_dependencies '
+                                         'WHERE tenant_id=%s AND mission_id=%s AND root_agent_id<>%s',
+                                         (tenant_id, mission_id, root_agent_id))).fetchone()
+        if foreign['n']:
+            raise StorageUnavailable('Mission scope has dependencies of another root; protected')
+        if root_agent_id:
+            row = await (await c.execute(
+                "INSERT INTO mission_dependency_closures(operation_id,tenant_id,mission_id,root_agent_id,"
+                "claim_sha256,state) VALUES(%s,%s,%s,%s,%s,'prepared') RETURNING *",
+                (operation_id, tenant_id, mission_id, root_agent_id, claim_sha256))).fetchone()
+        else:
+            row = await (await c.execute(
+                "INSERT INTO mission_dependency_closures(operation_id,tenant_id,mission_id,root_agent_id,"
+                "claim_sha256,state,sealed_at,dependencies,dependencies_sha256) VALUES(%s,%s,%s,'',%s,'sealed',"
+                "clock_timestamp(),0,encode(sha256(''::bytea),'hex')) RETURNING *",
+                (operation_id, tenant_id, mission_id, claim_sha256))).fetchone()
+        return self.closure_view(row)
+
+    async def closure_retire(self, c, *, operation_id, claim_sha256, batch=1000):
+        if type(batch) is not int or not 1 <= batch <= 1000:
+            raise StorageUnavailable('Bounded closure batch required')
+        row = await (await c.execute('SELECT * FROM mission_dependency_closures WHERE operation_id=%s',
+                                     (operation_id,))).fetchone()
+        if row is None or row['claim_sha256'] != claim_sha256:
+            raise StorageUnavailable('Closure operation unknown or claim differs')
+        scope = (row['tenant_id'], row['mission_id'], row['root_agent_id'])
+        await c.execute(self._CLOSURE_LOCK, scope[:2])
+        row = await (await c.execute('SELECT * FROM mission_dependency_closures WHERE operation_id=%s FOR UPDATE',
+                                     (operation_id,))).fetchone()
+        if row['state'] == 'sealed':
+            return {**self.closure_view(row), 'has_more': False, 'retired': 0}
+        retired = await (await c.execute(
+            "UPDATE mission_file_dependencies SET state='retired',retired_at=clock_timestamp(),revision=revision+1 "
+            "WHERE (call_id,generation) IN (SELECT call_id,generation FROM mission_file_dependencies "
+            "WHERE tenant_id=%s AND mission_id=%s AND root_agent_id=%s AND state='active' "
+            "ORDER BY call_id,generation LIMIT %s FOR UPDATE) RETURNING call_id", (*scope, batch))).fetchall()
+        active = await (await c.execute("SELECT count(*) n FROM mission_file_dependencies "
+                                        "WHERE tenant_id=%s AND mission_id=%s AND state='active'", scope[:2])).fetchone()
+        if not active['n']:
+            # Dernier lot : scellé dans la même transaction que la dernière mise à jour.
+            digest = await (await c.execute(self._CLOSURE_DIGEST, scope)).fetchone()
+            row = await (await c.execute(
+                "UPDATE mission_dependency_closures SET state='sealed',sealed_at=clock_timestamp(),"
+                "dependencies=%s,dependencies_sha256=%s WHERE operation_id=%s RETURNING *",
+                (digest['n'], digest['sha256'], operation_id))).fetchone()
+        return {**self.closure_view(row), 'has_more': row['state'] == 'prepared', 'retired': len(retired)}
+
+    async def closure_status(self, c, *, operation_id, tenant_id, mission_id):
+        await c.execute(self._CLOSURE_LOCK, (tenant_id, mission_id))
+        row = await (await c.execute('SELECT * FROM mission_dependency_closures WHERE tenant_id=%s AND mission_id=%s',
+                                     (tenant_id, mission_id))).fetchone()
+        if row is None:
+            return {'operation_id': operation_id, 'state': 'absent'}
+        if str(row['operation_id']) != operation_id:
+            raise StorageUnavailable('Closure bound to another operation; protected')
+        return self.closure_view(row)
+
     @staticmethod
     async def referenced(c, pin, *, dependencies):
         # One SQL snapshot for both live roots and admitted open intentions.

@@ -48,10 +48,42 @@ CREATE INDEX mission_file_dependencies_active_path ON {schema}.mission_file_depe
 CREATE INDEX mission_file_dependencies_scope ON {schema}.mission_file_dependencies(tenant_id,mission_id,root_agent_id)
  WHERE state='active';
 
+CREATE TABLE {schema}.mission_dependency_closures (
+ operation_id uuid PRIMARY KEY,
+ tenant_id text NOT NULL CHECK (tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{{0,127}}$'),
+ mission_id text NOT NULL CHECK (mission_id ~ '^mis_[A-Za-z0-9_-]+$'),
+ root_agent_id text NOT NULL CHECK (root_agent_id='' OR root_agent_id ~ '^ag_[A-Za-z0-9_-]+$'),
+ claim_sha256 text NOT NULL CHECK (claim_sha256 ~ '^[0-9a-f]{{64}}$'),
+ state text NOT NULL CHECK (state IN ('prepared','sealed')),
+ prepared_at timestamptz NOT NULL DEFAULT clock_timestamp(), sealed_at timestamptz,
+ dependencies bigint, dependencies_sha256 text,
+ UNIQUE (tenant_id,mission_id),
+ CHECK ((state='sealed')=(sealed_at IS NOT NULL AND dependencies IS NOT NULL AND dependencies_sha256 IS NOT NULL))
+);
+CREATE FUNCTION {schema}.guard_dependency_closure() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'immutable dependency closure'; END IF;
+ IF (NEW.operation_id,NEW.tenant_id,NEW.mission_id,NEW.root_agent_id,NEW.claim_sha256,NEW.prepared_at)
+  IS DISTINCT FROM (OLD.operation_id,OLD.tenant_id,OLD.mission_id,OLD.root_agent_id,OLD.claim_sha256,OLD.prepared_at)
+  OR OLD.state<>'prepared' OR NEW.state<>'sealed'
+ THEN RAISE EXCEPTION 'immutable dependency closure'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER guard_dependency_closure BEFORE UPDATE OR DELETE ON {schema}.mission_dependency_closures
+ FOR EACH ROW EXECUTE FUNCTION {schema}.guard_dependency_closure();
+
 CREATE FUNCTION {schema}.guard_file_dependency() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE served jsonb;
 BEGIN
+ -- #846 : partagé contre files-prepare (exclusif) ; une Mission close n'acquiert plus.
+ PERFORM pg_advisory_xact_lock_shared(hashtextextended('files-closure-846:' ||
+   jsonb_build_array(NEW.tenant_id,NEW.mission_id)::text,0));
+ IF EXISTS(SELECT 1 FROM {schema}.mission_dependency_closures
+     WHERE tenant_id=NEW.tenant_id AND mission_id=NEW.mission_id) THEN
+  RAISE EXCEPTION 'mission dependency scope closed';
+ END IF;
  -- refs FOR SHARE serializes with the logical retirement (refs FOR UPDATE in publish).
  PERFORM 1 FROM {schema}.refs WHERE path=NEW.path FOR SHARE;
  IF NOT FOUND THEN RAISE EXCEPTION 'dependency path is not live'; END IF;
@@ -99,15 +131,18 @@ END $$;
 CREATE TRIGGER guard_dependency_retirement BEFORE UPDATE ON {schema}.refs
  FOR EACH ROW EXECUTE FUNCTION {schema}.guard_dependency_retirement();
 
-REVOKE ALL ON {schema}.mission_file_dependencies FROM PUBLIC;
+REVOKE ALL ON {schema}.mission_file_dependencies,{schema}.mission_dependency_closures FROM PUBLIC;
 REVOKE ALL ON FUNCTION {schema}.guard_file_dependency(),{schema}.guard_dependency_history(),
- {schema}.guard_dependency_retirement() FROM PUBLIC,{app};
+ {schema}.guard_dependency_retirement(),{schema}.guard_dependency_closure() FROM PUBLIC,{app};
 GRANT SELECT,INSERT ON {schema}.mission_file_dependencies TO {app};
 GRANT SELECT ON {schema}.mission_file_dependencies TO {maintenance};
 GRANT UPDATE(state,retired_at,revision) ON {schema}.mission_file_dependencies TO {maintenance};
+GRANT SELECT,INSERT ON {schema}.mission_dependency_closures TO {maintenance};
+GRANT UPDATE(state,sealed_at,dependencies,dependencies_sha256) ON {schema}.mission_dependency_closures TO {maintenance};
 '''
 
-FUNCTIONS = ('guard_file_dependency', 'guard_dependency_history', 'guard_dependency_retirement')
+FUNCTIONS = ('guard_file_dependency', 'guard_dependency_history', 'guard_dependency_retirement',
+             'guard_dependency_closure')
 
 
 def render(schema, app, maintenance):
