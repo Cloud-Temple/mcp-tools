@@ -101,10 +101,11 @@ async def exercise(args, access, save):
 
     async def add_call(tenant, mission, root, *, age_days=400, category='mission', events=True):
         call = str(uuid4())
+        # Un seul clock_timestamp() par ligne : le CHECK exige expires_at=created_at+durée exacte.
         if category == 'technical':
             await owner('''INSERT INTO tools_access.activity_calls(id,tool,trace_id,category,admission,created_at,expires_at)
-                VALUES(%s,'files',%s,'technical','denied',clock_timestamp()-make_interval(days=>%s),
-                clock_timestamp()-make_interval(days=>%s)+interval '720 hours')''', (call, str(uuid4()), age_days, age_days))
+                SELECT %s,'files',%s,'technical','denied',s,s+interval '720 hours'
+                FROM (SELECT clock_timestamp()-make_interval(days=>%s) s) stamp''', (call, str(uuid4()), age_days))
             return call
         await owner('''INSERT INTO tools_access.activity_calls(id,actor_id,tenant_id,service_id,tool,trace_id,operation_id,
             mission_id,root_agent_id,request_sha256,hub_binding_id,hub_binding_version,category,admission,created_at,expires_at)
@@ -398,6 +399,8 @@ async def exercise(args, access, save):
             assert [r['state'] for r in await dependencies('mis_RF')] == ['active']
 
             # P6 : session tuée avant le COMMIT d'access-retire ; reconcile ; reprise.
+            terminated = []
+
             @asynccontextmanager
             async def killed_before_commit():
                 async with connect_access(access.maintenance) as c:
@@ -406,14 +409,18 @@ async def exercise(args, access, save):
 
                     async def execute(query, params=None, **kw):
                         if query == 'COMMIT':
+                            # Forme PG14+ : attend la fin effective du backend, pas un délai supposé.
                             async with connect_access('postgres') as killer:
-                                await killer.execute('SELECT pg_terminate_backend(%s)', (pid,))
-                            await asyncio.sleep(0.2)
+                                done = await (await killer.execute('SELECT pg_terminate_backend(%s,3000) d',
+                                                                   (pid,))).fetchone()
+                            # Pas d'assert ici : _access_tx convertirait l'échec en Unknown.
+                            terminated.append(done['d'])
                         return await original(query, params, **kw)
                     c.execute = execute
                     yield c
             unknown = await refused(step(identity_f, operation_f, state_f, 'access-retire',
                                          access_factory=killed_before_commit), cli.Unknown)
+            assert terminated == [True], terminated
             assert unknown == 'Unknown' and (state_f / 'access-retire.unknown.json').exists()
             blocked = await refused(step(identity_f, operation_f, state_f, 'files-retire'))
             reconciled = await step(identity_f, operation_f, state_f, 'reconcile')
