@@ -1,5 +1,5 @@
 {
-  "ddl_sha256": "f84209466d5a802f432bf635d9003e59f81d7cefeba53a1e6307e9c249904447",
+  "ddl_sha256": "50cad6c405970c697d0521ae0b09ce3151c54337f9b6af8d0e87095ef9a2d22d",
   "format_version": 1,
   "snapshot": {
     "acl": [
@@ -147,6 +147,34 @@
         "grantee": "MAINTENANCE",
         "grantor": "OWNER",
         "is_grantable": false,
+        "name": "COLUMN:mission_dependency_closures:dependencies",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:mission_dependency_closures:dependencies_sha256",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:mission_dependency_closures:sealed_at",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "COLUMN:mission_dependency_closures:state",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
         "name": "COLUMN:mission_file_dependencies:retired_at",
         "privilege_type": "UPDATE"
       },
@@ -190,6 +218,20 @@
         "grantor": "OWNER",
         "is_grantable": false,
         "name": "TABLE:generations",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "MAINTENANCE",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
         "privilege_type": "SELECT"
       },
       {
@@ -253,6 +295,13 @@
         "grantor": "OWNER",
         "is_grantable": false,
         "name": "FUNCTION:guard_current_ref",
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "FUNCTION:guard_dependency_closure",
         "privilege_type": "EXECUTE"
       },
       {
@@ -428,6 +477,62 @@
         "grantor": "OWNER",
         "is_grantable": false,
         "name": "TABLE:generations",
+        "privilege_type": "UPDATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "DELETE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "INSERT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "MAINTAIN"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "REFERENCES"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "SELECT"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "TRIGGER"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
+        "privilege_type": "TRUNCATE"
+      },
+      {
+        "grantee": "OWNER",
+        "grantor": "OWNER",
+        "is_grantable": false,
+        "name": "TABLE:mission_dependency_closures",
         "privilege_type": "UPDATE"
       },
       {
@@ -907,6 +1012,106 @@
         "datatype": "timestamp with time zone",
         "default_value": "clock_timestamp()",
         "relname": "generations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "operation_id",
+        "attnotnull": true,
+        "attnum": 1,
+        "datatype": "uuid",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "tenant_id",
+        "attnotnull": true,
+        "attnum": 2,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "mission_id",
+        "attnotnull": true,
+        "attnum": 3,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "root_agent_id",
+        "attnotnull": true,
+        "attnum": 4,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "claim_sha256",
+        "attnotnull": true,
+        "attnum": 5,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "state",
+        "attnotnull": true,
+        "attnum": 6,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "prepared_at",
+        "attnotnull": true,
+        "attnum": 7,
+        "datatype": "timestamp with time zone",
+        "default_value": "clock_timestamp()",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "sealed_at",
+        "attnotnull": false,
+        "attnum": 8,
+        "datatype": "timestamp with time zone",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "dependencies",
+        "attnotnull": false,
+        "attnum": 9,
+        "datatype": "bigint",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "dependencies_sha256",
+        "attnotnull": false,
+        "attnum": 10,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "mission_dependency_closures"
       },
       {
         "attgenerated": "",
@@ -1547,6 +1752,78 @@
       {
         "condeferrable": false,
         "condeferred": false,
+        "conname": "mission_dependency_closures_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((state = 'sealed'::text) = ((sealed_at IS NOT NULL) AND (dependencies IS NOT NULL) AND (dependencies_sha256 IS NOT NULL))))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_claim_sha256_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((claim_sha256 ~ '^[0-9a-f]{64}$'::text))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_mission_id_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((mission_id ~ '^mis_[A-Za-z0-9_-]+$'::text))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_pkey",
+        "contype": "p",
+        "convalidated": true,
+        "definition": "PRIMARY KEY (operation_id)",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_root_agent_id_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK (((root_agent_id = ''::text) OR (root_agent_id ~ '^ag_[A-Za-z0-9_-]+$'::text)))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_state_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((state = ANY (ARRAY['prepared'::text, 'sealed'::text])))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_tenant_id_check",
+        "contype": "c",
+        "convalidated": true,
+        "definition": "CHECK ((tenant_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'::text))",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
+        "conname": "mission_dependency_closures_tenant_id_mission_id_key",
+        "contype": "u",
+        "convalidated": true,
+        "definition": "UNIQUE (tenant_id, mission_id)",
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "condeferrable": false,
+        "condeferred": false,
         "conname": "mission_file_dependencies_check",
         "contype": "c",
         "convalidated": true,
@@ -1890,6 +2167,19 @@
           "search_path=pg_catalog"
         ],
         "proleakproof": false,
+        "proname": "guard_dependency_closure",
+        "prosecdef": false,
+        "prosrc": "BOUND_TO_RENDERED_DDL",
+        "provolatile": "v",
+        "return_type": "trigger"
+      },
+      {
+        "arguments": "",
+        "owner": "OWNER",
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "proleakproof": false,
         "proname": "guard_dependency_history",
         "prosecdef": false,
         "prosrc": "BOUND_TO_RENDERED_DDL",
@@ -1999,6 +2289,18 @@
         "indisready": true,
         "indisvalid": true,
         "relname": "generations"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX mission_dependency_closures_pkey ON SCHEMA.mission_dependency_closures USING btree (operation_id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "mission_dependency_closures"
+      },
+      {
+        "definition": "CREATE UNIQUE INDEX mission_dependency_closures_tenant_id_mission_id_key ON SCHEMA.mission_dependency_closures USING btree (tenant_id, mission_id)",
+        "indisready": true,
+        "indisvalid": true,
+        "relname": "mission_dependency_closures"
       },
       {
         "definition": "CREATE INDEX mission_file_dependencies_active_path ON SCHEMA.mission_file_dependencies USING btree (path) WHERE (state = 'active'::text)",
@@ -2140,6 +2442,30 @@
         "relforcerowsecurity": false,
         "relkind": "i",
         "relname": "generations_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "r",
+        "relname": "mission_dependency_closures",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "mission_dependency_closures_pkey",
+        "reloptions": null,
+        "relrowsecurity": false
+      },
+      {
+        "owner": "OWNER",
+        "relforcerowsecurity": false,
+        "relkind": "i",
+        "relname": "mission_dependency_closures_tenant_id_mission_id_key",
         "reloptions": null,
         "relrowsecurity": false
       },
@@ -2317,6 +2643,12 @@
         "relname": "generations",
         "tgenabled": "O",
         "tgname": "guard_source_pins"
+      },
+      {
+        "definition": "CREATE TRIGGER guard_dependency_closure BEFORE DELETE OR UPDATE ON SCHEMA.mission_dependency_closures FOR EACH ROW EXECUTE FUNCTION guard_dependency_closure()",
+        "relname": "mission_dependency_closures",
+        "tgenabled": "O",
+        "tgname": "guard_dependency_closure"
       },
       {
         "definition": "CREATE TRIGGER guard_dependency_history BEFORE DELETE OR UPDATE ON SCHEMA.mission_file_dependencies FOR EACH ROW EXECUTE FUNCTION guard_dependency_history()",
