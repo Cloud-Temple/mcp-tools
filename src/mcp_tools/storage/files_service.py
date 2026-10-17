@@ -297,6 +297,15 @@ class FilesService:
 
     async def mutate(self, op, args, oid):
         cat = self.catalog
+        # Origine serveur d'une admission réussie, jamais un argument Files.
+        from ..auth.hub_activity import current_hub_context
+        from ..auth.context import current_access_operation
+        delegated = current_hub_context.get()
+        origin = None
+        if delegated is not None:
+            if not delegated.consumed or current_access_operation.get() != oid:
+                raise Conflict("Origine d'admission invalide")
+            origin = str(uuid.UUID(delegated.claims['call_id']))
         request = self.request(op, args)
         async with cat.connection() as c:
             existing = await cat.one(c, "SELECT * FROM operations WHERE id=%s", (oid,))
@@ -317,7 +326,7 @@ class FilesService:
             "request_digest": request}
         async with cat.connection() as c:
             async with cat.transaction(c):
-                await c.execute("INSERT INTO operations(id,path,binding,request_digest,intent_digest,intent,attempt,generation,expected_revision,phase) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'INTENT_RESERVED')", (oid,args["path"],(current_token_info.get() or {}).get("credential_binding"), request,digest(intent),Jsonb(intent),attempt,generation,expected))
+                await c.execute("INSERT INTO operations(id,path,binding,origin_call_id,request_digest,intent_digest,intent,attempt,generation,expected_revision,phase) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'INTENT_RESERVED')", (oid,args["path"],(current_token_info.get() or {}).get("credential_binding"), origin,request,digest(intent),Jsonb(intent),attempt,generation,expected))
                 await c.execute("INSERT INTO refs(path) VALUES(%s) ON CONFLICT DO NOTHING", (args["path"],))
                 dest = await self.ref(c,args["path"],True)
                 if dest["revision"] != expected:

@@ -53,7 +53,7 @@ DECLARE actor tools_access.access_credentials%ROWTYPE;
 BEGIN
  SELECT c.* INTO actor FROM tools_access.access_credentials c WHERE c.token_hash=requester FOR SHARE;
  IF NOT FOUND OR actor.revoked_at IS NOT NULL
- OR NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions))
+ OR NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions) OR actor.permissions=ARRAY['hub_read']::text[])
  OR (actor.expires_at IS NOT NULL AND actor.expires_at<=clock_timestamp())
  THEN RAISE EXCEPTION 'current local access required' USING ERRCODE='42501'; END IF;
  RETURN QUERY SELECT b.* FROM tools_access.hub_actor_bindings b WHERE b.actor_id=actor.actor_id
@@ -104,7 +104,7 @@ BEGIN
  IF expected_credential_version IS NULL OR actor.version<>expected_credential_version
  OR expected_binding_version IS NULL OR binding.version<>expected_binding_version
  OR actor.revoked_at IS NOT NULL OR binding.revoked_at IS NOT NULL
- OR NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions))
+ OR NOT ('admin'=ANY(actor.permissions) OR 'access'=ANY(actor.permissions) OR actor.permissions=ARRAY['hub_read']::text[])
  OR (actor.expires_at IS NOT NULL AND actor.expires_at<=stamp) OR binding.expires_at<=stamp
  OR ROW(binding.actor_id,binding.tenant_id,binding.service_id)
     IS DISTINCT FROM ROW(actor.actor_id,actor.tenant_id,actor.service_id)
@@ -140,7 +140,78 @@ BEGIN
 END $$;
 '''
 
+HUB_DDL += r'''
+CREATE FUNCTION tools_access.hub_file_calls(requester text, requested_issuer text,
+ requested_subject text, requested_owner text, requested_tenant text, requested_mission text,
+ requested_root text, requested_calls uuid[])
+RETURNS TABLE(call_id uuid, operation_id uuid)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE binding tools_access.hub_actor_bindings%ROWTYPE; actor tools_access.access_credentials%ROWTYPE;
+BEGIN
+ SELECT b.* INTO STRICT binding FROM tools_access.hub_binding_get(requester,requested_issuer,
+ requested_subject,requested_owner,requested_tenant) b;
+ SELECT a.* INTO STRICT actor FROM tools_access.access_credentials a WHERE a.token_hash=requester FOR SHARE;
+ IF actor.permissions<>ARRAY['hub_read']::text[] OR NOT ('files'=ANY(actor.tool_ids)) THEN RETURN; END IF;
+ IF requested_calls IS NULL OR cardinality(requested_calls) NOT BETWEEN 1 AND 64
+ OR array_ndims(requested_calls)<>1 OR array_position(requested_calls,NULL) IS NOT NULL
+ THEN RAISE EXCEPTION 'hub file read refused' USING ERRCODE='42501'; END IF;
+ RETURN QUERY SELECT c.id,c.operation_id FROM tools_access.activity_calls c
+ WHERE c.id=ANY(requested_calls) AND c.actor_id=binding.actor_id
+ AND c.tenant_id=binding.tenant_id AND c.service_id=binding.service_id
+ AND c.mission_id=requested_mission AND c.root_agent_id=requested_root
+ AND c.tool='files' AND c.admission='admitted' AND c.category='mission'
+ AND c.expires_at>clock_timestamp();
+END $$;
+'''
+
+HUB_DDL += r'''
+CREATE FUNCTION tools_access.hub_files_confirm(requester text, expected_credential_version bigint,
+ requested_binding uuid, expected_binding_version bigint, requested_issuer text,
+ requested_subject text, requested_owner text, requested_tenant text,
+ requested_mission text, requested_root text, requested_calls uuid[], expected_operations uuid[])
+RETURNS TABLE(credential_version bigint, binding_id uuid, binding_version bigint,
+ credential_expires_at timestamptz, binding_expires_at timestamptz, activity_expires_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE actor tools_access.access_credentials%ROWTYPE; binding tools_access.hub_actor_bindings%ROWTYPE;
+ stamp timestamptz; retained bigint; deadline timestamptz;
+BEGIN
+ IF requested_calls IS NULL OR cardinality(requested_calls) NOT BETWEEN 1 AND 64
+ OR cardinality(expected_operations) IS DISTINCT FROM cardinality(requested_calls)
+ OR array_ndims(requested_calls)<>1 OR array_ndims(expected_operations)<>1
+ OR array_position(requested_calls,NULL) IS NOT NULL
+ THEN RAISE EXCEPTION 'current hub file access refused' USING ERRCODE='42501'; END IF;
+ SELECT c.* INTO actor FROM tools_access.access_credentials c WHERE c.token_hash=requester FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'current hub file access refused' USING ERRCODE='42501'; END IF;
+ SELECT b.* INTO binding FROM tools_access.hub_actor_bindings b WHERE b.id=requested_binding FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'current hub file access refused' USING ERRCODE='42501'; END IF;
+ -- Retenir aussi les lignes d'activité jusqu'au COMMIT de la même décision.
+ PERFORM c.id FROM tools_access.activity_calls c WHERE c.id=ANY(requested_calls) ORDER BY c.id FOR SHARE;
+ SELECT count(*),min(c.expires_at) INTO retained,deadline
+ FROM tools_access.activity_calls c JOIN unnest(requested_calls,expected_operations) q(call_id,operation_id)
+ ON c.id=q.call_id AND c.operation_id IS NOT DISTINCT FROM q.operation_id
+ WHERE c.actor_id=actor.actor_id AND c.tenant_id=actor.tenant_id AND c.service_id=actor.service_id
+ AND c.mission_id=requested_mission AND c.root_agent_id=requested_root
+ AND c.tool='files' AND c.category='mission' AND c.admission='admitted';
+ -- Toutes les échéances sont relues après l'ensemble des attentes sur les locks.
+ stamp:=clock_timestamp();
+ IF expected_credential_version IS NULL OR actor.version<>expected_credential_version
+ OR expected_binding_version IS NULL OR binding.version<>expected_binding_version
+ OR actor.revoked_at IS NOT NULL OR binding.revoked_at IS NOT NULL
+ OR actor.permissions<>ARRAY['hub_read']::text[] OR NOT ('files'=ANY(actor.tool_ids))
+ OR (actor.expires_at IS NOT NULL AND actor.expires_at<=stamp) OR binding.expires_at<=stamp
+ OR retained<>cardinality(requested_calls) OR deadline IS NULL OR deadline<=stamp
+ OR ROW(binding.actor_id,binding.tenant_id,binding.service_id)
+    IS DISTINCT FROM ROW(actor.actor_id,actor.tenant_id,actor.service_id)
+ OR ROW(binding.issuer,binding.subject,binding.owner_id,binding.tenant_id)
+    IS DISTINCT FROM ROW(requested_issuer,requested_subject,requested_owner,requested_tenant)
+ THEN RAISE EXCEPTION 'current hub file access refused' USING ERRCODE='42501'; END IF;
+ RETURN QUERY SELECT actor.version,binding.id,binding.version,actor.expires_at,binding.expires_at,deadline;
+END $$;
+'''
+
 HUB_ROUTINES = (
+    'hub_files_confirm(text,bigint,uuid,bigint,text,text,text,text,text,text,uuid[],uuid[])',
+    'hub_file_calls(text,text,text,text,text,text,text,uuid[])',
     'hub_binding_create(text,uuid,uuid,text,text,text,text,timestamptz)',
     'hub_binding_revoke(text,uuid,uuid,bigint)', 'hub_binding_list(text,uuid,uuid,integer)',
     'hub_binding_get(text,text,text,text,text)',

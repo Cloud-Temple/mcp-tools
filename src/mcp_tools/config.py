@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     hub_activity_timeout_seconds: float = Field(default=10, ge=2, le=30)
     hub_activity_max_inflight: int = Field(default=16, ge=1, le=64)
     hub_activity_max_body_bytes: int = Field(default=8388608, ge=16384, le=16777216)
+    hub_files_page_bytes: int = Field(default=30000, ge=1, le=30000)
 
     # --- S3 (tokens MCP uniquement) ---
     s3_endpoint_url: str = ""

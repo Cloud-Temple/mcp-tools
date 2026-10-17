@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Candidat Mission843 : lecteur local `hub_read` sans exécution MCP/admin,
+  lookup des appels autorisés et lecture du pin Files publié, avec origine
+  serveur immuable. Métadonnées distinctes du contenu S3 ; recette native à venir.
 - #845 : retrait logique ferme aussi les lectures historiques/version_id ;
   registre privé maintenance et récupération opérateur du pin exact conservé
   au moins trente jours après ACK. Collecte protégée par les dépendances et
