@@ -21,6 +21,13 @@ class Settings(BaseSettings):
                 or not self.files_recovery_maintenance_role
                 or self.files_recovery_maintenance_role == self.files_pg_owner):
             raise ValueError("File recovery requires PostgreSQL and a separate maintenance role")
+        if self.files_mission_dependencies_enabled and not self.files_recovery_enabled:
+            raise ValueError("Mission file dependencies require the file recovery extension")
+        # #846 : face à une autorité Access PG, une dépendance Files n'a de sens que
+        # si les calls mission sont retenus jusqu'au retrait vérifié (extension holds846).
+        if (self.files_mission_dependencies_enabled and self.access_backend == "postgres"
+                and not self.access_mission_retention_enabled):
+            raise ValueError("Mission file dependencies require the Access retention extension")
         return self
 
     # --- Serveur MCP ---
@@ -28,6 +35,7 @@ class Settings(BaseSettings):
     mcp_server_host: str = "0.0.0.0"
     mcp_server_port: int = 8050
     mcp_server_debug: bool = False
+    technical_log_directory: str = ""
 
     # --- Auth ---
     admin_bootstrap_key: str = "change_me_in_production"
@@ -47,6 +55,14 @@ class Settings(BaseSettings):
     access_vault_path: str = "connection"
     access_vault_token_file: str = ""
     access_vault_ca_file: str = ""
+    # #846 : extension holds846 (domaine Access neuf, coordination Mission requise).
+    access_mission_retention_enabled: bool = False
+    access_retention_issuer: str = ""
+    access_retention_jwks_url: str = ""
+    access_retention_audience: str = ""
+    # 15 s au plus : le second callback tient dans la transaction, sous
+    # idle_in_transaction_session_timeout=20 s posé par retention_846._step.
+    access_retention_callback_seconds: float = Field(default=10, ge=2, le=15)
 
     # Destinataire hub facultatif, séparé du bearer opaque Tools.
     hub_activity_enabled: bool = False
@@ -101,6 +117,8 @@ class Settings(BaseSettings):
     files_recovery_enabled: bool = False
     files_recovery_days: int = Field(default=30, ge=30, le=36500)
     files_recovery_maintenance_role: str = ""
+    # #846 : fermé par défaut, projection PG17 capturée requise avant activation.
+    files_mission_dependencies_enabled: bool = False
     files_s3_prefix: str = "files-generations/"
     files_s3_data_signature: str = "s3"  # Dell ECS s3 ; autre provider s3v4 explicite
     files_vault_url: str = ""

@@ -147,6 +147,13 @@ def record_activity(
         entry["details"] = _compact(details)
     _activity.append(entry)
     try:
+        from .technical_logs import record_event
+        record_event(event, level)
+    except Exception:
+        # Same diagnostic-only contract as the existing stderr sink. A failed
+        # write is not reported as successful retention or a business mutation.
+        pass
+    try:
         # Le format JSONL est volontairement identique à celui renvoyé à
         # l'admin : la collecte Docker peut l'ingérer sans parser une phrase.
         print(json.dumps({"activity": entry}, ensure_ascii=False, default=str), file=sys.stderr, flush=True)

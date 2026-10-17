@@ -20,11 +20,15 @@ async def install(args):
         from .files_recovery_contract import expected_projection
         from .files_recovery_schema import render
         # Missing/unreviewed projection refuses before any SQL installation effect.
-        expected_projection()
+        expected_projection(s)
         if len({args.app_role, s.files_pg_owner, s.files_recovery_maintenance_role}) != 3:
             raise StorageUnavailable("Rôles recovery distincts requis")
         recovery_ddl = render(args.schema, args.app_role, s.files_recovery_maintenance_role,
                               prefix=s.files_s3_prefix, recovery_days=s.files_recovery_days)
+        if s.files_mission_dependencies_enabled:
+            from .files_dependency_schema import render as render_dependencies
+            recovery_ddl = sql.Composed([recovery_ddl, render_dependencies(
+                args.schema, args.app_role, s.files_recovery_maintenance_role)])
     roles = (args.schema,args.app_role,s.files_pg_owner)
     if s.files_recovery_enabled:
         roles += (s.files_recovery_maintenance_role,)

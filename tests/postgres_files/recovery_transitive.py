@@ -110,7 +110,7 @@ async def exercise(args, save):
         reader = FixtureCatalog(cfg.model_copy(update={'files_pg_role': args.maintenance}))
         async with reader.connection() as c:
             red = await original(c, pin)
-            green = await FileRecovery.referenced(c, pin)
+            green = await FileRecovery.referenced(c, pin, dependencies=False)
         after = await state()
         # Observations are durable before assertions, including original false result.
         observation = {'red_original': red, 'green_candidate': green, 'before': before, 'after': after}

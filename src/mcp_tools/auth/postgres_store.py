@@ -19,8 +19,9 @@ from .token_store import TokenStoreUnavailable
 _ACTIVE: set[asyncio.Task] = set()
 _HUB_ACCESS_CONFIRM = 'SELECT * FROM tools_access.hub_access_confirm(%s,%s,%s,%s,%s,%s,%s,%s)'
 _HUB_FILES_CONFIRM = 'SELECT * FROM tools_access.hub_files_confirm(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'
+_HUB_FILES_CONFIRM_846 = _HUB_FILES_CONFIRM.replace('hub_files_confirm(', 'hub_files_confirm_846(')
 _HUB_FILES_ORIGIN = (
-    r'PL/pgSQL function tools_access\.hub_files_confirm\(text,bigint,uuid,bigint,text,text,text,text,text,text,uuid\[\],uuid\[\]\) '
+    r'PL/pgSQL function tools_access\.hub_files_confirm(?:_846)?\(text,bigint,uuid,bigint,text,text,text,text,text,text,uuid\[\],uuid\[\]\) '
     r'line [0-9]+ at RAISE'
 )
 _HUB_ACCESS_REFUSALS = {'local access changed', 'local binding changed', 'local access or binding changed'}
@@ -49,7 +50,7 @@ class PostgresAccessStore:
     """Le provider fourni lit Vault à chaque connexion ; aucun credential conservé."""
 
     def __init__(self, credentials, *, ca_file, role, database, timeout=5.0,
-                 cursor_ttl=60, cursor_capacity=1024):
+                 cursor_ttl=60, cursor_capacity=1024, retention=False):
         if not 2 <= timeout <= 5:
             raise ValueError('Access operation budget must be between 2 and 5 seconds')
         self.credentials = credentials
@@ -58,6 +59,11 @@ class PostgresAccessStore:
         self.database = database
         self.timeout = timeout
         self.cursors = AccessCursors(ttl=cursor_ttl, capacity=cursor_capacity)
+        # #846 : profil holds846, routines de remplacement et contrat runtime frais.
+        self.retention = bool(retention)
+
+    def _routine(self, name):
+        return name + '_846' if self.retention else name
 
     async def _run(self, query, parameters):
         import psycopg
@@ -87,6 +93,12 @@ class PostgresAccessStore:
                     await check.execute('SELECT * FROM tools_access.schema_contract()', ())
                     if await check.fetchall() != [{'version': VERSION, 'checksum': CHECKSUM}]:
                         raise TokenStoreUnavailable('Access schema incompatible')
+                    if self.retention:
+                        from . import postgres_retention_846 as holds846
+                        await check.execute('SELECT * FROM tools_access.retention_846_contract()', ())
+                        if await check.fetchall() != [{'version': holds846.VERSION, 'checksum': holds846.CHECKSUM,
+                                                       'coordination_required': True}]:
+                            raise TokenStoreUnavailable('Access retention contract incompatible')
                     await check.execute("SELECT current_user AS role,current_database() AS db,pg_is_in_recovery() AS recovery,"
                         "(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) AS privileged "
                         "FROM pg_roles WHERE rolname=current_user", ())
@@ -117,7 +129,7 @@ class PostgresAccessStore:
                     query == _HUB_ACCESS_CONFIRM
                     and error.diag.message_primary in _HUB_ACCESS_REFUSALS
                     and re.fullmatch(_HUB_ACCESS_ORIGIN, error.diag.context or '')
-                    or query == _HUB_FILES_CONFIRM
+                    or query in (_HUB_FILES_CONFIRM, _HUB_FILES_CONFIRM_846)
                     and error.diag.message_primary == 'current hub file access refused'
                     and re.fullmatch(_HUB_FILES_ORIGIN, error.diag.context or ''))):
                 raise ValueError('Current local hub access refused') from None
@@ -151,8 +163,9 @@ class PostgresAccessStore:
 
     async def ready(self):
         """Contrat, identité et privilèges frais, sans credential utilisateur."""
-        from .postgres_schema import APP_ROUTINES
-        routines = ['tools_access.' + name for name in APP_ROUTINES]
+        # Un profil qui ne correspond pas au domaine (846 ou v1) échoue ici, fermé.
+        from .postgres_retention_846 import routine_profile
+        routines = ['tools_access.' + name for name in routine_profile(self.retention)[0]]
         rows = await self._run("SELECT bool_and(has_function_privilege(current_user,r,'EXECUTE')) AS allowed "
             "FROM unnest(%s::text[]) r", (routines,))
         if rows != [{'allowed': True}]:
@@ -208,7 +221,7 @@ class PostgresAccessStore:
         binding = (requester, info['actor_id'], info['tenant_id'], info['service_id'],
                    info['version'], 'activity', limit)
         stamp, call_id = self.cursors.resolve(cursor, binding) if cursor is not None else (None, None)
-        rows = await self._run('SELECT * FROM tools_access.activity_page(%s,%s,%s,%s)',
+        rows = await self._run('SELECT * FROM tools_access.' + self._routine('activity_page') + '(%s,%s,%s,%s)',
                                (requester, stamp, call_id, limit))
         continuation = (self.cursors.issue(binding, (rows[-1]['created_at'], rows[-1]['call_id']))
                         if len(rows) == limit else None)
@@ -371,7 +384,7 @@ class PostgresAccessStore:
             'hub-activity', str(local['id']), local['version'], str(local['expires_at']),
             claims['iss'], claims['sub'], claims['owner_id'], claims['mission_id'], claims['root_agent_id'], limit)
         stamp, call = self.cursors.resolve(cursor, binding) if cursor is not None else (None, None)
-        rows = await self._run('SELECT * FROM tools_access.hub_activity_page(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        rows = await self._run('SELECT * FROM tools_access.' + self._routine('hub_activity_page') + '(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
             (requester, claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id'],
              claims['mission_id'], claims['root_agent_id'], stamp, call, limit))
         fields = ('call_id', 'actor_id', 'tenant_id', 'service_id', 'tool', 'trace_id', 'operation_id',
@@ -382,7 +395,7 @@ class PostgresAccessStore:
         return {'calls': calls, 'count': len(calls), 'next_cursor': cursor, 'page_complete': True}
 
     async def confirm_hub_files(self, requester, info, local, claims, calls):
-        rows = await self._run(_HUB_FILES_CONFIRM,
+        rows = await self._run(_HUB_FILES_CONFIRM_846 if self.retention else _HUB_FILES_CONFIRM,
             (requester, info['version'], str(local['id']), local['version'], claims['iss'],
              claims['sub'], claims['owner_id'], claims['tenant_id'], claims['mission_id'],
              claims['root_agent_id'], list(calls), list(calls.values())))
@@ -392,14 +405,19 @@ class PostgresAccessStore:
         if (row.get('credential_version') != info['version'] or str(row.get('binding_id')) != str(local['id'])
                 or row.get('binding_version') != local['version']):
             raise ValueError('Final local file version changed')
-        return {**row, 'credential_expires_at': utc(row['credential_expires_at']) if row['credential_expires_at'] is not None else None,
-                'binding_expires_at': utc(row['binding_expires_at']), 'activity_expires_at': utc(row['activity_expires_at'])}
+        confirmed = {**row, 'credential_expires_at': utc(row['credential_expires_at']) if row['credential_expires_at'] is not None else None,
+                     'binding_expires_at': utc(row['binding_expires_at'])}
+        confirmed.pop('activity_expires_at', None)
+        # 846 : un call mission retenu n'a pas d'échéance ; v1 garde son échéance stricte.
+        if not self.retention or row.get('activity_expires_at') is not None:
+            confirmed['activity_expires_at'] = utc(row['activity_expires_at'])
+        return confirmed
 
     async def hub_file_calls(self, requester, claims, calls):
         ids = [str(UUID(value)) for value in calls]
         if not 1 <= len(ids) <= 64 or len(set(ids)) != len(ids):
             raise ValueError('Invalid hub file batch')
-        rows = await self._run('SELECT * FROM tools_access.hub_file_calls(%s,%s,%s,%s,%s,%s,%s,%s)',
+        rows = await self._run('SELECT * FROM tools_access.' + self._routine('hub_file_calls') + '(%s,%s,%s,%s,%s,%s,%s,%s)',
             (requester, claims['iss'], claims['sub'], claims['owner_id'], claims['tenant_id'],
              claims['mission_id'], claims['root_agent_id'], ids))
         if {str(r['call_id']) for r in rows} != set(ids) or len(rows) != len(ids):

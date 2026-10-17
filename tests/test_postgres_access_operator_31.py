@@ -62,7 +62,7 @@ def configure(monkeypatch, tmp_path, commit_failure=False, audit_failure=False):
         assert kwargs['sslmode']=='verify-full' and kwargs['target_session_attrs']=='read-write'
         events.append('connected')
         return c
-    async def verify(*args): events.append('verified')
+    async def verify(*args, **kwargs): events.append('verified')
     monkeypatch.setattr(operator, 'AccessCredentials', Provider)
     monkeypatch.setattr(psycopg.AsyncConnection, 'connect', connect)
     monkeypatch.setattr(operator, 'verify', verify)

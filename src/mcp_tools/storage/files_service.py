@@ -14,6 +14,22 @@ from .files_postgres import Catalog, Conflict, CommitUnknown, digest
 from .files_s3 import Blobs
 
 
+class DependencyRefused(Conflict):
+    """#846 : suppression refusée de façon définitive, rien de publié, rien d'ouvert.
+
+    ``operation_id`` n'est posé que par la publication, seul point où une opération
+    existe (close avec ses reçus). Un refus de prepare ou de réservation n'écrit rien :
+    la réponse ne rend alors aucun identifiant que operation_info ne saurait relire.
+    """
+
+    def __init__(self, message, operation_id=None):
+        super().__init__(message)
+        self.operation_id = operation_id
+
+
+DEPENDENCY_ACTIVE = "Fichier protégé par une dépendance Mission active"
+
+
 def key(value):
     if not isinstance(value, str) or not 1 <= len(value.encode("utf-8")) <= 1024 or "\x00" in value:
         raise Conflict("Clé invalide (1–1024 octets UTF-8)")
@@ -166,6 +182,15 @@ class FilesService:
             if op == "info":
                 return {"status": "ok", **public_ref(row)}
             second = await self.ref(c, key(args.get("path2"))) if op == "diff" else None
+            scope = self.dependency_scope()
+            if scope is not None:
+                # #846 : seule une lecture qui servira des octets crée une dépendance,
+                # confirmée par COMMIT avant tout accès S3.
+                if op == "diff" and (not second or second["deleted"] or not second["generation"]):
+                    raise Conflict("Seconde source absente")
+                if op == "read" and args.get("if_match") and args["if_match"] != row["pin"]["etag"]:
+                    raise Conflict("ETag ne correspond pas à la génération")
+                await self.acquire(c, scope, [row] + ([second] if op == "diff" else []))
         body = await self.blobs.get(row["pin"])
         async with cat.connection() as c:
             await self.current_read(c, current)
@@ -203,6 +228,56 @@ class FilesService:
             result.update(content=text[:n], truncated=len(text)>n)
         return result
 
+    def dependency_scope(self):
+        """Lecture admise par délégation hub : claims serveur, jamais arguments Files."""
+        if not getattr(self.s, "files_mission_dependencies_enabled", False):
+            return None
+        from ..auth.context import current_access_operation
+        from ..auth.hub_activity import current_hub_context
+        delegated = current_hub_context.get()
+        if delegated is None:
+            return None  # standalone : comportement inchangé
+        operation = current_access_operation.get()
+        if not delegated.consumed or operation is None:
+            raise Conflict("Origine d'admission invalide")
+        claims = delegated.claims
+        return {"call_id": str(uuid.UUID(claims["call_id"])), "operation": str(uuid.UUID(operation)),
+                "tenant_id": claims["tenant_id"], "mission_id": claims["mission_id"],
+                "root_agent_id": claims["root_agent_id"],
+                "binding": (current_token_info.get() or {}).get("credential_binding")}
+
+    def dependencies_enabled(self):
+        return bool(getattr(self.s, "files_mission_dependencies_enabled", False))
+
+    async def dependency_active(self, c, path):
+        return (await self.catalog.one(c,
+            "SELECT EXISTS(SELECT 1 FROM mission_file_dependencies WHERE path=%s AND state='active') protected",
+            (path,)))["protected"]
+
+    async def acquire(self, c, scope, rows):
+        from psycopg.types.json import Jsonb
+        cat = self.catalog
+        # Ordre (path, generation) de guard_source_intent ; un diff du même fichier n'insère qu'une ligne.
+        rows = sorted({(r["path"], str(r["generation"])): r for r in rows}.values(),
+                      key=lambda r: (r["path"], str(r["generation"])))
+        async with cat.transaction(c):
+            for row in rows:
+                # Le trigger owner vérifie génération visible sous refs FOR SHARE puis verrou pin 845.
+                await c.execute("INSERT INTO mission_file_dependencies(call_id,generation,activity_operation_id,path,pin,served_revision,tenant_id,mission_id,root_agent_id,credential_binding) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (call_id,generation) DO NOTHING",
+                    (scope["call_id"], str(row["generation"]), scope["operation"], row["path"], Jsonb(row["pin"]),
+                     row["revision"], scope["tenant_id"], scope["mission_id"], scope["root_agent_id"], scope["binding"]))
+        for row in rows:
+            stored = await cat.one(c, "SELECT * FROM mission_file_dependencies WHERE call_id=%s AND generation=%s",
+                                   (scope["call_id"], str(row["generation"])))
+            expected = (scope["call_id"], str(row["generation"]), scope["operation"], row["path"], row["pin"],
+                        row["revision"], scope["tenant_id"], scope["mission_id"], scope["root_agent_id"],
+                        scope["binding"], "active")
+            if stored is None or tuple(str(stored[k]) if k in ("call_id", "generation", "activity_operation_id")
+                    else stored[k] for k in ("call_id", "generation", "activity_operation_id", "path", "pin",
+                    "served_revision", "tenant_id", "mission_id", "root_agent_id", "credential_binding",
+                    "state")) != expected:
+                raise Conflict("Dépendance Mission non confirmée")
+
     async def info(self, oid, certificate=None):
         async with self.catalog.connection() as c:
             row = await self.catalog.one(c, "SELECT * FROM operations WHERE id=%s", (oid,))
@@ -211,17 +286,23 @@ class FilesService:
                 raise Conflict("Opération inaccessible")
             self.authorize_journal(row)
             ref = await self.ref(c, row["path"])
-            effects = await self.catalog.one(c, "SELECT EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='publication') published", (oid,))
+            effects = await self.catalog.one(c, "SELECT EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='publication') published,EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='dependency_refusal_closed') refused", (oid, oid))
             present = effects["published"]
-            effect = "present" if present else "not_published" if certificate and not row["publication_allowed"] else "unobserved"
+            # #846 : publish a révoqué et fermé dans la transaction de sa barrière ; l'état
+            # est final et connu. Même réponse que le premier appel, jamais « ok » pour un
+            # delete non publié, et aucun reconcile à demander.
+            refused = (not certificate and not present and effects["refused"]
+                       and row["closed"] and not row["publication_allowed"])
+            effect = "present" if present else "not_published" if (certificate or refused) and not row["publication_allowed"] else "unobserved"
             if present and (not ref or str(ref["operation"]) != oid):
                 effect = "conflict"
             history = await (await c.execute("SELECT kind,detail,created_at FROM receipts WHERE operation=%s ORDER BY created_at,id LIMIT 64", (oid,))).fetchall()
-            result = {"status": "ok" if certificate else "incomplete", "operation_id": oid,
+            result = {"status": "ok" if certificate else "error" if refused else "incomplete", "operation_id": oid,
+                **({"code": "mission_dependency_active"} if refused else {}),
                 "path": row["path"], "phase": row["phase"], "generation": str(row["generation"]),
                 "initial_confirmation": row["initial_confirmation"], "remote_result": "uncertain",
                 "effect_state": effect, "durability_state": "verified_at_current_observation" if certificate else "unverified",
-                "reconciliation_state": "verified_at_current_observation" if certificate else "pending",
+                "reconciliation_state": "verified_at_current_observation" if certificate else "not_required" if refused else "pending",
                 "publication_allowed": row["publication_allowed"], "closed": row["closed"],
                 "history_limit": 64, "history_may_be_truncated": len(history)==64,
                 "history": [{"kind": h["kind"], "detail": h["detail"], "created_at": h["created_at"].isoformat()} for h in history],
@@ -243,6 +324,10 @@ class FilesService:
             if op == "delete":
                 if not old or old["deleted"]:
                     raise Conflict("Fichier absent")
+                # #846 : refus anticipé, sans verrou. Réservation et publication refont
+                # ce contrôle sous refs FOR UPDATE ; le trigger refs reste l'autorité.
+                if self.dependencies_enabled() and await self.dependency_active(c, path):
+                    raise DependencyRefused(DEPENDENCY_ACTIVE)
                 manifest = [{"path": path, "generation": str(old["generation"]), "pin": old["pin"]}]
             if op == "concat":
                 paths = args.get("paths")
@@ -298,8 +383,8 @@ class FilesService:
     async def mutate(self, op, args, oid):
         cat = self.catalog
         # Origine serveur d'une admission réussie, jamais un argument Files.
-        from ..auth.hub_activity import current_hub_context
         from ..auth.context import current_access_operation
+        from ..auth.hub_activity import current_hub_context
         delegated = current_hub_context.get()
         origin = None
         if delegated is not None:
@@ -331,6 +416,10 @@ class FilesService:
                 dest = await self.ref(c,args["path"],True)
                 if dest["revision"] != expected:
                     raise Conflict("CAS réservation divergent")
+                # #846 : une acquisition commitée pendant l'attente du verrou est vue ici ;
+                # le ROLLBACK ne laisse aucune opération ouverte sur le chemin.
+                if op == "delete" and self.dependencies_enabled() and await self.dependency_active(c, args["path"]):
+                    raise DependencyRefused(DEPENDENCY_ACTIVE)
                 rid = await cat.barrier(c,oid,"intent_reserved")
             await cat.verify_barrier(c,oid,rid)
         # Toute phase armée est durable AVANT son effet. Unknown => arrêt, pas retry.
@@ -373,13 +462,28 @@ class FilesService:
                 dest = await self.ref(c,row["path"],True)
                 if dest["revision"] != row["expected_revision"]:
                     raise Conflict("CAS publication divergent")
-                gen = dest["generation"] if op=="delete" else generation
-                changed = await c.execute("UPDATE refs SET revision=revision+1,generation=%s,operation=%s,deleted=%s,updated_at=clock_timestamp() WHERE path=%s AND revision=%s",(gen,oid,op=="delete",row["path"],row["expected_revision"]))
-                if changed.rowcount != 1:
-                    raise Conflict("CAS publication refusé")
-                await c.execute("UPDATE operations SET phase='EFFECT_COMMITTED' WHERE id=%s",(oid,))
-                rid = await cat.receipt(c,oid,"publication",{"attempt":attempt,"generation":generation})
+                # #846 : sous refs FOR UPDATE aucune acquisition ne peut aboutir avant notre
+                # COMMIT (elle prend refs FOR SHARE). Si une dépendance est active, le refus
+                # est définitif : on révoque et on ferme dans cette même transaction, au lieu
+                # de laisser le trigger annuler l'UPDATE et l'opération ouverte (one_active_path).
+                refused = op=="delete" and self.dependencies_enabled() and await self.dependency_active(c,row["path"])
+                if refused:
+                    revocation = str(uuid.uuid4())
+                    await c.execute("UPDATE operations SET publication_allowed=false,revocation=%s,closed=true WHERE id=%s",(revocation,oid))
+                    await cat.receipt(c,oid,"dependency_refusal",{"revocation_id":revocation,"attempt":attempt,
+                        "generation":generation,"result":"not_published"})
+                    rid = await cat.barrier(c,oid,"dependency_refusal_closed")
+                else:
+                    gen = dest["generation"] if op=="delete" else generation
+                    changed = await c.execute("UPDATE refs SET revision=revision+1,generation=%s,operation=%s,deleted=%s,updated_at=clock_timestamp() WHERE path=%s AND revision=%s",(gen,oid,op=="delete",row["path"],row["expected_revision"]))
+                    if changed.rowcount != 1:
+                        raise Conflict("CAS publication refusé")
+                    await c.execute("UPDATE operations SET phase='EFFECT_COMMITTED' WHERE id=%s",(oid,))
+                    rid = await cat.receipt(c,oid,"publication",{"attempt":attempt,"generation":generation})
             certificate = await cat.verify_barrier(c,oid,rid)
+            if refused:
+                # COMMIT et barrière connus : opération close, rien publié, aucun reconcile requis.
+                raise DependencyRefused(DEPENDENCY_ACTIVE, operation_id=oid)
             # Relecture sous verrou après barrière : aucun snapshot préalable ne sert de preuve.
             async with cat.transaction(c):
                 observed = await cat.lock(c,oid)
@@ -495,6 +599,11 @@ class FilesService:
                     result = await self.read_operations(op,args)
                     await refresh_access('files')
                     return {"operation":op, **result}
+        except DependencyRefused as e:
+            # Refus connu : aucune publication, aucune opération ouverte, pas de reconcile.
+            return {"status":"error","code":"mission_dependency_active","message":str(e),
+                "effect_state":"not_published","reconciliation_state":"not_required",
+                **({"operation_id":e.operation_id} if e.operation_id else {})}
         except Conflict as e:
             if op in ("write", "concat", "delete", "reconcile"):
                 return {"status":"incomplete","message":str(e),"remote_result":"uncertain",

@@ -1,5 +1,5 @@
 {
-  "ddl_sha256": "0a7896aab9914401ec5a93e222faba99fa19e162f687e9a924bd827ffb185862",
+  "ddl_sha256": "184c486787bb84d980cd1c7d62fffac2938e1d2c7dd74d1eff2f729b0e687750",
   "format_version": 1,
   "snapshot": {
     "acl": [
@@ -822,17 +822,17 @@
       {
         "attgenerated": "",
         "attidentity": "",
-        "attname": "request_digest",
-        "attnotnull": true,
+        "attname": "origin_call_id",
+        "attnotnull": false,
         "attnum": 4,
-        "datatype": "text",
+        "datatype": "uuid",
         "default_value": null,
         "relname": "operations"
       },
       {
         "attgenerated": "",
         "attidentity": "",
-        "attname": "intent_digest",
+        "attname": "request_digest",
         "attnotnull": true,
         "attnum": 5,
         "datatype": "text",
@@ -842,9 +842,19 @@
       {
         "attgenerated": "",
         "attidentity": "",
-        "attname": "intent",
+        "attname": "intent_digest",
         "attnotnull": true,
         "attnum": 6,
+        "datatype": "text",
+        "default_value": null,
+        "relname": "operations"
+      },
+      {
+        "attgenerated": "",
+        "attidentity": "",
+        "attname": "intent",
+        "attnotnull": true,
+        "attnum": 7,
         "datatype": "jsonb",
         "default_value": null,
         "relname": "operations"
@@ -854,7 +864,7 @@
         "attidentity": "",
         "attname": "attempt",
         "attnotnull": true,
-        "attnum": 7,
+        "attnum": 8,
         "datatype": "uuid",
         "default_value": null,
         "relname": "operations"
@@ -864,7 +874,7 @@
         "attidentity": "",
         "attname": "generation",
         "attnotnull": true,
-        "attnum": 8,
+        "attnum": 9,
         "datatype": "uuid",
         "default_value": null,
         "relname": "operations"
@@ -874,7 +884,7 @@
         "attidentity": "",
         "attname": "expected_revision",
         "attnotnull": true,
-        "attnum": 9,
+        "attnum": 10,
         "datatype": "bigint",
         "default_value": null,
         "relname": "operations"
@@ -884,7 +894,7 @@
         "attidentity": "",
         "attname": "phase",
         "attnotnull": true,
-        "attnum": 10,
+        "attnum": 11,
         "datatype": "text",
         "default_value": null,
         "relname": "operations"
@@ -894,7 +904,7 @@
         "attidentity": "",
         "attname": "publication_allowed",
         "attnotnull": true,
-        "attnum": 11,
+        "attnum": 12,
         "datatype": "boolean",
         "default_value": "true",
         "relname": "operations"
@@ -904,7 +914,7 @@
         "attidentity": "",
         "attname": "revocation",
         "attnotnull": false,
-        "attnum": 12,
+        "attnum": 13,
         "datatype": "uuid",
         "default_value": null,
         "relname": "operations"
@@ -914,7 +924,7 @@
         "attidentity": "",
         "attname": "closed",
         "attnotnull": true,
-        "attnum": 13,
+        "attnum": 14,
         "datatype": "boolean",
         "default_value": "false",
         "relname": "operations"
@@ -924,7 +934,7 @@
         "attidentity": "",
         "attname": "initial_confirmation",
         "attnotnull": true,
-        "attnum": 14,
+        "attnum": 15,
         "datatype": "text",
         "default_value": "'unknown'::text",
         "relname": "operations"
@@ -934,7 +944,7 @@
         "attidentity": "",
         "attname": "created_at",
         "attnotnull": true,
-        "attnum": 15,
+        "attnum": 16,
         "datatype": "timestamp with time zone",
         "default_value": "clock_timestamp()",
         "relname": "operations"

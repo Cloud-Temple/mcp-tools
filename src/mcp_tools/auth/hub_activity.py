@@ -241,7 +241,7 @@ class HubActivityMiddleware:
                 confirmed = await store.confirm_hub_files(requester, info, binding, c, calls)
                 check_expiry(c, confirmed)
 
-            page = await read_hub_files(calls, body, self.cfg, check)
+            page = await read_hub_files(calls, body, self.cfg, check, claims=c)
         else:
             page = await store.hub_activity_page(requester, info, binding, c,
                                                   cursor=body.get('cursor'), limit=body['limit'])

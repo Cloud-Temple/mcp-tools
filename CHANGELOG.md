@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- #846 Access : extension holds846 sur domaine neuf. Les calls Mission n'ont plus
+  d'échéance par date et ne partent que par un retrait appuyé sur une claim Mission
+  vérifiée (`python -m src.mcp_tools.retention_846`, cinq étapes, `reconcile`).
+  Reçu à trois références agrégées. `verify` contrôle marqueur, grants, triggers
+  et sources de l'extension.
+- Mission #846 (préparation) : segments techniques UTC privés, issus des codes
+  du diagnostic existant sans payload, et nettoyage opérateur borné à30jours.
+  La politique annuelle d'activité et les échéances de sécurité restent séparées.
 - Candidat Mission843 : lecteur local `hub_read` sans exécution MCP/admin,
   lookup des appels autorisés et lecture du pin Files publié, avec origine
   serveur immuable. Métadonnées distinctes du contenu S3 ; recette native à venir.
