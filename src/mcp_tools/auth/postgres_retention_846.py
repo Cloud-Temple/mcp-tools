@@ -372,9 +372,8 @@ def function_sources():
     return sources
 
 
-# Projection catalogue attendue sous search_path=pg_catalog. PRÉDICTION à figer
-# par le kit j0/run846-dep-r3 : il écrit la projection observée et échoue si elle
-# diffère ; la valeur observée remplace alors celle-ci, sans autre changement.
+# Projection catalogue attendue sous search_path=pg_catalog, observée sur PG17 par le
+# kit j0/run846-dep-r3 (access_846_catalog.observed.json). Tris en COLLATE "C".
 _T = 'tools_access.'
 CATALOG = {
     'triggers': [

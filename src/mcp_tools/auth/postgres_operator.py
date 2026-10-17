@@ -34,22 +34,22 @@ _PROJECTION_846 = {
     'triggers': '''SELECT t.relname,g.tgname,g.tgenabled,pg_get_triggerdef(g.oid,false) definition
         FROM pg_trigger g JOIN pg_class t ON t.oid=g.tgrelid JOIN pg_namespace n ON n.oid=t.relnamespace
         WHERE n.nspname='tools_access' AND t.relname IN ''' + _TABLES_846 + ''' AND NOT g.tgisinternal
-        ORDER BY t.relname,g.tgname''',
+        ORDER BY t.relname COLLATE "C",g.tgname COLLATE "C"''',
     'constraints': '''SELECT t.relname,k.conname,k.contype,pg_get_constraintdef(k.oid) definition
         FROM pg_constraint k JOIN pg_class t ON t.oid=k.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
         WHERE n.nspname='tools_access' AND t.relname IN ''' + _TABLES_846.replace("'activity_calls',", '') + '''
-        ORDER BY t.relname,k.conname''',
+        ORDER BY t.relname COLLATE "C",k.conname COLLATE "C"''',
     'indexes': '''SELECT t.relname,pg_get_indexdef(i.indexrelid) definition FROM pg_index i
         JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace
         WHERE n.nspname='tools_access' AND t.relname IN ''' + _TABLES_846.replace("'activity_calls',", '') + '''
-        ORDER BY t.relname,i.indexrelid::regclass::text''',
+        ORDER BY t.relname COLLATE "C",i.indexrelid::regclass::text COLLATE "C"''',
     'functions': '''SELECT p.proname,p.prosecdef,p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-        WHERE n.nspname='tools_access' AND p.proname=ANY(%s) ORDER BY p.proname''',
+        WHERE n.nspname='tools_access' AND p.proname=ANY(%s) ORDER BY p.proname COLLATE "C"''',
 }
 
 
 async def projection_846(c):
-    """Projection observée ; le kit PG17 l'écrit telle quelle pour figer CATALOG."""
+    """Projection observée ; le kit PG17 l'écrit telle quelle et la compare à CATALOG."""
     await c.execute('SET LOCAL search_path=pg_catalog')
     result = {}
     for name, query in _PROJECTION_846.items():

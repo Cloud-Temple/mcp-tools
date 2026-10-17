@@ -291,6 +291,11 @@ def test_envelope_passes_frozen_mission_validator_with_three_explicit_categories
     assert value['references'][2] == {'kind': 'tools_file_dependencies', 'revision': 0, 'root_agent_id': root,
                                       'id': 'sha256:' + hashlib.sha256(b'').hexdigest()}
     assert private['composed_at'] == '2026-10-17T08:00:01.500000+00:00'
+    # sealed_at en UTC : un autre TimeZone de session donne les mêmes octets.
+    assert private['access']['sealed_at'] == '2026-10-17T08:00:01.500000+00:00'
+    assert private['files']['sealed_at'] == '2026-10-17T08:00:00.000001+00:00'
+    shifted = {**SEALED_A, 'sealed_at': '2026-10-17T03:00:01.5-05:00'}
+    assert cli.envelope(body, operation, shifted, dict(SEALED_F)) == (private, value)
     assert cli.envelope(body, operation, dict(SEALED_A), dict(SEALED_F)) == (private, value)
     # Une autre claim (révision) est refusée par Mission : le reçu est lié à son identité.
     with pytest.raises(ValueError):
@@ -319,19 +324,25 @@ class Conn:
 
 
 class Recovery:
-    def __init__(self, log):
+    def __init__(self, log, flags=None):
         self.log, self.state = log, 'absent'
         self.settings = SimpleNamespace(files_recovery_enabled=True, files_mission_dependencies_enabled=True)
+        flags = flags if flags is not None else {}
 
         class Tx:
             def transaction(_, c):
                 from contextlib import asynccontextmanager
+
+                from src.mcp_tools.storage.files_postgres import CommitUnknown
 
                 @asynccontextmanager
                 async def tx():
                     await c.execute('BEGIN')
                     yield
                     await c.execute('COMMIT')
+                    if flags.get('fail_files_commit'):
+                        # COMMIT appliqué (l'effet est déjà dans self.state), ACK perdu.
+                        raise CommitUnknown('COMMIT diagnostic inconnu')
                 return tx()
         self.catalog = Tx()
 
@@ -362,10 +373,10 @@ def harness(tmp_path, root='ag_root1', fail_commit=False):
     expires = datetime.now(timezone.utc) + timedelta(seconds=30)
     operation = str(uuid4())
     log = []
-    recovery = Recovery(log)
+    flags = {'fail_commit': fail_commit}
+    recovery = Recovery(log, flags)
     recovery.claim = digest
     access_state = {'state': 'absent'}
-    flags = {'fail_commit': fail_commit}
     sealed = {'operation_id': operation, 'state': 'sealed', 'claim_sha256': digest, **SEALED_A}
 
     def results():
@@ -430,11 +441,139 @@ def test_uncertain_commit_stops_until_reconcile_reports_next_step(tmp_path):
     with pytest.raises(cli.Refused, match='reconcile first'):
         step(core, 'files-prepare')
     # Le registre lu sous verrou dit si l'effet a commité ; ici oui.
-    access_state.update({'operation_id': core.operation, 'state': 'prepared'})
+    access_state.update({'operation_id': core.operation, 'state': 'prepared',
+                         'claim_sha256': proof.fingerprint(core.live('x')[0])})
     core.flags['fail_commit'] = False
     result = run(cli.run(core, SimpleNamespace(step='reconcile', batch=1)))
     assert result['next_step'] == 'files-prepare'
     assert not list(tmp_path.glob('*.unknown.json')) and (tmp_path / 'access-prepare.reconciled.json').exists()
+
+
+# P2-A. COMMIT effectif sans ACK : reconcile réécrit le fichier de l'étape que le
+# registre confirme, sinon l'étape suivante que reconcile annonce serait refusée.
+TRANSITIONS = [('access-prepare', 'files-prepare', 'fail_commit'),
+               ('files-prepare', 'access-retire', 'fail_files_commit'),
+               ('access-retire', 'files-retire', 'fail_commit')]
+
+
+@pytest.mark.parametrize('lost,following,flag', TRANSITIONS)
+def test_reconcile_confirms_committed_step_without_ack_then_next_step_runs(tmp_path, lost, following, flag):
+    core, log, access_state, sealed = harness(tmp_path)
+    digest = proof.fingerprint(core.live('x')[0])
+    order = ['access-prepare', 'files-prepare', 'access-retire', 'files-retire']
+    for name in order[:order.index(lost)]:
+        step(core, name)
+    core.flags[flag] = True
+    with pytest.raises(cli.Unknown):
+        step(core, lost)
+    core.flags[flag] = False
+    # Le COMMIT a eu lieu : le registre Access porte l'effet (Files : déjà dans recovery.state).
+    if lost == 'access-prepare':
+        access_state.update({'operation_id': core.operation, 'state': 'prepared', 'claim_sha256': digest})
+    elif lost == 'access-retire':
+        access_state.update(sealed)
+    else:
+        access_state.update({'operation_id': core.operation, 'state': 'prepared', 'claim_sha256': digest})
+    assert not (tmp_path / (lost + '.json')).exists()
+    # Le défaut corrigé : sans fichier de l'étape perdue, l'étape suivante est refusée.
+    method = {'files-prepare': core.files_prepare, 'access-retire': lambda t: core.access_retire(t, 500),
+              'files-retire': lambda t: core.files_retire(t, 500)}[following]
+    with pytest.raises(cli.Refused, match='Previous confirmed step required: ' + lost):
+        run(method('proof'))
+    reconciled = run(cli.run(core, SimpleNamespace(step='reconcile', batch=1)))
+    assert reconciled['next_step'] == following
+    written = json.loads((tmp_path / (lost + '.json')).read_text())
+    assert written['confirmed_by'] == 'reconcile' and written['operation_id'] == core.operation
+    assert written['claim_sha256'] == digest
+    assert (tmp_path / (lost + '.json')).stat().st_mode & 0o777 == 0o600
+    before = len(log)
+    accepted = step(core, following)
+    assert accepted['state'] in ('prepared', 'sealed') and len(log) > before
+
+
+def test_reconcile_writes_nothing_when_commit_did_not_happen(tmp_path):
+    core, log, access_state, _ = harness(tmp_path, fail_commit=True)
+    with pytest.raises(cli.Unknown):
+        step(core, 'access-prepare')
+    core.flags['fail_commit'] = False
+    # Registre absent : le COMMIT n'a pas eu lieu, la même étape se relance.
+    reconciled = run(cli.run(core, SimpleNamespace(step='reconcile', batch=1)))
+    assert reconciled['next_step'] == 'access-prepare'
+    assert not (tmp_path / 'access-prepare.json').exists()
+    with pytest.raises(cli.Refused, match='Previous confirmed step required'):
+        step(core, 'files-prepare')
+
+
+def test_reconcile_protects_scope_bound_to_another_claim(tmp_path):
+    core, log, access_state, _ = harness(tmp_path, fail_commit=True)
+    with pytest.raises(cli.Unknown):
+        step(core, 'access-prepare')
+    core.flags['fail_commit'] = False
+    access_state.update({'operation_id': core.operation, 'state': 'prepared', 'claim_sha256': 'f' * 64})
+    reconciled = run(cli.run(core, SimpleNamespace(step='reconcile', batch=1)))
+    assert reconciled['next_step'] == 'protected'
+    assert not (tmp_path / 'access-prepare.json').exists()
+    with pytest.raises(cli.Refused, match='Previous confirmed step required'):
+        step(core, 'files-prepare')
+
+
+def test_reconcile_upgrades_partial_retire_file_to_sealed(tmp_path):
+    """Un lot partiel confirmé laisse access-retire.json à prepared ; le dernier lot sans ACK le scelle."""
+    core, log, access_state, sealed = harness(tmp_path)
+    for name in ('access-prepare', 'files-prepare'):
+        step(core, name)
+    from src.mcp_tools.retention_846 import save
+    save(tmp_path, 'access-retire.json', {'operation_id': core.operation, 'state': 'prepared',
+                                          'claim_sha256': sealed['claim_sha256'], 'has_more': True})
+    access_state.update(sealed)
+    run(cli.run(core, SimpleNamespace(step='reconcile', batch=1)))
+    assert json.loads((tmp_path / 'access-retire.json').read_text())['state'] == 'sealed'
+    assert step(core, 'files-retire')['state'] == 'sealed'
+
+
+# P3. Ce qui sort sur stdout : nos refus et les messages primaires de nos RAISE SQL.
+
+def test_cli_reason_exposes_only_fixed_texts():
+    from pydantic import ValidationError
+    assert cli.reason(cli.Refused('Both sealed registries required')) == 'Both sealed registries required'
+    raised = sql_error('retention scope bound to another operation', '', psycopg.errors.RaiseException)
+    assert cli.reason(raised) == 'retention scope bound to another operation'
+    denied = sql_error('mission retention closed', '', psycopg.errors.InsufficientPrivilege)
+    assert cli.reason(denied) == 'mission retention closed'
+    # Autre sqlstate : le message primaire peut porter une valeur, seul le nom sort.
+    assert cli.reason(sql_error('duplicate key (PRIVATE)', '', psycopg.errors.UniqueViolation)) == 'UniqueViolation'
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None, access_retention_callback_seconds='/private/path/canary')
+    assert '/private/path' in str(caught.value) and cli.reason(caught.value) == 'ValidationError'
+    assert cli.reason(ValueError('Invalid isoformat string: PRIVATE')) == 'ValueError'
+
+
+def test_main_prints_reason_without_private_value(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr('sys.argv', ['retention_846', 'reconcile', '--operation-id', str(uuid4()),
+                                     '--state-dir', str(tmp_path), '--files-app-role', 'app'])
+
+    def build(args):
+        raise ValueError('Invalid isoformat string: PRIVATE-CANARY')
+    monkeypatch.setattr(cli, 'build', build)
+    assert cli.main() == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out['status'] == 'refused' and out['reason'] == 'ValueError'
+
+
+@pytest.mark.parametrize('seconds,accepted', [(15, True), (15.5, False), (30, False)])
+def test_callback_budget_stays_under_transaction_idle_timeout(seconds, accepted):
+    if accepted:
+        assert Settings(_env_file=None, access_retention_callback_seconds=seconds)
+    else:
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, access_retention_callback_seconds=seconds)
+    # Le second callback tient dans la transaction : borne max strictement sous le SET LOCAL de _step.
+    import inspect
+    import re
+    idle = re.search(r"idle_in_transaction_session_timeout='(\d+)ms'", inspect.getsource(cli.Retention846._step))
+    bound = [m.le for m in Settings.model_fields['access_retention_callback_seconds'].metadata
+             if getattr(m, 'le', None) is not None]
+    assert bound and max(bound) < int(idle.group(1)) / 1000
 
 
 @pytest.mark.parametrize('access,files,expected', [
@@ -502,6 +641,13 @@ def test_files_prepare_empty_root_seals_at_zero_without_mission_scope():
                                           root_agent_id='', claim_sha256='d' * 64))
     assert view['state'] == 'sealed' and view['dependencies'] == 0
     assert view['dependencies_sha256'] == hashlib.sha256(b'').hexdigest()
+
+
+def test_files_closure_view_normalizes_sealed_at_to_utc():
+    stamp = datetime(2026, 10, 17, 10, 0, 0, 1, tzinfo=timezone(timedelta(hours=2)))
+    view = FileRecovery.closure_view({'operation_id': uuid4(), 'state': 'sealed', 'claim_sha256': 'd' * 64,
+                                      'dependencies': 0, 'dependencies_sha256': 'e' * 64, 'sealed_at': stamp})
+    assert view['sealed_at'] == '2026-10-17T08:00:00.000001+00:00'
 
 
 def test_files_prepare_refuses_other_operation_on_closed_scope():

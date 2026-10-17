@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   d'échéance par date et ne partent que par un retrait appuyé sur une claim Mission
   vérifiée (`python -m src.mcp_tools.retention_846`, cinq étapes, `reconcile`).
   Reçu à trois références agrégées. `verify` contrôle marqueur, grants, triggers
-  et sources de l'extension. Projection catalogue à figer par le kit PG17 r3.
+  et sources de l'extension.
 - Mission #846 (préparation) : segments techniques UTC privés, issus des codes
   du diagnostic existant sans payload, et nettoyage opérateur borné à30jours.
   La politique annuelle d'activité et les échéances de sécurité restent séparées.

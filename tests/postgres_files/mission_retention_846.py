@@ -19,6 +19,11 @@ P5a      Admission non commitée contre access-prepare : prepare attend, la comp
 P5b      Acquisition Files non commitée contre files-prepare : même schéma.
 P6       Rejeu de chaque étape identique ; autre operation_id et autre révision
          refusés ; session tuée avant le COMMIT d'access-retire, reconcile, reprise.
+P6-ACK   Session tuée après le COMMIT (ACK perdu) d'access-prepare puis du dernier
+         lot d'access-retire : reconcile confirme l'étape par le registre, l'étape
+         suivante est acceptée (files-prepare, puis files-retire), reçu valide.
+Refus    Chaque refus est comparé au texte fixe attendu, tel que le CLI l'imprime
+         (cli.reason : message primaire SQL pour P0001 et 42501).
 """
 import asyncio
 import hashlib
@@ -43,7 +48,7 @@ async def install_access(access):
     """Domaine Access neuf par le chemin produit (profil 846) ; rend la projection observée.
 
     verify() n'est pas appelé ici : le worker écrit d'abord la projection, pour que
-    l'exécutant puisse figer CATALOG même si la prédiction diffère.
+    l'exécutant voie l'écart avec CATALOG avant l'échec de verify.
     """
     from src.mcp_tools.auth import postgres_operator as operator
     async with await psycopg.AsyncConnection.connect(host=str(access.socket), dbname=access.database, user='postgres',
@@ -216,13 +221,16 @@ async def exercise(args, access, save):
             current_access_operation.reset(tokens[1])
         return scope, operation, result
 
-    async def read_refused(tenant, mission, root):
+    async def read_refused(tenant, mission, root, expected):
         try:
             _, _, result = await delegated_read(tenant, mission, root)
         except Exception as error:
-            return type(error).__name__
-        assert 'content' not in result, result
-        return result.get('code') or result.get('effect_state') or 'no content'
+            reason = cli.reason(error)
+        else:
+            assert 'content' not in result, result
+            reason = result.get('code') or result.get('effect_state') or 'no content'
+        assert reason == expected, (expected, reason)
+        return reason
 
     async def dependencies(mission):
         async with await psycopg.AsyncConnection.connect(host=str(args.socket), dbname=args.database,
@@ -252,11 +260,14 @@ async def exercise(args, access, save):
         return await cli.run(core(identity, operation, state, access_factory), SimpleNamespace(step=name, batch=batch),
                              'fixture-proof')
 
-    async def refused(coroutine, *errors):
+    async def refused(coroutine, expected, *errors):
+        """Le refus attendu, au texte près, tel que le CLI l'imprime (cli.reason)."""
         try:
             await coroutine
         except (cli.Refused, ValueError, psycopg.Error, *errors) as error:
-            return type(error).__name__
+            reason = cli.reason(error)
+            assert reason == expected, (expected, reason)
+            return reason
         raise AssertionError('step accepted')
 
     marker = current_token_info.set({'permissions': ['admin'], 'credential_binding': 'fixture846-public'})
@@ -280,7 +291,8 @@ async def exercise(args, access, save):
             results['access-prepare'] = await step(identity_a, operation_a, state_a, 'access-prepare')
             # P5b' : après files-prepare, aucune nouvelle acquisition pour A.
             results['files-prepare'] = await step(identity_a, operation_a, state_a, 'files-prepare')
-            evidence['p3_read_after_files_prepare'] = await read_refused(TENANT, 'mis_RA', 'ag_RA')
+            evidence['p3_read_after_files_prepare'] = await read_refused(TENANT, 'mis_RA', 'ag_RA',
+                                                                         'mission dependency scope closed')
             batches = []
             while True:
                 batches.append(await step(identity_a, operation_a, state_a, 'access-retire', batch=2))
@@ -320,9 +332,11 @@ async def exercise(args, access, save):
                     assert again['dependencies_sha256'] == sealed_files['dependencies_sha256'], (name, again)
             assert await step(identity_a, operation_a, state_a, 'receipt') == results['receipt']
             assert cli.load(state_a, 'envelope.json') == envelope
-            other = await refused(step(identity_a, str(uuid4()), folder('A-other'), 'access-prepare'))
+            other = await refused(step(identity_a, str(uuid4()), folder('A-other'), 'access-prepare'),
+                                  'retention scope bound to another operation')
             revised = {**identity_a, 'claim_revision': 5}
-            revision = await refused(step(revised, operation_a, folder('A-revision'), 'access-prepare'))
+            revision = await refused(step(revised, operation_a, folder('A-revision'), 'access-prepare'),
+                                     'retention claim differs')
             evidence['p6_replay'] = {'other_operation': other, 'other_revision': revision}
 
             # P4 : un call encore dans son échéance, rien n'est écrit.
@@ -339,7 +353,7 @@ async def exercise(args, access, save):
             await add_call(TENANT, 'mis_RG', 'ag_RG')
             identity_g = claim(TENANT, 'mis_RG', '')
             evidence['p2_2_root_empty_with_call'] = await refused(
-                step(identity_g, str(uuid4()), folder('G'), 'access-prepare'))
+                step(identity_g, str(uuid4()), folder('G'), 'access-prepare'), 'retention scope has another root')
             assert len(await calls(TENANT, 'mis_RG')) == 1
             # Aucun call ni dépendance : cinq étapes, tout scellé à zéro, reçu accepté.
             identity_h, operation_h, state_h = claim(TENANT, 'mis_RH', ''), str(uuid4()), folder('H')
@@ -371,7 +385,7 @@ async def exercise(args, access, save):
                 await holder.close()
             prepared = await preparing
             assert prepared['state'] == 'prepared' and prepared['pending_calls'] == 2, prepared
-            late_admission = await refused(add_call(TENANT, 'mis_RE', 'ag_RE'), psycopg.errors.InsufficientPrivilege)
+            late_admission = await refused(add_call(TENANT, 'mis_RE', 'ag_RE'), 'mission retention closed')
             evidence['p5a_admission'] = {'pending_calls': prepared['pending_calls'], 'after_prepare': late_admission}
 
             # P5b : acquisition Files non commitée contre files-prepare.
@@ -395,40 +409,80 @@ async def exercise(args, access, save):
             finally:
                 await holder.close()
             assert (await closing)['state'] == 'prepared'
-            evidence['p5b_read_after_files_prepare'] = await read_refused(TENANT, 'mis_RF', 'ag_RF')
+            evidence['p5b_read_after_files_prepare'] = await read_refused(TENANT, 'mis_RF', 'ag_RF',
+                                                                          'mission dependency scope closed')
             assert [r['state'] for r in await dependencies('mis_RF')] == ['active']
 
             # P6 : session tuée avant le COMMIT d'access-retire ; reconcile ; reprise.
             terminated = []
 
-            @asynccontextmanager
-            async def killed_before_commit():
-                async with connect_access(access.maintenance) as c:
-                    pid = (await (await c.execute('SELECT pg_backend_pid() p')).fetchone())['p']
-                    original = c.execute
+            def killed(after_commit=False):
+                @asynccontextmanager
+                async def factory():
+                    async with connect_access(access.maintenance) as c:
+                        pid = (await (await c.execute('SELECT pg_backend_pid() p')).fetchone())['p']
+                        original = c.execute
 
-                    async def execute(query, params=None, **kw):
-                        if query == 'COMMIT':
+                        async def kill():
                             # Forme PG14+ : attend la fin effective du backend, pas un délai supposé.
                             async with connect_access('postgres') as killer:
                                 done = await (await killer.execute('SELECT pg_terminate_backend(%s,3000) d',
                                                                    (pid,))).fetchone()
                             # Pas d'assert ici : _access_tx convertirait l'échec en Unknown.
                             terminated.append(done['d'])
-                        return await original(query, params, **kw)
-                    c.execute = execute
-                    yield c
-            unknown = await refused(step(identity_f, operation_f, state_f, 'access-retire',
-                                         access_factory=killed_before_commit), cli.Unknown)
+
+                        async def execute(query, params=None, **kw):
+                            if query != 'COMMIT':
+                                return await original(query, params, **kw)
+                            if not after_commit:
+                                await kill()
+                                return await original(query, params, **kw)
+                            # Le serveur a appliqué le COMMIT ; l'ACK n'arrive jamais au CLI.
+                            await original(query, params, **kw)
+                            await kill()
+                            raise psycopg.OperationalError('ACK lost after COMMIT')
+                        c.execute = execute
+                        yield c
+                return factory
+            await refused(step(identity_f, operation_f, state_f, 'access-retire', access_factory=killed()),
+                          'Unknown', cli.Unknown)
             assert terminated == [True], terminated
-            assert unknown == 'Unknown' and (state_f / 'access-retire.unknown.json').exists()
-            blocked = await refused(step(identity_f, operation_f, state_f, 'files-retire'))
+            assert (state_f / 'access-retire.unknown.json').exists()
+            blocked = await refused(step(identity_f, operation_f, state_f, 'files-retire'),
+                                    'Unknown step outcome: reconcile first')
             reconciled = await step(identity_f, operation_f, state_f, 'reconcile')
             assert reconciled['access']['state'] == 'prepared' and reconciled['next_step'] == 'access-retire', reconciled
             resumed = await step(identity_f, operation_f, state_f, 'access-retire')
             assert resumed['state'] == 'sealed' and await calls(TENANT, 'mis_RF') == []
-            await step(identity_f, operation_f, state_f, 'files-retire')
-            evidence['p6_unknown'] = {'blocked': blocked, 'next_step': reconciled['next_step']}
+            retired_f = await step(identity_f, operation_f, state_f, 'files-retire')
+            # P5b jusqu'au bout : la dépendance commitée pendant files-prepare est comptée puis retirée.
+            assert retired_f['state'] == 'sealed' and retired_f['dependencies'] == 1, retired_f
+            assert [r['state'] for r in await dependencies('mis_RF')] == ['retired']
+            evidence['p6_unknown'] = {'blocked': blocked, 'next_step': reconciled['next_step'],
+                                      'p5b_dependencies_retired': retired_f['dependencies']}
+
+            # P6-ACK : COMMIT appliqué, session tuée avant l'ACK (P2-A). Le registre lu par
+            # reconcile prouve l'étape ; son fichier est réécrit et l'étape suivante passe.
+            await add_call(TENANT, 'mis_RK', 'ag_RK')
+            identity_k, operation_k, state_k = claim(TENANT, 'mis_RK', 'ag_RK'), str(uuid4()), folder('K')
+            ack_lost = {}
+            for lost, following in (('access-prepare', 'files-prepare'), ('access-retire', 'files-retire')):
+                terminated.clear()
+                await refused(step(identity_k, operation_k, state_k, lost, access_factory=killed(after_commit=True)),
+                              'Unknown', cli.Unknown)
+                assert terminated == [True], terminated
+                assert not (state_k / (lost + '.json')).exists()
+                reconciled = await step(identity_k, operation_k, state_k, 'reconcile')
+                assert reconciled['next_step'] == following, reconciled
+                assert cli.load(state_k, lost + '.json')['confirmed_by'] == 'reconcile'
+                accepted = await step(identity_k, operation_k, state_k, following)
+                ack_lost[lost] = {'registry': reconciled['access']['state'], 'next_step': following,
+                                  'accepted': accepted['state']}
+            assert ack_lost['access-prepare']['registry'] == 'prepared'
+            assert ack_lost['access-retire']['registry'] == 'sealed' and await calls(TENANT, 'mis_RK') == []
+            await step(identity_k, operation_k, state_k, 'receipt')
+            frozen.validate_owner_receipt(cli.load(state_k, 'envelope.json'), frozen.RetentionClaim(**identity_k))
+            evidence['p6_ack_lost'] = ack_lost
     finally:
         current_token_info.reset(marker)
     return evidence

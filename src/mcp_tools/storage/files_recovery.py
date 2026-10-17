@@ -125,7 +125,8 @@ class FileRecovery:
     def closure_view(row):
         return {'operation_id': str(row['operation_id']), 'state': row['state'], 'claim_sha256': row['claim_sha256'],
                 'dependencies': row['dependencies'], 'dependencies_sha256': row['dependencies_sha256'],
-                'sealed_at': row['sealed_at'].isoformat() if row['sealed_at'] else None}
+                # UTC : le TimeZone de session ne change pas le reçu Tools.
+                'sealed_at': row['sealed_at'].astimezone(timezone.utc).isoformat() if row['sealed_at'] else None}
 
     async def closure_prepare(self, c, *, operation_id, tenant_id, mission_id, root_agent_id, claim_sha256):
         if root_agent_id:

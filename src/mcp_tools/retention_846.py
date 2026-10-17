@@ -2,9 +2,10 @@
 
 Étapes, dans cet ordre : access-prepare, files-prepare, access-retire (le dernier
 lot scelle), files-retire (idem), receipt. `reconcile` lit les deux registres sans
-preuve. Chaque étape mutante : preuve vérifiée (callback Mission), transaction,
-effet SQL borné par l'échéance de la preuve, preuve revérifiée sous verrou, COMMIT.
-Un COMMIT sans ACK rend `unknown` : marqueur privé, aucune étape avant `reconcile`.
+preuve, sous le verrou du scope. Chaque étape mutante : preuve vérifiée (callback
+Mission), transaction, effet SQL borné par l'échéance de la preuve, preuve revérifiée
+sous verrou, COMMIT. Un COMMIT sans ACK rend `unknown` : marqueur privé, aucune étape
+avant `reconcile`, qui réécrit le fichier de chaque étape que le registre confirme.
 Access et Files sont deux bases ; le lien est l'operation_id et l'empreinte de claim.
 """
 import argparse
@@ -63,6 +64,27 @@ def load(directory, name):
     return json.loads(path.read_text()) if path.exists() else None
 
 
+def reason(exc):
+    """Texte de refus imprimable : nos refus, et le message primaire de nos RAISE SQL.
+
+    P0001 et 42501 portent les textes fixes de nos routines (aucun RAISE n'interpole
+    de valeur) ou un nom d'objet du catalogue. Tout le reste ne sort que par son nom de
+    classe : une ValidationError pydantic ou un ValueError de datetime cite la valeur reçue.
+    """
+    if isinstance(exc, Refused):
+        return str(exc)
+    import psycopg
+    if isinstance(exc, psycopg.Error) and exc.sqlstate in ('P0001', '42501') and exc.diag.message_primary:
+        return exc.diag.message_primary
+    return type(exc).__name__
+
+
+# Fichier d'étape exigé par l'étape suivante (_require), et états du registre qui prouvent son COMMIT.
+CONFIRMED = (('access-prepare.json', 'access', frozenset({'prepared', 'sealed'})),
+             ('files-prepare.json', 'files', frozenset({'prepared', 'sealed'})),
+             ('access-retire.json', 'access', frozenset({'sealed'})))
+
+
 def next_step(access, files):
     """Prochaine étape permise d'après les deux registres lus sous verrou."""
     a, f = access.get('state'), files.get('state')
@@ -88,11 +110,15 @@ def envelope(identity, operation_id, access, files):
              'revision': access['events'], 'root_agent_id': root},
             {'kind': 'tools_file_dependencies', 'id': 'sha256:' + files['dependencies_sha256'],
              'revision': files['dependencies'], 'root_agent_id': root}]
-    # Horodatage fixe, lu en base : une réémission donne le même reçu, octet pour octet.
+    # Horodatages fixes, lus en base et ramenés en UTC : le TimeZone de session ne change
+    # pas les octets, une réémission donne le même reçu.
+    sealed = {'access': utc(access['sealed_at']).isoformat(), 'files': utc(files['sealed_at']).isoformat()}
     composed = max(utc(access['sealed_at']), utc(files['sealed_at'])).isoformat()
     private = {'format': 1, 'identity': identity, 'operation_id': operation_id, 'composed_at': composed,
-               'access': {k: access[k] for k in ('calls', 'events', 'calls_sha256', 'events_sha256', 'sealed_at')},
-               'files': {k: files[k] for k in ('dependencies', 'dependencies_sha256', 'sealed_at')}}
+               'access': {**{k: access[k] for k in ('calls', 'events', 'calls_sha256', 'events_sha256')},
+                          'sealed_at': sealed['access']},
+               'files': {**{k: files[k] for k in ('dependencies', 'dependencies_sha256')},
+                         'sealed_at': sealed['files']}}
     value = {**identity, 'state': 'retired_confirmed', 'inventory_complete': True, 'operation_id': operation_id,
              'receipt_sha256': hashlib.sha256(canonical(private).encode()).hexdigest(),
              'references': refs, 'contracts': dict(CONTRACTS)}
@@ -237,10 +263,25 @@ class Retention846:
         if not isinstance(intent, dict) or intent.get('operation_id') != self.operation:
             raise Refused('Operation intent required')
         access, files = await self._status((intent['tenant_id'], intent['mission_id']))
+        registries = {'access': access, 'files': files}
+        # Un registre lié à une autre claim : rien n'est écrit, l'état reste protégé.
+        bound = all(r.get('state') == 'absent' or (r.get('operation_id') == self.operation
+                    and r.get('claim_sha256') == intent['claim_sha256']) for r in registries.values())
+        if bound:
+            # Registre lu sous verrou = COMMIT prouvé, même sans ACK : le fichier de l'étape
+            # confirmée est réécrit, sinon l'étape suivante resterait refusée par _require.
+            for name, side, states in CONFIRMED:
+                current = load(self.dir, name)
+                if registries[side].get('state') in states and not (
+                        isinstance(current, dict) and current.get('state') in states
+                        and current.get('operation_id') == self.operation
+                        and current.get('claim_sha256') == intent['claim_sha256']):
+                    save(self.dir, name, {**registries[side], 'confirmed_by': 'reconcile'})
+        # Marqueurs levés après l'écriture : une coupure entre les deux laisse le blocage.
         for stale in sorted(self.dir.glob('*.unknown.json')):
             os.replace(stale, stale.with_name(stale.name.replace('.unknown.json', '.reconciled.json')))
         return {'operation_id': self.operation, 'access': access, 'files': files,
-                'next_step': next_step(access, files)}
+                'next_step': next_step(access, files) if bound else 'protected'}
 
 
 async def run(core, args, token=None):
@@ -300,9 +341,15 @@ def build(args):
         finally:
             c.pgconn.finish()
 
+    def live(token):
+        try:
+            return retention_proof_846.live(s, token)
+        except ValueError:
+            # Les textes de la preuve sont fixes, mais ValueError couvre aussi un JSON reçu.
+            raise Refused('Retention proof or claim-check refused') from None
+
     recovery = FileRecovery(s, app_role=args.files_app_role)
-    return Retention846(access=access, files=recovery.connection, recovery=recovery,
-                        live=lambda token: retention_proof_846.live(s, token),
+    return Retention846(access=access, files=recovery.connection, recovery=recovery, live=live,
                         state_dir=args.state_dir, operation_id=args.operation_id)
 
 
@@ -328,8 +375,8 @@ def main():
     except Unknown:
         result['status'] = 'unknown'
     except Exception as exc:
-        # Nos refus sont des textes fixes ; un autre diagnostic (libpq, HTTP) ne sort pas.
-        result['reason'] = str(exc) if isinstance(exc, (Refused, ValueError)) else type(exc).__name__
+        # Nos refus et nos RAISE SQL sont des textes fixes ; un autre diagnostic ne sort pas.
+        result['reason'] = reason(exc)
     print(json.dumps({k: v for k, v in result.items() if k != 'result'}
                      | {'state': (result.get('result') or {}).get('state'),
                         'next_step': (result.get('result') or {}).get('next_step')}))

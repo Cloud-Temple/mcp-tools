@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     access_retention_issuer: str = ""
     access_retention_jwks_url: str = ""
     access_retention_audience: str = ""
-    access_retention_callback_seconds: float = Field(default=10, ge=2, le=30)
+    # 15 s au plus : le second callback tient dans la transaction, sous
+    # idle_in_transaction_session_timeout=20 s posé par retention_846._step.
+    access_retention_callback_seconds: float = Field(default=10, ge=2, le=15)
 
     # Destinataire hub facultatif, séparé du bearer opaque Tools.
     hub_activity_enabled: bool = False

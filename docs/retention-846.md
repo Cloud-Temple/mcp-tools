@@ -201,12 +201,38 @@ origine HTTPS), `ACCESS_RETENTION_AUDIENCE` (audience `tools` du domaine Mission
    `sealed_at` en base : une réémission donne le même reçu.
 
 Chaque étape vérifie la preuve (callback `claim-check`), passe son échéance de
-30 s aux routines SQL, revérifie la preuve avant le COMMIT. COMMIT sans ACK :
+30 s aux routines SQL, revérifie la preuve avant le COMMIT. Le second callback
+tourne dans la transaction : `ACCESS_RETENTION_CALLBACK_SECONDS` est borné à 15 s,
+sous `idle_in_transaction_session_timeout` de 20 s posé par l'étape. COMMIT sans ACK :
 `<étape>.unknown.json`, code non nul, toute étape suivante refusée jusqu'à
 `reconcile`. `reconcile` (sans preuve) prend le même verrou de scope, lit les deux
-registres et donne `next_step`. Un registre présent prouve le COMMIT ; absent ou
-resté à l'état précédent, l'étape n'a pas commité et se relance avec le même
+registres et donne `next_step`. Un registre présent prouve le COMMIT : `reconcile`
+réécrit alors le fichier de l'étape confirmée (`access-prepare.json`,
+`files-prepare.json`, `access-retire.json` scellé), marqué
+`confirmed_by: reconcile`, sans quoi l'étape suivante serait refusée faute de
+résultat local. Si un registre porte une autre empreinte de claim que
+`intent.json`, rien n'est écrit et `next_step` vaut `protected`. Registre absent
+ou resté à l'état précédent : l'étape n'a pas commité et se relance avec le même
 `operation_id`.
+
+Sur stdout, `reason` ne porte que nos refus (`Refused`) et le message primaire de
+nos routines SQL (sqlstate `P0001` ou `42501`, textes fixes). Toute autre erreur
+ne sort que par son nom de classe : une `ValidationError` pydantic ou un
+`ValueError` de date cite la valeur reçue. Un refus de la preuve ou du callback
+sort en un seul texte, `Retention proof or claim-check refused`.
+
+Asymétrie des scellés. Côté Access, la maintenance n'a aucun droit direct sur les
+registres : seules les routines `SECURITY DEFINER` écrivent, et le trigger
+`retirement_846_identity` n'autorise que `prepared` vers `sealed`. Côté Files, la
+maintenance a `INSERT` et `UPDATE(state, sealed_at, dependencies,
+dependencies_sha256)` sur `mission_dependency_closures`, et le trigger
+`guard_dependency_closure` ne garde que `UPDATE OR DELETE`. Un `INSERT` direct
+peut donc créer une ligne déjà `sealed`, avec des compteurs quelconques. C'est le
+chemin légitime du root vide (scellé à zéro dans `files-prepare`). Le scellé Files
+repose ainsi sur le code de `closure_prepare` et `closure_retire` et sur la garde
+du credential de maintenance, pas sur une contrainte SQL. Fermer cet écart demande
+un trigger `BEFORE INSERT`, donc un changement du DDL 846 et une nouvelle capture
+`files_dependency_contract.json` (P3, hors de ce lot).
 
 Le reçu porte trois références agrégées, toujours présentes, même à zéro :
 `tools_activity_calls`, `tools_activity_events`, `tools_file_dependencies`.
@@ -246,9 +272,20 @@ ALTER TABLE tools_access.activity_calls ENABLE TRIGGER retention_846_delete;
 COMMIT;
 ```
 
+Puis, côté Files, retirer les dépendances du même scope, pour chaque root présent
+sur (tenant, mission), jusqu'à `complete: true`. Sinon les fichiers lus par la
+Mission restent non supprimables et la consultation historique garde des lignes
+actives dont le call n'existe plus :
+
+```sh
+python -m src.mcp_tools.storage.files_recovery_cli retire-dependencies \
+  --profile /private/profile.json --app-role tools_files_app --intent-dir /private/erase \
+  --tenant-id TENANT --mission-id MISSION --root-agent-id ROOT --batch 1000
+```
+
 `verify` refuse le domaine si le trigger reste désactivé. Aucun registre n'est
-écrit : une admission ultérieure sur ce scope reste possible, ce qui convient à
-un effacement, pas à une clôture. Aucun reçu Mission n'est produit.
+écrit : une admission ou une lecture Files ultérieure sur ce scope reste possible,
+ce qui convient à un effacement, pas à une clôture. Aucun reçu Mission n'est produit.
 
 ### Ce qui reste conservé
 
