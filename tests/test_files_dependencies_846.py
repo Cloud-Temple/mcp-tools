@@ -733,7 +733,7 @@ def test_capture_hash_covers_base_recovery_and_dependency_ddl(monkeypatch, tmp_p
 
 
 def test_committed_recovery_capture_matches_the_current_base_schema():
-    """Retirer ce marqueur avec la recapture : strict, il échoue dès que la capture est à jour."""
+    """Verrouille que la capture 845 committée contient origin_call_id en 4e colonne."""
     from src.mcp_tools.storage import files_recovery_contract as contract
 
     projection = contract.expected_projection()
@@ -855,8 +855,9 @@ def test_publish_closes_a_delete_refused_by_an_active_dependency_in_the_same_tra
     async def scenario():
         journal = Journal(protected=True)
         files = publisher(journal)
-        with pytest.raises(DependencyRefused, match='dépendance Mission active'):
+        with pytest.raises(DependencyRefused, match='dépendance Mission active') as refused:
             await files.publish(OID, ATTEMPT, GENERATION, 'd' * 64, 'delete')
+        assert refused.value.operation_id == OID  # seule l'opération close est nommée
         row = journal.row
         assert row['closed'] is True and row['publication_allowed'] is False and row['revocation']
         assert row['phase'] == 'PUBLICATION_ARMED'  # aucun effet, phase d'arrêt lisible
@@ -905,15 +906,18 @@ def test_reservation_refused_by_a_dependency_committed_while_waiting_opens_no_op
         async def phase(*args):
             phases.append(args)
         files.phase = phase
-        with pytest.raises(DependencyRefused):
+        with pytest.raises(DependencyRefused) as refused:
             await files.mutate('delete', {'path': PATH}, OID)
+        assert refused.value.operation_id is None  # rien d'écrit, rien à nommer
         assert journal.exists_calls == 2 and phases == [] and journal.receipts == []
         assert not [q for q in journal.sql if q.startswith('INSERT INTO operations')]
 
     asyncio.run(scenario())
 
 
-def test_dispatch_reports_a_known_dependency_refusal_without_pending_reconcile(monkeypatch):
+@pytest.mark.parametrize('written', [OID, None])
+def test_dispatch_reports_a_known_dependency_refusal_without_pending_reconcile(monkeypatch, written):
+    """P3-C : l'operation_id fourni par l'appelant n'est rendu que si la publication a écrit l'opération."""
     async def scenario():
         files = object.__new__(FilesService)
         files.calls = asyncio.Semaphore(1)
@@ -922,7 +926,7 @@ def test_dispatch_reports_a_known_dependency_refusal_without_pending_reconcile(m
             return None
 
         async def mutate(op, args, oid):
-            raise DependencyRefused('Fichier protégé par une dépendance Mission active')
+            raise DependencyRefused('Fichier protégé par une dépendance Mission active', operation_id=written)
 
         async def refresh(tool):
             return None
@@ -934,8 +938,106 @@ def test_dispatch_reports_a_known_dependency_refusal_without_pending_reconcile(m
         finally:
             current_token_info.reset(token)
         assert result['status'] == 'error' and result['code'] == 'mission_dependency_active'
-        assert result['effect_state'] == 'not_published' and result['operation_id'] == OID
+        assert result['effect_state'] == 'not_published' and result.get('operation_id') == written
+        assert ('operation_id' in result) is (written is not None)
         assert result['reconciliation_state'] == 'not_required' and 'remote_result' not in result
+
+    asyncio.run(scenario())
+
+
+class OperationJournal:
+    """Seam lecture d'une opération : ligne operations, ref et reçus, comme après publish()."""
+
+    def __init__(self, receipts, closed=True, allowed=False):
+        self.kinds = list(receipts)
+        self.row = dict(id=UUID(OID), path=PATH, binding='b', request_digest=None, phase='PUBLICATION_ARMED',
+                        generation=UUID(GENERATION), initial_confirmation='unknown', closed=closed,
+                        publication_allowed=allowed)
+
+    @asynccontextmanager
+    async def connection(self):
+        yield self
+
+    async def one(self, c, query, args=()):
+        if query.startswith('SELECT * FROM operations WHERE id=%s'):
+            return dict(self.row)
+        if query.startswith('SELECT r.*,g.pin,g.manifest FROM refs'):
+            return dict(path=PATH, revision=3, generation=UUID(str(uuid4())), operation=UUID(str(uuid4())),
+                        deleted=False, pin={}, manifest=[])
+        if query.startswith('SELECT EXISTS(SELECT 1 FROM receipts'):
+            # Chaque EXISTS lu dans la requête réelle, pas un booléen fourni par le test.
+            return {'published': 'publication' in self.kinds, 'refused': 'dependency_refusal_closed' in self.kinds}
+        raise AssertionError('SQL inattendu : ' + query[:80])
+
+    async def execute(self, query, args=()):
+        assert query.startswith('SELECT kind,detail,created_at FROM receipts')
+        return Result([dict(kind=k, detail={}, created_at=datetime(2026, 10, 17, tzinfo=UTC)) for k in self.kinds])
+
+
+def inspector(journal):
+    files = object.__new__(FilesService)
+    files.s = SimpleNamespace(tool_max_output_chars=100_000, files_mission_dependencies_enabled=True,
+                              files_s3_prefix='p/', s3_bucket_name='b')
+    files.catalog = journal
+    return files
+
+
+REFUSED = ['intent_reserved', 'CONTENT_DISPATCH_ARMED', 'CONTENT_VERIFIED', 'PUBLICATION_ARMED',
+           'dependency_refusal', 'dependency_refusal_closed']
+
+
+def test_info_reports_a_dependency_refusal_as_final_not_published():
+    """P3-D : opération close par publish(), même réponse que le premier appel, sans reconcile."""
+    async def scenario():
+        token = current_token_info.set({'permissions': ['access'], 'credential_binding': 'b'})
+        try:
+            result = await inspector(OperationJournal(REFUSED)).info(OID)
+        finally:
+            current_token_info.reset(token)
+        assert result['status'] == 'error' and result['code'] == 'mission_dependency_active'
+        assert result['effect_state'] == 'not_published' and result['reconciliation_state'] == 'not_required'
+        assert result['operation_id'] == OID and result['closed'] is True
+        assert [h['kind'] for h in result['history']][-2:] == ['dependency_refusal', 'dependency_refusal_closed']
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('receipts,closed,allowed', [
+    (REFUSED[:4], False, True),                                 # opération ouverte, armée
+    (REFUSED[:4] + ['revocation', 'revocation_barrier'], True, False),  # close par un reconcile incomplet
+    (REFUSED[:5], False, False),                                # reçu de refus sans barrière de clôture
+])
+def test_info_without_the_closing_refusal_barrier_stays_pending(receipts, closed, allowed):
+    """Seule la barrière dependency_refusal_closed sur une opération close et révoquée est un refus final."""
+    async def scenario():
+        token = current_token_info.set({'permissions': ['access'], 'credential_binding': 'b'})
+        try:
+            result = await inspector(OperationJournal(receipts, closed, allowed)).info(OID)
+        finally:
+            current_token_info.reset(token)
+        assert result['status'] == 'incomplete' and 'code' not in result
+        assert result['effect_state'] == 'unobserved' and result['reconciliation_state'] == 'pending'
+
+    asyncio.run(scenario())
+
+
+def test_replaying_a_refused_delete_with_its_operation_id_returns_the_same_refusal():
+    """mutate() relit l'opération existante et ne la redispatche pas : l'appelant revoit le refus."""
+    async def scenario():
+        journal = OperationJournal(REFUSED)
+        files = inspector(journal)
+
+        async def no_prepare(*a):
+            raise AssertionError('rejeu redispatché')
+        files.prepare = no_prepare
+        token = current_token_info.set({'permissions': ['access'], 'credential_binding': 'b'})
+        try:
+            journal.row['request_digest'] = files.request('delete', {'path': PATH})
+            result = await files.mutate('delete', {'path': PATH}, OID)
+        finally:
+            current_token_info.reset(token)
+        assert result['status'] == 'error' and result['code'] == 'mission_dependency_active'
+        assert result['reconciliation_state'] == 'not_required'
 
     asyncio.run(scenario())
 

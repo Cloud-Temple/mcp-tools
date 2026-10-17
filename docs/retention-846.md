@@ -41,7 +41,12 @@ défaut, exige l'extension 845) :
   l'opération (reçus `dependency_refusal` puis `dependency_refusal_closed`, phase
   laissée à `PUBLICATION_ARMED`, rien de publié). La réponse est
   `status: error`, `code: mission_dependency_active`, `effect_state: not_published`,
-  `reconciliation_state: not_required`. Le trigger `guard_dependency_retirement`
+  `reconciliation_state: not_required`. Elle ne porte `operation_id` que pour ce
+  refus de publication, seul cas où une opération existe ; un refus de `prepare`
+  ou de réservation n'écrit rien et ne rend aucun identifiant. `operation_info`,
+  ou le rejeu du même `operation_id`, relit l'opération close et rend la même
+  réponse (`dependency_refusal_closed` présent, opération close et révoquée, sans
+  reçu `publication`). Le trigger `guard_dependency_retirement`
   sur `refs` reste l'autorité finale. Une écriture qui remplace la version
   courante reste permise : l'ancienne génération reste visible et la lecture
   historique de B continue.
@@ -76,16 +81,15 @@ Mission garde les siennes. `complete: false` demande un nouveau passage.
 Activation. L'installeur et `check_schema` exigent une capture PG17 revue.
 `ddl_sha256` (`files_recovery_contract.ddl_sha256`) couvre le DDL de base
 (`files_schema.DDL`), le DDL 845 et, pour `files_dependency_contract.json`, le
-DDL 846. Avant ce round l'empreinte ne couvrait que le DDL 845 : la capture
-`files_recovery_contract.json` a été prise avant la colonne
-`operations.origin_call_id` de #843, douze colonnes de `operations` y sont
-décalées d'un `attnum`, et rien ne le signalait avant le SQL. Avec la nouvelle
-empreinte, cette capture refuse avant tout SQL tant qu'elle n'est pas refaite
-(test `test_committed_recovery_capture_matches_the_current_base_schema`, marqué
-xfail strict jusqu'à la recapture). `files_dependency_contract.json` n'existe pas
-encore dans le dépôt : avec l'option active, l'installation et l'app refusent
-avant tout SQL. Les deux captures se refont en un seul run PG17
-(`j0/run846-dep-r2`). Ordre des verrous par point d'appel : docstring de
+DDL 846. Les deux captures du dépôt sortent d'un même run PG17 sur la
+composition base (avec `operations.origin_call_id` de #843), 845 et 846, produit
+deux fois à l'identique : `files_recovery_contract.json` (SHA-256 `21f6d22a…`) et
+`files_dependency_contract.json` (`bc5f8681…`). La capture 845 précédente datait
+d'avant `origin_call_id` : douze colonnes de `operations` y étaient décalées d'un
+`attnum`. Le test `test_committed_recovery_capture_matches_the_current_base_schema`
+verrouille la quatrième colonne. Une modification d'un des trois DDL change
+l'empreinte : la capture concernée refuse alors avant tout SQL et doit être
+refaite par le même kit. Ordre des verrous par point d'appel : docstring de
 `files_dependency_schema.py`.
 
 Condition d'ouverture. `FILES_MISSION_DEPENDENCIES_ENABLED` ne doit pas être
@@ -122,9 +126,11 @@ refuse un jour l'UPDATE de `refs` alors que le contrôle explicite de `publish` 
 passé, l'instruction échoue, la transaction est annulée et l'opération reste en
 `PUBLICATION_ARMED`, `closed=false`, jusqu'à un `reconcile` admin. Sous
 `refs FOR UPDATE` aucune acquisition ne peut aboutir entre ce contrôle et l'UPDATE
-(elle attend `refs FOR SHARE`), donc ce cas n'a pas de chemin connu. Avant ce
-round c'était le cas normal d'une course lecture contre suppression ; le run PG17
-r1 l'a montré (T10b bloqué sur `one_active_path`).
+(elle attend `refs FOR SHARE`), donc ce cas n'a pas de chemin connu. Avant le
+correctif de publication c'était le cas normal d'une course lecture contre
+suppression ; le run PG17 r1 l'a montré (T10b bloqué sur `one_active_path`). Le
+run r2 (`j0/run846-dep-r2`, source `ea8f8bc`) passe T7 à T10c sur PG17, S3 en
+mémoire.
 
 ## Journaux techniques
 

@@ -219,6 +219,7 @@ async def exercise(args, save):
             save(args.output / 't10a-delete-after-acquisition.json',
                  {'delete': raced, 'ref': await ref(), 'open_operations': await open_operations()})
             assert raced['status'] == 'error' and raced['code'] == 'mission_dependency_active', raced
+            assert 'operation_id' not in raced, raced  # réservation annulée : aucune opération à nommer
             assert (await ref())['deleted'] is False and await open_operations() == 0
             await recovery.retire_dependencies(tenant_id='tenant', mission_id='mis_C',
                                                root_agent_id='ag_C', batch=10)
@@ -249,6 +250,11 @@ async def exercise(args, save):
                  {'delete': late, 'journal': journal, 'ref': await ref(), 'open_operations': await open_operations()})
             assert service.publish == original
             assert late['status'] == 'error' and late['code'] == 'mission_dependency_active', late
+            assert late['operation_id'] == late_oid, late
+            # Rejeu du même identifiant : relu depuis le journal, même refus final, rien redispatché.
+            replay = await registry.call(operation='delete', operation_id=late_oid, path=PATH)
+            assert replay['code'] == 'mission_dependency_active', replay
+            assert replay['reconciliation_state'] == 'not_required', replay
             assert journal['closed'] is True and journal['publication_allowed'] is False
             assert journal['phase'] == 'PUBLICATION_ARMED' and journal['kinds'][-2:] == [
                 'dependency_refusal', 'dependency_refusal_closed']

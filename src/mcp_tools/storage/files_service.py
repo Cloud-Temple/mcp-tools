@@ -15,7 +15,16 @@ from .files_s3 import Blobs
 
 
 class DependencyRefused(Conflict):
-    """#846 : suppression refusée de façon définitive, rien de publié, rien d'ouvert."""
+    """#846 : suppression refusée de façon définitive, rien de publié, rien d'ouvert.
+
+    ``operation_id`` n'est posé que par la publication, seul point où une opération
+    existe (close avec ses reçus). Un refus de prepare ou de réservation n'écrit rien :
+    la réponse ne rend alors aucun identifiant que operation_info ne saurait relire.
+    """
+
+    def __init__(self, message, operation_id=None):
+        super().__init__(message)
+        self.operation_id = operation_id
 
 
 DEPENDENCY_ACTIVE = "Fichier protégé par une dépendance Mission active"
@@ -277,17 +286,23 @@ class FilesService:
                 raise Conflict("Opération inaccessible")
             self.authorize_journal(row)
             ref = await self.ref(c, row["path"])
-            effects = await self.catalog.one(c, "SELECT EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='publication') published", (oid,))
+            effects = await self.catalog.one(c, "SELECT EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='publication') published,EXISTS(SELECT 1 FROM receipts WHERE operation=%s AND kind='dependency_refusal_closed') refused", (oid, oid))
             present = effects["published"]
-            effect = "present" if present else "not_published" if certificate and not row["publication_allowed"] else "unobserved"
+            # #846 : publish a révoqué et fermé dans la transaction de sa barrière ; l'état
+            # est final et connu. Même réponse que le premier appel, jamais « ok » pour un
+            # delete non publié, et aucun reconcile à demander.
+            refused = (not certificate and not present and effects["refused"]
+                       and row["closed"] and not row["publication_allowed"])
+            effect = "present" if present else "not_published" if (certificate or refused) and not row["publication_allowed"] else "unobserved"
             if present and (not ref or str(ref["operation"]) != oid):
                 effect = "conflict"
             history = await (await c.execute("SELECT kind,detail,created_at FROM receipts WHERE operation=%s ORDER BY created_at,id LIMIT 64", (oid,))).fetchall()
-            result = {"status": "ok" if certificate else "incomplete", "operation_id": oid,
+            result = {"status": "ok" if certificate else "error" if refused else "incomplete", "operation_id": oid,
+                **({"code": "mission_dependency_active"} if refused else {}),
                 "path": row["path"], "phase": row["phase"], "generation": str(row["generation"]),
                 "initial_confirmation": row["initial_confirmation"], "remote_result": "uncertain",
                 "effect_state": effect, "durability_state": "verified_at_current_observation" if certificate else "unverified",
-                "reconciliation_state": "verified_at_current_observation" if certificate else "pending",
+                "reconciliation_state": "verified_at_current_observation" if certificate else "not_required" if refused else "pending",
                 "publication_allowed": row["publication_allowed"], "closed": row["closed"],
                 "history_limit": 64, "history_may_be_truncated": len(history)==64,
                 "history": [{"kind": h["kind"], "detail": h["detail"], "created_at": h["created_at"].isoformat()} for h in history],
@@ -468,7 +483,7 @@ class FilesService:
             certificate = await cat.verify_barrier(c,oid,rid)
             if refused:
                 # COMMIT et barrière connus : opération close, rien publié, aucun reconcile requis.
-                raise DependencyRefused(DEPENDENCY_ACTIVE)
+                raise DependencyRefused(DEPENDENCY_ACTIVE, operation_id=oid)
             # Relecture sous verrou après barrière : aucun snapshot préalable ne sert de preuve.
             async with cat.transaction(c):
                 observed = await cat.lock(c,oid)
@@ -588,7 +603,7 @@ class FilesService:
             # Refus connu : aucune publication, aucune opération ouverte, pas de reconcile.
             return {"status":"error","code":"mission_dependency_active","message":str(e),
                 "effect_state":"not_published","reconciliation_state":"not_required",
-                **({"operation_id":oid} if oid else {})}
+                **({"operation_id":e.operation_id} if e.operation_id else {})}
         except Conflict as e:
             if op in ("write", "concat", "delete", "reconcile"):
                 return {"status":"incomplete","message":str(e),"remote_result":"uncertain",
