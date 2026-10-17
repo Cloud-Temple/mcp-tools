@@ -1,9 +1,74 @@
-# Coordination Mission #846 — journaux techniques
+# Coordination Mission #846 dans Tools
 
-Première tranche, depuis le main SDK2.2 livré. Aucune coordination métier846,
-protection Mission ni récupération845 n'est encore livrée par ce Draft.
-Les sources843/845 ne sont pas copiées ; leur composition sera normale après
-livraison. Aucun nouveau endpoint d'administration ou pouvoir SQL app.
+Ce document couvre deux tranches : les journaux techniques (ci-dessous) et les
+dépendances Files d'une Mission (section suivante). Les sources 843 et 845 sont
+composées par fusion normale dans cette branche, pas copiées. Aucun nouvel
+endpoint public ni d'administration.
+
+## Dépendances Files d'une Mission
+
+Problème corrigé. Une lecture seule par une Mission B (outil `files`, opération
+`read` ou `diff`, sous délégation hub) ne crée aucune opération Files. La
+consultation historique `/internal/hub/tools-files` ne trouvait donc rien et
+répondait `reference_state: unavailable`, même pour un fichier toujours vivant.
+
+Ce que fait le code, si `FILES_MISSION_DEPENDENCIES_ENABLED=true` (fermé par
+défaut, exige l'extension 845) :
+
+- `FilesService.read_operations` insère une ligne `mission_file_dependencies`
+  par génération servie, avant tout accès S3, et la relit après COMMIT. Valeurs
+  prises dans la ligne servie et dans les claims de la délégation, jamais dans les
+  arguments de l'outil. `list`, `info`, `metadata_batch` et `versions` n'en
+  créent pas. Sans délégation (standalone), rien ne change.
+- Le trigger owner `guard_file_dependency` prend `refs` en `FOR SHARE`, puis le
+  verrou de pin 845, puis vérifie `generation_visible`. Une insertion refusée ou
+  un COMMIT inconnu fait échouer la lecture sans octet.
+- `published()` résout un call par une seule source : l'opération publiée 843,
+  ou une dépendance active du même call et de la même opération d'activité, dans
+  le scope exact tenant, Mission et agent racine des claims, sur une génération
+  encore visible. Zéro source, deux sources ou deux dépendances (cas `diff`)
+  donnent `unavailable`.
+- Une suppression publique d'un chemin qui a une dépendance active est refusée,
+  d'abord dans `prepare`, puis par le trigger `guard_dependency_retirement` sur
+  `refs` au COMMIT. Une écriture qui remplace la version courante reste permise :
+  l'ancienne génération reste visible et la lecture historique de B continue.
+- `FileRecovery.referenced` compte les dépendances actives comme racines avant
+  tout armement de suppression physique.
+
+Rôles. L'app a `SELECT, INSERT` sur la table, ni `UPDATE` ni `DELETE`. La
+maintenance a `SELECT` et `UPDATE(state, retired_at, revision)`. Le trigger
+`guard_dependency_history` interdit `DELETE` et toute transition autre que
+`active` vers `retired`.
+
+Commandes opérateur, scope Mission exact, au plus 1000 lignes par passage,
+résultat privé 0600 dans `--intent-dir` :
+
+```sh
+python -m src.mcp_tools.storage.files_recovery_cli dependencies \
+  --profile /private/profile.json --app-role tools_files_app --intent-dir /private/i1 \
+  --tenant-id tenant --mission-id mis_A --root-agent-id ag_A --batch 1000
+python -m src.mcp_tools.storage.files_recovery_cli retire-dependencies \
+  --profile /private/profile.json --app-role tools_files_app --intent-dir /private/i2 \
+  --tenant-id tenant --mission-id mis_A --root-agent-id ag_A --batch 1000
+```
+
+`dependencies` est en lecture seule et ne rend ni la clé physique ni le contenu.
+`retire-dependencies` ne touche que les lignes actives de ce scope ; une autre
+Mission garde les siennes. `complete: false` demande un nouveau passage.
+
+Activation. L'installeur et `check_schema` exigent la capture PG17 revue
+`files_dependency_contract.json`, dont l'empreinte couvre le DDL 845 et le DDL
+846. Elle n'existe pas encore : avec l'option active, l'installation et l'app
+refusent avant tout SQL. Ordre des verrous par point d'appel : docstring de
+`files_dependency_schema.py`.
+
+Pas encore couvert ici : l'échéance effective des calls d'activité (fin de
+Mission plus 365 jours) côté Access 31, les reçus de clôture Mission et le DTO
+vers Mission. Les calls gardent leur échéance d'admission (8760 h).
+
+## Journaux techniques
+
+Aucun nouveau pouvoir SQL app pour cette partie.
 
 `TECHNICAL_LOG_DIRECTORY` active un sink privé de diagnostics pendant le lifespan
 ASGI. Le dossier doit être absolu, propriété de l'UID courant et mode0700.

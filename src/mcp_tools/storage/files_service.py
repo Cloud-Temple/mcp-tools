@@ -166,6 +166,15 @@ class FilesService:
             if op == "info":
                 return {"status": "ok", **public_ref(row)}
             second = await self.ref(c, key(args.get("path2"))) if op == "diff" else None
+            scope = self.dependency_scope()
+            if scope is not None:
+                # #846 : seule une lecture qui servira des octets crée une dépendance,
+                # confirmée par COMMIT avant tout accès S3.
+                if op == "diff" and (not second or second["deleted"] or not second["generation"]):
+                    raise Conflict("Seconde source absente")
+                if op == "read" and args.get("if_match") and args["if_match"] != row["pin"]["etag"]:
+                    raise Conflict("ETag ne correspond pas à la génération")
+                await self.acquire(c, scope, [row] + ([second] if op == "diff" else []))
         body = await self.blobs.get(row["pin"])
         async with cat.connection() as c:
             await self.current_read(c, current)
@@ -202,6 +211,45 @@ class FilesService:
             n = max(0, self.s.tool_max_output_chars-8192)
             result.update(content=text[:n], truncated=len(text)>n)
         return result
+
+    def dependency_scope(self):
+        """Lecture admise par délégation hub : claims serveur, jamais arguments Files."""
+        if not getattr(self.s, "files_mission_dependencies_enabled", False):
+            return None
+        from ..auth.context import current_access_operation
+        from ..auth.hub_activity import current_hub_context
+        delegated = current_hub_context.get()
+        if delegated is None:
+            return None  # standalone : comportement inchangé
+        operation = current_access_operation.get()
+        if not delegated.consumed or operation is None:
+            raise Conflict("Origine d'admission invalide")
+        claims = delegated.claims
+        return {"call_id": str(uuid.UUID(claims["call_id"])), "operation": str(uuid.UUID(operation)),
+                "tenant_id": claims["tenant_id"], "mission_id": claims["mission_id"],
+                "root_agent_id": claims["root_agent_id"],
+                "binding": (current_token_info.get() or {}).get("credential_binding")}
+
+    async def acquire(self, c, scope, rows):
+        from psycopg.types.json import Jsonb
+        cat = self.catalog
+        async with cat.transaction(c):
+            for row in rows:
+                # Le trigger owner vérifie génération visible sous refs FOR SHARE puis verrou pin 845.
+                await c.execute("INSERT INTO mission_file_dependencies(call_id,generation,activity_operation_id,path,pin,served_revision,tenant_id,mission_id,root_agent_id,credential_binding) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (call_id,generation) DO NOTHING",
+                    (scope["call_id"], str(row["generation"]), scope["operation"], row["path"], Jsonb(row["pin"]),
+                     row["revision"], scope["tenant_id"], scope["mission_id"], scope["root_agent_id"], scope["binding"]))
+        for row in rows:
+            stored = await cat.one(c, "SELECT * FROM mission_file_dependencies WHERE call_id=%s AND generation=%s",
+                                   (scope["call_id"], str(row["generation"])))
+            expected = (scope["call_id"], str(row["generation"]), scope["operation"], row["path"], row["pin"],
+                        row["revision"], scope["tenant_id"], scope["mission_id"], scope["root_agent_id"],
+                        scope["binding"], "active")
+            if stored is None or tuple(str(stored[k]) if k in ("call_id", "generation", "activity_operation_id")
+                    else stored[k] for k in ("call_id", "generation", "activity_operation_id", "path", "pin",
+                    "served_revision", "tenant_id", "mission_id", "root_agent_id", "credential_binding",
+                    "state")) != expected:
+                raise Conflict("Dépendance Mission non confirmée")
 
     async def info(self, oid, certificate=None):
         async with self.catalog.connection() as c:
@@ -243,6 +291,11 @@ class FilesService:
             if op == "delete":
                 if not old or old["deleted"]:
                     raise Conflict("Fichier absent")
+                # #846 : refus anticipé ; le trigger refs reste l'autorité au COMMIT.
+                if getattr(self.s, "files_mission_dependencies_enabled", False) and (await self.catalog.one(c,
+                        "SELECT EXISTS(SELECT 1 FROM mission_file_dependencies WHERE path=%s AND state='active') protected",
+                        (path,)))["protected"]:
+                    raise Conflict("Fichier protégé par une dépendance Mission active")
                 manifest = [{"path": path, "generation": str(old["generation"]), "pin": old["pin"]}]
             if op == "concat":
                 paths = args.get("paths")
@@ -298,8 +351,8 @@ class FilesService:
     async def mutate(self, op, args, oid):
         cat = self.catalog
         # Origine serveur d'une admission réussie, jamais un argument Files.
-        from ..auth.hub_activity import current_hub_context
         from ..auth.context import current_access_operation
+        from ..auth.hub_activity import current_hub_context
         delegated = current_hub_context.get()
         origin = None
         if delegated is not None:

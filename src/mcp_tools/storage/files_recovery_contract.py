@@ -4,11 +4,17 @@ import json
 from pathlib import Path
 
 from .files_credentials import StorageUnavailable
+from .files_dependency_schema import DDL as DEPENDENCY_DDL, FUNCTIONS as DEPENDENCY_FUNCTIONS
+from .files_dependency_schema import render as render_dependencies
 from .files_recovery_schema import DDL, render
 from .files_schema import DDL as BASE_DDL
 
 FUNCTIONS = ('guard_retirement', 'capture_retirement', 'generation_visible', 'guard_source_pins',
              'guard_operation', 'guard_source_intent', 'guard_current_ref')
+
+
+def dependencies_enabled(settings):
+    return bool(getattr(settings, 'files_mission_dependencies_enabled', False))
 
 
 async def snapshot(c, settings, *, app_role):
@@ -47,7 +53,11 @@ async def snapshot(c, settings, *, app_role):
             has_database_privilege(%s,current_database(),'TEMP') write''', (role, role, role))).fetchone()
         if databases['bad'] or databases['write']:
             raise StorageUnavailable('Recovery database scope invalid')
+    dependencies = dependencies_enabled(settings)
+    functions = FUNCTIONS + (DEPENDENCY_FUNCTIONS if dependencies else ())
     base_tables = {'schema_version', 'refs', 'generations', 'operations', 'receipts'}
+    if dependencies:
+        base_tables.add('mission_file_dependencies')
     for role in (app_role, maintenance):
         expected_tables = base_tables | ({'blob_retirements'} if role == maintenance else set())
         accessible = await (await c.execute("""SELECT n.nspname,c.relname FROM pg_class c
@@ -106,8 +116,7 @@ async def snapshot(c, settings, *, app_role):
         'functions': '''SELECT proname,pg_get_function_identity_arguments(oid) arguments,provolatile,
             prosecdef,proleakproof,proconfig,prosrc,pg_get_userbyid(proowner) owner,
             format_type(prorettype,NULL) return_type FROM pg_proc WHERE pronamespace=%s
-            AND proname IN ('guard_retirement','capture_retirement','generation_visible','guard_source_pins',
-                            'guard_operation', 'guard_source_intent', 'guard_current_ref')
+            AND proname IN (''' + ','.join("'" + name + "'" for name in functions) + ''')
             ORDER BY proname,pg_get_function_identity_arguments(oid)''',
     }
     projection = {'owner_memberships': owner_members}
@@ -115,18 +124,20 @@ async def snapshot(c, settings, *, app_role):
         projection[name] = await (await c.execute(query, (namespace['oid'],))).fetchall()
     rendered = render(schema, app_role, maintenance, prefix=settings.files_s3_prefix,
                       recovery_days=settings.files_recovery_days).as_string(c)
+    if dependencies:
+        rendered += render_dependencies(schema, app_role, maintenance).as_string(c)
     sources = {}
-    for name in FUNCTIONS:
+    for name in functions:
         source = BASE_DDL if name == 'guard_operation' else rendered
         qualified = name if name == 'guard_operation' else sql.Identifier(schema).as_string(c) + '.' + name
         marker = 'CREATE FUNCTION ' + qualified + '('
         start = source.index('AS $$', source.index(marker)) + len('AS $$')
         sources[name] = source[start:source.index('$$;', start)]
-    if {row['proname'] for row in projection['functions']} != set(FUNCTIONS):
+    if {row['proname'] for row in projection['functions']} != set(functions):
         raise StorageUnavailable('Recovery routines incomplete')
     routines = await (await c.execute('SELECT proname FROM pg_proc WHERE pronamespace=%s',
                                       (namespace['oid'],))).fetchall()
-    if sorted(row['proname'] for row in routines) != sorted((*FUNCTIONS, 'files_infrastructure')):
+    if sorted(row['proname'] for row in routines) != sorted((*functions, 'files_infrastructure')):
         raise StorageUnavailable('Unknown recovery namespace routine')
     for row in projection['functions']:
         if row['prosrc'] != sources[row['proname']]:
@@ -155,7 +166,7 @@ async def snapshot(c, settings, *, app_role):
         UNION ALL SELECT 'COLUMN:'||t.relname||':'||a.attname,a.attacl FROM pg_attribute a
         JOIN pg_class t ON t.oid=a.attrelid WHERE t.relnamespace=%s AND a.attnum>0 AND NOT a.attisdropped
         ) objects CROSS JOIN LATERAL aclexplode(objects.acl) a ORDER BY 1,2,3,4,5'''
-    projection['acl'] = await (await c.execute(acl, (namespace['oid'], namespace['oid'], [*FUNCTIONS, 'files_infrastructure'],
+    projection['acl'] = await (await c.execute(acl, (namespace['oid'], namespace['oid'], [*functions, 'files_infrastructure'],
                                                    namespace['oid'], namespace['oid']))).fetchall()
     for row in projection['acl']:
         for name in ('grantee', 'grantor'):
@@ -174,11 +185,15 @@ async def snapshot(c, settings, *, app_role):
     return projection
 
 
-def expected_projection():
+def expected_projection(settings=None):
+    # #846 has its own PG17 capture; a missing capture refuses before any SQL effect.
+    dependencies = dependencies_enabled(settings)
+    name = 'files_dependency_contract.json' if dependencies else 'files_recovery_contract.json'
+    ddl = DDL + DEPENDENCY_DDL if dependencies else DDL
     try:
-        expected = json.loads(Path(__file__).with_name('files_recovery_contract.json').read_text())
+        expected = json.loads(Path(__file__).with_name(name).read_text())
         if (set(expected) != {'format_version', 'ddl_sha256', 'snapshot'} or expected['format_version'] != 1
-                or expected['ddl_sha256'] != hashlib.sha256(DDL.encode()).hexdigest()):
+                or expected['ddl_sha256'] != hashlib.sha256(ddl.encode()).hexdigest()):
             raise StorageUnavailable('Recovery schema/ACL drift')
         return expected['snapshot']
     except (OSError, ValueError, KeyError, TypeError):
@@ -186,6 +201,6 @@ def expected_projection():
 
 
 async def verify(c, settings, *, app_role):
-    expected = expected_projection()
+    expected = expected_projection(settings)
     if await snapshot(c, settings, app_role=app_role) != expected:
         raise StorageUnavailable('Recovery schema/ACL drift')

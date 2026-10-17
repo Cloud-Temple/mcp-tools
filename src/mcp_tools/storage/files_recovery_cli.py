@@ -60,6 +60,13 @@ async def operation(args):
     if args.command == 'ack-retirements':
 
         return await recovery.acknowledge(batch=args.batch)
+    if args.command in ('dependencies', 'retire-dependencies'):
+        # #846 : scope Mission exact, aucun chemin ni version ; sortie privée seulement.
+        scope = {'tenant_id': args.tenant_id, 'mission_id': args.mission_id,
+                 'root_agent_id': args.root_agent_id, 'batch': args.batch}
+        if args.command == 'dependencies':
+            return await recovery.dependencies(**scope)
+        return await recovery.retire_dependencies(**scope)
     if not args.path or not args.version_id or not args.output:
         raise ValueError('exact owned path/version and private output required')
     if args.command == 'inspect':
@@ -73,7 +80,8 @@ async def operation(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('ack-retirements', 'inspect', 'recover', 'collect'))
+    parser.add_argument('command', choices=('ack-retirements', 'inspect', 'recover', 'collect',
+                                                'dependencies', 'retire-dependencies'))
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--app-role', required=True)
     parser.add_argument('--intent-dir', type=Path, required=True)
@@ -82,6 +90,9 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--batch', type=int, default=100)
     parser.add_argument('--collection-code', type=Path)
+    parser.add_argument('--tenant-id')
+    parser.add_argument('--mission-id')
+    parser.add_argument('--root-agent-id')
     parser.add_argument('--pitr-code', type=Path)
     parser.add_argument('--pitr-domain', choices=('mission', 'teleport'))
     parser.add_argument('--state-dir', type=Path)

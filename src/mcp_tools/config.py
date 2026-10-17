@@ -21,6 +21,8 @@ class Settings(BaseSettings):
                 or not self.files_recovery_maintenance_role
                 or self.files_recovery_maintenance_role == self.files_pg_owner):
             raise ValueError("File recovery requires PostgreSQL and a separate maintenance role")
+        if self.files_mission_dependencies_enabled and not self.files_recovery_enabled:
+            raise ValueError("Mission file dependencies require the file recovery extension")
         return self
 
     # --- Serveur MCP ---
@@ -102,6 +104,8 @@ class Settings(BaseSettings):
     files_recovery_enabled: bool = False
     files_recovery_days: int = Field(default=30, ge=30, le=36500)
     files_recovery_maintenance_role: str = ""
+    # #846 : fermé par défaut, projection PG17 capturée requise avant activation.
+    files_mission_dependencies_enabled: bool = False
     files_s3_prefix: str = "files-generations/"
     files_s3_data_signature: str = "s3"  # Dell ECS s3 ; autre provider s3v4 explicite
     files_vault_url: str = ""
