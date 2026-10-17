@@ -48,7 +48,7 @@ class Catalog:
             "k": s.files_quorum, "cluster": s.files_pg_system_identifier, "timeline": s.files_pg_timeline})
 
     @asynccontextmanager
-    async def connection(self, service=None, operator=False):
+    async def connection(self, service=None, operator=False, maintenance_app_role=None):
         import psycopg
         from psycopg.rows import dict_row
         from psycopg import sql
@@ -75,11 +75,19 @@ class Catalog:
                 row = await self.one(c, "SELECT current_database() db, current_user role, pg_is_in_recovery() recovery")
                 if row["db"] != self.s.files_pg_database or row["recovery"] or row["role"] != self.s.files_pg_role:
                     raise StorageUnavailable("Cible SQL/identité invalide")
-                if operator:
+                if maintenance_app_role is not None:
+                    if (operator or not self.s.files_recovery_enabled
+                            or row['role'] != self.s.files_recovery_maintenance_role
+                            or maintenance_app_role == row['role']):
+                        raise StorageUnavailable("Identité maintenance recovery invalide")
+                    from .files_recovery_contract import verify
+                    await verify(c, self.s, app_role=maintenance_app_role)
+                    await self.infrastructure(c)
+                elif operator:
                     proof = await self.one(c,"SELECT (SELECT system_identifier::text FROM pg_control_system()) cluster,(SELECT timeline_id FROM pg_control_checkpoint()) timeline,current_setting('fsync')='on' fsync")
                     if proof["cluster"]!=self.s.files_pg_system_identifier or proof["timeline"]!=self.s.files_pg_timeline or not proof["fsync"]:
                         raise StorageUnavailable("Cluster/epoch opérateur invalide")
-                if not operator:
+                if not operator and maintenance_app_role is None:
                     await self.check_schema(c)
                     await self.infrastructure(c)
                 yield c
@@ -133,6 +141,15 @@ class Catalog:
         trigger = await self.one(c, "SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='operations'::regclass AND tgname='immutable_operation' AND tgenabled='O') ok")
         if not trigger["ok"]:
             raise StorageUnavailable("Garde SQL absente")
+
+        from psycopg import sql
+        relation = sql.Identifier(self.s.files_pg_schema, 'blob_retirements').as_string(c)
+        extension = await self.one(c, 'SELECT to_regclass(%s) IS NOT NULL AS present', (relation,))
+        if extension['present'] != self.s.files_recovery_enabled:
+            raise StorageUnavailable("Recovery profile and installed schema differ")
+        if self.s.files_recovery_enabled:
+            from .files_recovery_contract import verify
+            await verify(c, self.s, app_role=role)
 
     async def infrastructure(self, c, bound=None):
         # Fonction étroite fournie par opérateur/DBaaS : pas de pg_monitor accordé à app.
