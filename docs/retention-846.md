@@ -21,19 +21,34 @@ défaut, exige l'extension 845) :
   arguments de l'outil. `list`, `info`, `metadata_batch` et `versions` n'en
   créent pas. Sans délégation (standalone), rien ne change.
 - Le trigger owner `guard_file_dependency` prend `refs` en `FOR SHARE`, puis le
-  verrou de pin 845, puis vérifie `generation_visible`. Une insertion refusée ou
-  un COMMIT inconnu fait échouer la lecture sans octet.
+  verrou de pin 845 en mode partagé (`pg_advisory_xact_lock_shared`), puis
+  vérifie `generation_visible`. Deux lectures du même fichier ne se sérialisent
+  pas ; le GC, la publication et les intentions 845 prennent la même clé en mode
+  exclusif et restent en conflit avec une acquisition. Les lignes d'un `diff`
+  sont insérées dans l'ordre `(path, generation)`, celui de `guard_source_intent`.
+  Une insertion refusée ou un COMMIT inconnu fait échouer la lecture sans octet.
 - `published()` résout un call par une seule source : l'opération publiée 843,
   ou une dépendance active du même call et de la même opération d'activité, dans
   le scope exact tenant, Mission et agent racine des claims, sur une génération
   encore visible. Zéro source, deux sources ou deux dépendances (cas `diff`)
   donnent `unavailable`.
-- Une suppression publique d'un chemin qui a une dépendance active est refusée,
-  d'abord dans `prepare`, puis par le trigger `guard_dependency_retirement` sur
-  `refs` au COMMIT. Une écriture qui remplace la version courante reste permise :
-  l'ancienne génération reste visible et la lecture historique de B continue.
+- Une suppression publique d'un chemin qui a une dépendance active est refusée
+  à trois endroits. `prepare` refuse sans verrou. La transaction de réservation
+  refait le contrôle sous `refs FOR UPDATE` : une acquisition commitée pendant
+  l'attente du verrou y est vue, et le ROLLBACK ne laisse aucune opération. La
+  publication refait le contrôle sous `refs FOR UPDATE` : si une dépendance a été
+  commitée entre réservation et publication, la même transaction révoque et ferme
+  l'opération (reçus `dependency_refusal` puis `dependency_refusal_closed`, phase
+  laissée à `PUBLICATION_ARMED`, rien de publié). La réponse est
+  `status: error`, `code: mission_dependency_active`, `effect_state: not_published`,
+  `reconciliation_state: not_required`. Le trigger `guard_dependency_retirement`
+  sur `refs` reste l'autorité finale. Une écriture qui remplace la version
+  courante reste permise : l'ancienne génération reste visible et la lecture
+  historique de B continue.
 - `FileRecovery.referenced` compte les dépendances actives comme racines avant
-  tout armement de suppression physique.
+  tout armement de suppression physique, une racine par génération
+  (`SELECT DISTINCT`), quel que soit le nombre de Missions qui la lisent.
+  L'argument `dependencies` n'a pas de défaut.
 
 Rôles. L'app a `SELECT, INSERT` sur la table, ni `UPDATE` ni `DELETE`. La
 maintenance a `SELECT` et `UPDATE(state, retired_at, revision)`. Le trigger
@@ -53,18 +68,63 @@ python -m src.mcp_tools.storage.files_recovery_cli retire-dependencies \
 ```
 
 `dependencies` est en lecture seule et ne rend ni la clé physique ni le contenu.
+Sur stdout, les deux commandes n'impriment qu'un résumé (`rows_count`, `complete`) ;
+les lignes call, génération et Mission ne sont que dans `result.json` (0600).
 `retire-dependencies` ne touche que les lignes actives de ce scope ; une autre
 Mission garde les siennes. `complete: false` demande un nouveau passage.
 
-Activation. L'installeur et `check_schema` exigent la capture PG17 revue
-`files_dependency_contract.json`, dont l'empreinte couvre le DDL 845 et le DDL
-846. Elle n'existe pas encore : avec l'option active, l'installation et l'app
-refusent avant tout SQL. Ordre des verrous par point d'appel : docstring de
+Activation. L'installeur et `check_schema` exigent une capture PG17 revue.
+`ddl_sha256` (`files_recovery_contract.ddl_sha256`) couvre le DDL de base
+(`files_schema.DDL`), le DDL 845 et, pour `files_dependency_contract.json`, le
+DDL 846. Avant ce round l'empreinte ne couvrait que le DDL 845 : la capture
+`files_recovery_contract.json` a été prise avant la colonne
+`operations.origin_call_id` de #843, douze colonnes de `operations` y sont
+décalées d'un `attnum`, et rien ne le signalait avant le SQL. Avec la nouvelle
+empreinte, cette capture refuse avant tout SQL tant qu'elle n'est pas refaite
+(test `test_committed_recovery_capture_matches_the_current_base_schema`, marqué
+xfail strict jusqu'à la recapture). `files_dependency_contract.json` n'existe pas
+encore dans le dépôt : avec l'option active, l'installation et l'app refusent
+avant tout SQL. Les deux captures se refont en un seul run PG17
+(`j0/run846-dep-r2`). Ordre des verrous par point d'appel : docstring de
 `files_dependency_schema.py`.
 
+Condition d'ouverture. `FILES_MISSION_DEPENDENCIES_ENABLED` ne doit pas être
+activé sans la partie Access. Aujourd'hui un call d'activité garde son échéance
+d'admission (8760 h) au lieu de fin de Mission plus 365 jours, et aucun retrait
+automatique des dépendances n'existe à la clôture : un fichier lu par une
+Mission reste non supprimable tant que `retire-dependencies` n'est pas passé sur
+son scope, et la consultation historique peut survivre au call qui la justifie
+ou disparaître avant lui.
+
 Pas encore couvert ici : l'échéance effective des calls d'activité (fin de
-Mission plus 365 jours) côté Access 31, les reçus de clôture Mission et le DTO
-vers Mission. Les calls gardent leur échéance d'admission (8760 h).
+Mission plus 365 jours) côté Access 31, les holds et les reçus de clôture
+Mission, le DTO vers Mission et le retrait automatique des dépendances.
+
+### Limites connues (P3)
+
+P3-1, interblocage acquisition contre intention 845. L'acquisition prend `refs`
+en `FOR SHARE` puis le verrou de pin. `guard_source_intent` (845, sur l'INSERT
+d'une opération `concat` ou d'une suppression publique) prend le verrou de pin
+puis `refs FOR UPDATE`. Sur la même génération l'ordre est inversé, donc une
+lecture Mission et un `concat` ou une suppression concurrents peuvent
+s'interbloquer. PostgreSQL détecte l'interblocage ou `lock_timeout` (1000 ms en
+profil) l'arrête : une des deux transactions est annulée, rien n'est servi ni
+publié de ce côté, et l'appelant relance. L'origine est 845 : `publish` prend
+`refs` puis le pin, `guard_source_intent` prend le pin puis `refs`. Aligner
+`guard_source_intent` sur l'ordre de `publish` corrigerait les deux, dans une
+évolution 845. Le tri Python par `(path, generation)` suit l'ordre des octets ;
+`guard_source_intent` trie avec la collation de la base. Les deux ne coïncident
+que pour des chemins ASCII sous collation `C`, ce qui ne change rien au cas
+d'une seule génération.
+
+P3-5, refus par le trigger seul. Si le trigger `guard_dependency_retirement`
+refuse un jour l'UPDATE de `refs` alors que le contrôle explicite de `publish` est
+passé, l'instruction échoue, la transaction est annulée et l'opération reste en
+`PUBLICATION_ARMED`, `closed=false`, jusqu'à un `reconcile` admin. Sous
+`refs FOR UPDATE` aucune acquisition ne peut aboutir entre ce contrôle et l'UPDATE
+(elle attend `refs FOR SHARE`), donc ce cas n'a pas de chemin connu. Avant ce
+round c'était le cas normal d'une course lecture contre suppression ; le run PG17
+r1 l'a montré (T10b bloqué sur `one_active_path`).
 
 ## Journaux techniques
 

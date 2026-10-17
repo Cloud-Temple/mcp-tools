@@ -110,7 +110,14 @@ def main():
     except Exception:
         pass
     save(args.intent_dir / 'result.json', json.dumps(result).encode())
-    print(json.dumps(result))
+    if args.command in ('dependencies', 'retire-dependencies'):
+        # #846 : lignes (call, génération, Mission) seulement dans result.json 0600.
+        summary = {k: v for k, v in result.items() if k != 'rows'}
+        if isinstance(result.get('rows'), list):
+            summary['rows_count'] = len(result['rows'])
+        print(json.dumps(summary))
+    else:
+        print(json.dumps(result))
     return 0 if result['status'] == 'confirmed' else 1
 
 

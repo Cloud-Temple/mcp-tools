@@ -17,6 +17,15 @@ def dependencies_enabled(settings):
     return bool(getattr(settings, 'files_mission_dependencies_enabled', False))
 
 
+def ddl_sha256(dependencies=False):
+    """Fingerprint of every DDL the capture was taken on, base schema included.
+
+    The base DDL is covered so that a base change (#843 added operations.origin_call_id)
+    invalidates a capture taken before it, before any SQL, instead of drifting silently.
+    """
+    return hashlib.sha256((BASE_DDL + DDL + (DEPENDENCY_DDL if dependencies else '')).encode()).hexdigest()
+
+
 async def snapshot(c, settings, *, app_role):
     from psycopg import sql
 
@@ -189,11 +198,10 @@ def expected_projection(settings=None):
     # #846 has its own PG17 capture; a missing capture refuses before any SQL effect.
     dependencies = dependencies_enabled(settings)
     name = 'files_dependency_contract.json' if dependencies else 'files_recovery_contract.json'
-    ddl = DDL + DEPENDENCY_DDL if dependencies else DDL
     try:
         expected = json.loads(Path(__file__).with_name(name).read_text())
         if (set(expected) != {'format_version', 'ddl_sha256', 'snapshot'} or expected['format_version'] != 1
-                or expected['ddl_sha256'] != hashlib.sha256(ddl.encode()).hexdigest()):
+                or expected['ddl_sha256'] != ddl_sha256(dependencies)):
             raise StorageUnavailable('Recovery schema/ACL drift')
         return expected['snapshot']
     except (OSError, ValueError, KeyError, TypeError):

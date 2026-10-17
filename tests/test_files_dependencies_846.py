@@ -26,7 +26,7 @@ from src.mcp_tools.auth.context import current_access_operation, current_token_i
 from src.mcp_tools.storage import hub_files
 from src.mcp_tools.storage.files_credentials import StorageUnavailable
 from src.mcp_tools.storage.files_postgres import CommitUnknown, Conflict
-from src.mcp_tools.storage.files_service import FilesService
+from src.mcp_tools.storage.files_service import DependencyRefused, FilesService
 
 PATH = 'shared/report.txt'
 CLAIMS = dict(tenant_id='tenant', mission_id='mis_1', root_agent_id='ag_root')
@@ -135,11 +135,12 @@ class Memory:
 
 class MemoryBlobs:
     def __init__(self, memory):
-        self.memory, self.reads, self.on_hub_read = memory, 0, None
+        self.memory, self.reads, self.on_hub_read, self.read_at = memory, 0, None, []
 
     async def get(self, pin):
         assert pin == self.memory.pin
         self.reads += 1
+        self.read_at.append(len(self.memory.queries))  # nombre de requêtes SQL émises avant cet accès S3
         return self.memory.content
 
     async def get_hub(self, pin, check):
@@ -242,7 +243,8 @@ def test_t1_read_only_reader_b_historical_consultation_is_available(monkeypatch,
         'tenant', 'mis_1', 'ag_root', memory.pin)
     assert not [q for q in memory.queries if q.startswith(('INSERT INTO operations', 'INSERT INTO receipts'))]
     insert = memory.queries.index(next(q for q in memory.queries if q.startswith('INSERT INTO mission')))
-    assert insert < len(memory.queries) and files.blobs.reads == 1
+    # L'INSERT de dépendance précède le seul accès S3 de la lecture.
+    assert files.blobs.reads == 1 and insert < files.blobs.read_at[0]
 
     monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
     store = FileStore(claims['call_id'], admitted['operation_id'])
@@ -499,7 +501,7 @@ def test_public_delete_is_refused_while_a_mission_dependency_is_active():
         memory = Memory()
         files = service(memory)
         dependency(memory, str(uuid4()), str(uuid4()))
-        with pytest.raises(Conflict, match='dépendance Mission active'):
+        with pytest.raises(DependencyRefused, match='dépendance Mission active'):
             await files.prepare('delete', {'path': PATH})
         for row in memory.deps.values():
             row['state'] = 'retired'
@@ -533,7 +535,10 @@ def test_collect_treats_an_active_dependency_as_a_root(enabled):
         protected = await FileRecovery.referenced(connection, pin, dependencies=enabled)
         assert protected is enabled
         assert ('mission_file_dependencies' in connection.queries[0]) is enabled
-        assert "d.state='active'" in connection.queries[0] or not enabled
+        if enabled:
+            # Une racine par génération, quel que soit le nombre de Missions qui la lisent.
+            assert 'SELECT DISTINCT d.generation FROM mission_file_dependencies d' in connection.queries[0]
+            assert "d.state='active'" in connection.queries[0]
 
     asyncio.run(scenario())
 
@@ -658,6 +663,8 @@ def test_dependency_ddl_grants_and_hash_are_finite():
     assert 'DELETE' not in ''.join(line for line in ddl.splitlines() if line.startswith('GRANT'))
     assert ddl.count('SECURITY DEFINER') == 2 and 'FOR SHARE' in ddl
     assert "'files-recovery:' ||" in ddl and 'generation_visible(NEW.generation)' in ddl
+    # P3-3 : l'acquisition prend le verrou de pin en mode partagé, jamais exclusif.
+    assert ddl.count('pg_advisory_xact_lock_shared(') == 1 and 'pg_advisory_xact_lock(' not in ddl
     with pytest.raises(ValueError):
         schema.render('tools_files', 'same', 'same')
 
@@ -693,24 +700,264 @@ def test_dependency_profile_without_reviewed_capture_refuses_before_sql(monkeypa
                                                           operator_service='private', check=False))
         assert names == ['files_dependency_contract.json']
         monkeypatch.undo()
-        # Le profil 845 seul garde sa capture et son empreinte inchangées.
-        assert contract.expected_projection(SimpleNamespace()) == contract.expected_projection()
 
     asyncio.run(scenario())
 
 
-def test_dependency_capture_hash_covers_both_ddl(monkeypatch, tmp_path):
+@pytest.mark.parametrize('dependencies', [False, True])
+def test_capture_hash_covers_base_recovery_and_dependency_ddl(monkeypatch, tmp_path, dependencies):
     from src.mcp_tools.storage import files_recovery_contract as contract
     from src.mcp_tools.storage.files_dependency_schema import DDL as DEPENDENCY_DDL
     from src.mcp_tools.storage.files_recovery_schema import DDL
+    from src.mcp_tools.storage.files_schema import DDL as BASE_DDL
 
-    capture = tmp_path / 'files_dependency_contract.json'
-    good = hashlib.sha256((DDL + DEPENDENCY_DDL).encode()).hexdigest()
+    name = 'files_dependency_contract.json' if dependencies else 'files_recovery_contract.json'
+    capture = tmp_path / name
+    extra = DEPENDENCY_DDL if dependencies else ''
+    good = hashlib.sha256((BASE_DDL + DDL + extra).encode()).hexdigest()
+    assert contract.ddl_sha256(dependencies) == good
     monkeypatch.setattr(contract, 'Path', lambda *a: SimpleNamespace(with_name=lambda name: tmp_path / name))
-    enabled = SimpleNamespace(files_mission_dependencies_enabled=True)
+    profile = SimpleNamespace(files_mission_dependencies_enabled=dependencies)
     capture.write_text(json.dumps(dict(format_version=1, ddl_sha256=good, snapshot={'captured': True})))
-    assert contract.expected_projection(enabled) == {'captured': True}
-    capture.write_text(json.dumps(dict(format_version=1, ddl_sha256=hashlib.sha256(DDL.encode()).hexdigest(),
-                                       snapshot={'captured': True})))
+    assert contract.expected_projection(profile) == {'captured': True}
+    # Ancienne formule (DDL 845 seul ou 845 + 846) : une capture d'avant #843 casse avant tout SQL.
+    stale = hashlib.sha256((DDL + extra).encode()).hexdigest()
+    capture.write_text(json.dumps(dict(format_version=1, ddl_sha256=stale, snapshot={'captured': True})))
     with pytest.raises(StorageUnavailable, match='drift'):
-        contract.expected_projection(enabled)
+        contract.expected_projection(profile)
+    # Un changement du DDL de base seul (colonne ajoutée) casse aussi.
+    monkeypatch.setattr(contract, 'BASE_DDL', BASE_DDL.replace('origin_call_id uuid, ', ''))
+    capture.write_text(json.dumps(dict(format_version=1, ddl_sha256=good, snapshot={'captured': True})))
+    with pytest.raises(StorageUnavailable, match='drift'):
+        contract.expected_projection(profile)
+
+
+@pytest.mark.xfail(strict=True, reason='files_recovery_contract.json antérieure à operations.origin_call_id '
+                   '(#843) : recapture PG17 845 en attente, j0/run846-dep-r2')
+def test_committed_recovery_capture_matches_the_current_base_schema():
+    """Retirer ce marqueur avec la recapture : strict, il échoue dès que la capture est à jour."""
+    from src.mcp_tools.storage import files_recovery_contract as contract
+
+    projection = contract.expected_projection()
+    columns = [r['attname'] for r in projection['columns'] if r['relname'] == 'operations']
+    assert columns[:4] == ['id', 'path', 'binding', 'origin_call_id']
+
+
+def test_referenced_has_no_default_for_dependencies():
+    """P3-7 : oublier l'argument échoue, au lieu d'ignorer les racines Mission."""
+    from src.mcp_tools.storage.files_recovery import FileRecovery
+
+    with pytest.raises(TypeError):
+        asyncio.run(FileRecovery.referenced(RootConnection([], {}), {'key': 'k', 'version_id': 'v'}))
+
+
+def test_diff_inserts_dependencies_in_path_generation_order_and_once_per_generation():
+    """P3-2 : même ordre que guard_source_intent ; un diff d'un fichier avec lui-même n'en crée qu'une."""
+    async def scenario():
+        memory = Memory()
+        files = service(memory)
+        second = str(uuid4())
+        memory.generations[second] = dict(path='other.txt', pin=dict(memory.pin, key='files-generations/' + second,
+                                                                      version_id='v-2'))
+        memory.refs['other.txt'] = dict(path='other.txt', revision=1, generation=UUID(second),
+                                        operation=UUID(str(uuid4())), deleted=False)
+        delegation, operation, binding = delegated()
+        rows = [await files.ref(None, PATH), await files.ref(None, 'other.txt')]
+        async with under(delegation, operation, binding):
+            await files.acquire(memory, files.dependency_scope(), rows)
+        assert [path for (_call, _g), path in ((k, v['path']) for k, v in memory.deps.items())] == [
+            'other.txt', PATH]
+        memory.deps.clear()
+        delegation, operation, binding = delegated()
+        async with under(delegation, operation, binding):
+            await files.acquire(memory, files.dependency_scope(), [rows[0], copy.deepcopy(rows[0])])
+        assert len(memory.deps) == 1
+        assert sum(q.startswith('INSERT INTO mission_file_dependencies') for q in memory.queries) == 3
+
+    asyncio.run(scenario())
+
+
+OID, ATTEMPT, GENERATION = str(uuid4()), str(uuid4()), str(uuid4())
+
+
+class Journal:
+    """Seam operations/receipts : rollback réel du dict sur exception, COMMIT inconnu simulable."""
+
+    def __init__(self, protected):
+        self.protected, self.sql, self.receipts, self.verified = protected, [], [], []
+        self.exists_calls, self.fail_commit = 0, False
+        self.row = dict(id=UUID(OID), path=PATH, attempt=UUID(ATTEMPT), generation=UUID(GENERATION),
+                        intent_digest='d' * 64, publication_allowed=True, revocation=None, closed=False,
+                        phase='PUBLICATION_ARMED', expected_revision=3)
+
+    @asynccontextmanager
+    async def connection(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self, c):
+        before = copy.deepcopy((self.row, self.receipts, self.sql))
+        try:
+            yield
+        except BaseException:
+            self.row, self.receipts, self.sql = before
+            raise
+        if self.fail_commit:
+            self.row, self.receipts, self.sql = before
+            raise CommitUnknown('COMMIT/barrière non confirmés ; inspection requise')
+
+    async def lock(self, c, oid):
+        return copy.deepcopy(self.row)
+
+    async def one(self, c, query, args=()):
+        if query.startswith('SELECT EXISTS(SELECT 1 FROM mission_file_dependencies WHERE path=%s'):
+            self.exists_calls += 1
+            protected = self.protected(self.exists_calls) if callable(self.protected) else self.protected
+            return {'protected': protected}
+        if query.startswith('SELECT * FROM operations WHERE id=%s'):
+            return None
+        raise AssertionError('SQL inattendu : ' + query[:80])
+
+    async def execute(self, query, args=()):
+        q = ' '.join(query.split())
+        self.sql.append(q)
+        if q.startswith('UPDATE operations SET publication_allowed=false,revocation=%s,closed=true'):
+            self.row.update(publication_allowed=False, revocation=args[0], closed=True)
+        elif q.startswith("UPDATE operations SET phase='EFFECT_COMMITTED'"):
+            self.row['phase'] = 'EFFECT_COMMITTED'
+        return SimpleNamespace(rowcount=1)
+
+    async def receipt(self, c, oid, kind, detail):
+        self.receipts.append((kind, detail))
+        return 'r%d' % len(self.receipts)
+
+    async def barrier(self, c, oid, kind='barrier'):
+        return await self.receipt(c, oid, kind, {})
+
+    async def verify_barrier(self, c, oid, rid):
+        self.verified.append(rid)
+        return {'barrier_id': rid}
+
+
+def publisher(journal, enabled=True):
+    files = object.__new__(FilesService)
+    files.s = SimpleNamespace(files_mission_dependencies_enabled=enabled, files_s3_prefix='p/',
+                              s3_bucket_name='b')
+    files.catalog = journal
+
+    async def ref(c, path, lock=False):
+        return dict(path=path, revision=3, generation=UUID(str(uuid4())), operation=UUID(OID), deleted=False,
+                    pin=dict(key='p/x', version_id='v-1'), manifest=[])
+    files.ref = ref
+    return files
+
+
+def test_publish_closes_a_delete_refused_by_an_active_dependency_in_the_same_transaction():
+    """Fixture T10a : la dépendance commitée entre réservation et publication ne laisse rien d'ouvert."""
+    async def scenario():
+        journal = Journal(protected=True)
+        files = publisher(journal)
+        with pytest.raises(DependencyRefused, match='dépendance Mission active'):
+            await files.publish(OID, ATTEMPT, GENERATION, 'd' * 64, 'delete')
+        row = journal.row
+        assert row['closed'] is True and row['publication_allowed'] is False and row['revocation']
+        assert row['phase'] == 'PUBLICATION_ARMED'  # aucun effet, phase d'arrêt lisible
+        assert not [q for q in journal.sql if q.startswith('UPDATE refs')]
+        assert [k for k, _ in journal.receipts] == ['dependency_refusal', 'dependency_refusal_closed']
+        assert journal.receipts[0][1]['result'] == 'not_published'
+        assert journal.verified == ['r2']
+
+    asyncio.run(scenario())
+
+
+def test_unknown_commit_of_a_refused_delete_stays_for_reconcile():
+    """845 : un COMMIT inconnu n'est jamais présenté comme un refus connu."""
+    async def scenario():
+        journal = Journal(protected=True)
+        journal.fail_commit = True
+        files = publisher(journal)
+        with pytest.raises(CommitUnknown):
+            await files.publish(OID, ATTEMPT, GENERATION, 'd' * 64, 'delete')
+        assert journal.row['closed'] is False and journal.verified == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('op,enabled', [('delete', True), ('delete', False), ('write', True)])
+def test_publish_without_active_dependency_or_for_a_write_is_unchanged(op, enabled):
+    async def scenario():
+        journal = Journal(protected=op == 'write')  # une écriture n'interroge jamais les dépendances
+        files = publisher(journal, enabled)
+        certificate = await files.publish(OID, ATTEMPT, GENERATION, 'd' * 64, op)
+        assert certificate == {'barrier_id': 'r1'} and journal.row['closed'] is False
+        assert journal.exists_calls == (1 if op == 'delete' and enabled else 0)
+        assert [q for q in journal.sql if q.startswith('UPDATE refs')]
+        assert [k for k, _ in journal.receipts] == ['publication', 'ack_observed_by_server']
+
+    asyncio.run(scenario())
+
+
+def test_reservation_refused_by_a_dependency_committed_while_waiting_opens_no_operation():
+    """Contrôle anticipé passé, dépendance commitée pendant l'attente du verrou refs : ROLLBACK."""
+    async def scenario():
+        journal = Journal(protected=lambda call: call >= 2)
+        files = publisher(journal)
+        phases = []
+
+        async def phase(*args):
+            phases.append(args)
+        files.phase = phase
+        with pytest.raises(DependencyRefused):
+            await files.mutate('delete', {'path': PATH}, OID)
+        assert journal.exists_calls == 2 and phases == [] and journal.receipts == []
+        assert not [q for q in journal.sql if q.startswith('INSERT INTO operations')]
+
+    asyncio.run(scenario())
+
+
+def test_dispatch_reports_a_known_dependency_refusal_without_pending_reconcile(monkeypatch):
+    async def scenario():
+        files = object.__new__(FilesService)
+        files.calls = asyncio.Semaphore(1)
+
+        async def ready():
+            return None
+
+        async def mutate(op, args, oid):
+            raise DependencyRefused('Fichier protégé par une dépendance Mission active')
+
+        async def refresh(tool):
+            return None
+        files.ready, files.mutate = ready, mutate
+        monkeypatch.setattr(runtime, 'refresh_access', refresh)
+        token = current_token_info.set({'permissions': ['access'], 'tool_ids': ['files'], 'credential_binding': 'b'})
+        try:
+            result = await files.dispatch('delete', {'path': PATH, 'operation_id': OID})
+        finally:
+            current_token_info.reset(token)
+        assert result['status'] == 'error' and result['code'] == 'mission_dependency_active'
+        assert result['effect_state'] == 'not_published' and result['operation_id'] == OID
+        assert result['reconciliation_state'] == 'not_required' and 'remote_result' not in result
+
+    asyncio.run(scenario())
+
+
+def test_operator_cli_prints_only_a_summary_for_dependency_commands(monkeypatch, tmp_path, capsys):
+    """P3-6 : les lignes call/génération/Mission ne vont que dans result.json 0600."""
+    import sys
+
+    from src.mcp_tools.storage import files_recovery_cli as cli
+
+    async def operation(args):
+        return {'category': 'tools_file_dependency', 'complete': True,
+                'rows': [{'call_id': 'c-1', 'generation': 'g-1', 'mission_id': 'mis_secretive'}]}
+    monkeypatch.setattr(cli, 'operation', operation)
+    monkeypatch.setattr(sys, 'argv', ['cli', 'dependencies', '--profile', str(tmp_path / 'p'), '--app-role', 'app',
+                                      '--intent-dir', str(tmp_path / 'i'), '--tenant-id', 'tenant',
+                                      '--mission-id', 'mis_secretive', '--root-agent-id', 'ag_root'])
+    assert cli.main() == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {'action': 'dependencies', 'status': 'confirmed', 'blind_replay': False,
+                       'category': 'tools_file_dependency', 'complete': True, 'rows_count': 1}
+    stored = json.loads((tmp_path / 'i' / 'result.json').read_text())
+    assert stored['rows'][0]['call_id'] == 'c-1'

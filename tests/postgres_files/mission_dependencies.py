@@ -7,8 +7,13 @@ are a controlled seam. This does not qualify S3, Vault, TLS or native delivery.
 T7  A and B read the same object; retiring Mission A keeps B's dependency and
     B's historical consultation returns the same bytes and SHA-256.
 T9  A retired dependency resolves to unavailable, without any byte read.
-T10 Two sessions: an acquisition holding its locks makes a concurrent public
-    delete fail at COMMIT; a delete committed first refuses the acquisition.
+T10a Two sessions: an uncommitted acquisition holds refs FOR SHARE and the pin
+    lock; a concurrent public delete waits, then its reservation sees the
+    committed dependency under refs FOR UPDATE and rolls back. No operation stays
+    open on the path (round 1 left one, one_active_path then blocked T10b).
+T10c A dependency committed between reservation and publication: publish refuses
+    under refs FOR UPDATE and closes the operation in the same transaction.
+T10b A delete committed first makes generation_visible false; acquisition refuses.
 """
 import asyncio
 import hashlib
@@ -116,6 +121,11 @@ async def exercise(args, save):
             return await (await c.execute('SELECT call_id::text,generation::text,activity_operation_id::text,'
                 'mission_id,state,revision FROM tools_files.mission_file_dependencies ORDER BY 1,2')).fetchall()
 
+    async def open_operations():
+        async with catalog.connection() as c:
+            return (await (await c.execute('SELECT count(*) n FROM operations WHERE path=%s AND NOT closed',
+                                           (PATH,))).fetchone())['n']
+
     async def ref():
         async with catalog.connection() as c:
             return await (await c.execute('SELECT revision,deleted,generation::text FROM refs WHERE path=%s',
@@ -206,10 +216,45 @@ async def exercise(args, save):
             finally:
                 await holder.close()
             raced = await deleting
-            save(args.output / 't10a-delete-after-acquisition.json', {'delete': raced, 'ref': await ref()})
-            assert raced['status'] != 'ok' and (await ref())['deleted'] is False
+            save(args.output / 't10a-delete-after-acquisition.json',
+                 {'delete': raced, 'ref': await ref(), 'open_operations': await open_operations()})
+            assert raced['status'] == 'error' and raced['code'] == 'mission_dependency_active', raced
+            assert (await ref())['deleted'] is False and await open_operations() == 0
             await recovery.retire_dependencies(tenant_id='tenant', mission_id='mis_C',
                                                root_agent_id='ag_C', batch=10)
+
+            # T10c: an acquisition commits after reservation, before publication.
+            original = service.publish
+            scope_e = claims('mis_E', 'ag_E')
+
+            async def publish_after_acquisition(*a, **kw):
+                service.publish = original
+                async with await psycopg.AsyncConnection.connect(host=str(args.socket), dbname=args.database,
+                        user=args.app, autocommit=True) as late:
+                    await late.execute('SET search_path=tools_files,pg_catalog')
+                    await late.execute('''INSERT INTO mission_file_dependencies(call_id,generation,
+                        activity_operation_id,path,pin,served_revision,tenant_id,mission_id,root_agent_id)
+                        VALUES(%s,%s,%s,%s,%s,%s,'tenant','mis_E','ag_E')''',
+                        (scope_e['call_id'], generation['id'], str(uuid4()), PATH,
+                         Jsonb(generation['pin']), current['revision']))
+                return await original(*a, **kw)
+            service.publish = publish_after_acquisition
+            late_oid = str(uuid4())
+            late = await registry.call(operation='delete', operation_id=late_oid, path=PATH)
+            async with catalog.connection() as c:
+                journal = await (await c.execute('''SELECT o.phase,o.closed,o.publication_allowed,
+                    array_agg(r.kind ORDER BY r.created_at,r.id) kinds FROM operations o
+                    JOIN receipts r ON r.operation=o.id WHERE o.id=%s GROUP BY 1,2,3''', (late_oid,))).fetchone()
+            save(args.output / 't10c-delete-refused-at-publication.json',
+                 {'delete': late, 'journal': journal, 'ref': await ref(), 'open_operations': await open_operations()})
+            assert service.publish == original
+            assert late['status'] == 'error' and late['code'] == 'mission_dependency_active', late
+            assert journal['closed'] is True and journal['publication_allowed'] is False
+            assert journal['phase'] == 'PUBLICATION_ARMED' and journal['kinds'][-2:] == [
+                'dependency_refusal', 'dependency_refusal_closed']
+            assert (await ref())['deleted'] is False and await open_operations() == 0
+            await recovery.retire_dependencies(tenant_id='tenant', mission_id='mis_E',
+                                               root_agent_id='ag_E', batch=10)
 
             # T10b: a committed delete makes generation_visible false; acquisition refuses, no bytes.
             deleted = await public('delete', path=PATH)

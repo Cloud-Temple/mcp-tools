@@ -113,14 +113,16 @@ class FileRecovery:
                           'revision': r['revision']} for r in rows]}
 
     @staticmethod
-    async def referenced(c, pin, *, dependencies=False):
+    async def referenced(c, pin, *, dependencies):
         # One SQL snapshot for both live roots and admitted open intentions.
         # Otherwise an intent could close/publish between two separate root reads.
         # #846: an active Mission dependency is a root of its exact generation.
+        # ``dependencies`` has no default: a caller that forgets it must fail, not skip roots.
+        # One root per generation: N Missions on one file do not exhaust the 10000 budget.
         extra = ("""UNION ALL SELECT jsonb_build_array(jsonb_build_object(
                 'generation',g.id::text,'path',g.path,'pin',g.pin)) sources
-            FROM mission_file_dependencies d JOIN generations g ON g.id=d.generation
-            WHERE d.state='active'
+            FROM (SELECT DISTINCT d.generation FROM mission_file_dependencies d
+              WHERE d.state='active') d JOIN generations g ON g.id=d.generation
             """ if dependencies else "")
         roots = await (await c.execute("""SELECT jsonb_build_array(jsonb_build_object(
                 'generation',g.id::text,'path',g.path,'pin',g.pin)) sources

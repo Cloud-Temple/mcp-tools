@@ -5,18 +5,21 @@ that the served generation is still live, under the refs row then the 845 pin
 lock (same order as publish). Only maintenance retires rows, never DELETE.
 
 Lock order per callsite (refs row, then pin advisory 'files-recovery:[key,version]'):
-- dependency acquisition (guard_file_dependency): refs FOR SHARE, pin lock,
-  generation_visible, INSERT.
-- publish delete/write (FilesService.publish): refs FOR UPDATE, then
-  guard_current_ref takes the pin lock, guard_dependency_retirement refuses a
+- dependency acquisition (guard_file_dependency): refs FOR SHARE, pin lock in
+  SHARED mode, generation_visible, INSERT. Two reads of the same file do not
+  serialize; GC and writers take the same key exclusively and still conflict.
+  FilesService.acquire inserts rows ordered by (path, generation).
+- publish delete/write (FilesService.publish): refs FOR UPDATE, an explicit
+  active-dependency check that closes a refused delete in the same transaction,
+  then guard_current_ref takes the pin lock, guard_dependency_retirement refuses a
   deletion while an active dependency exists, capture_retirement (AFTER) arms 845.
 - collect (FileRecovery.collect): pin lock, blob_retirements FOR UPDATE,
   referenced() sees active dependencies. No refs lock, so no cycle with acquisition.
 - operation intent with sources (guard_source_intent, 845, concat or delete):
-  pin lock, then refs FOR UPDATE. This
-  is the reverse order of acquisition on the same pin; PostgreSQL detects the
-  deadlock and aborts one transaction. Nothing is served or published by the
-  aborted side, and the caller retries explicitly.
+  pin lock, then refs FOR UPDATE. This is the reverse order of acquisition on
+  the same pin; PostgreSQL detects the deadlock (or lock_timeout fires) and
+  aborts one transaction. Nothing is served or published by the aborted side,
+  and the caller retries explicitly. See docs/retention-846.md, P3-1.
 Outcome: an acquisition committed before a logical deletion blocks it; a
 deletion committed first makes generation_visible false and refuses the read.
 """
@@ -56,8 +59,8 @@ BEGIN
  IF NOT FOUND OR served IS DISTINCT FROM NEW.pin THEN
   RAISE EXCEPTION 'dependency pin differs from served generation';
  END IF;
- -- Shared with GC before it arms a physical DELETE.
- PERFORM pg_advisory_xact_lock(hashtextextended('files-recovery:' ||
+ -- Shared mode: concurrent reads coexist; GC, publish and intents take it exclusively.
+ PERFORM pg_advisory_xact_lock_shared(hashtextextended('files-recovery:' ||
    jsonb_build_array(served->>'key',served->>'version_id')::text,0));
  IF NOT {schema}.generation_visible(NEW.generation) THEN
   RAISE EXCEPTION 'dependency generation is not live';
