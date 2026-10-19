@@ -10,7 +10,7 @@ import secrets
 from uuid import uuid4
 
 from ..config import get_settings
-from .postgres_credentials import AccessCredentials
+from .postgres_credentials import AccessCredentials, access_environment_allowed
 from . import postgres_retention_846 as holds846
 from .postgres_schema import CHECKSUM, DDL, VERSION
 
@@ -158,7 +158,7 @@ async def operate(args):
     from psycopg.rows import dict_row
     s = get_settings()
     retention = bool(getattr(s, 'access_mission_retention_enabled', False))
-    if any(key.startswith('PG') and value for key, value in os.environ.items()):
+    if not access_environment_allowed():
         raise ValueError('Variables libpq ambiantes interdites')
     if s.access_backend != 'postgres' or not s.access_pg_ca_file:
         raise ValueError('Profil PG explicite et CA requis')

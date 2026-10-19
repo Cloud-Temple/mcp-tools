@@ -31,8 +31,31 @@ Paramètres : `ACCESS_PG_DATABASE`, `ACCESS_PG_ROLE` (identité du job courant),
 `ACCESS_PG_OWNER`, liste exacte `ACCESS_PG_HOSTS`, `ACCESS_PG_CA_FILE` ; provider
 `ACCESS_VAULT_URL/ID/PATH/TOKEN_FILE/CA_FILE`. Bearer privé0600 et CA RO, URL Vault
 HTTPS sans suffixe `/mcp`. Le secret SQL contient exactement host, port5432,
-dbname, user et password. Pas de variables libpq `PG*`, de socket Unix ou de
-conninfo client. TLS verify-full et serveur read-write sont imposés.
+dbname, user et password non vide. Pas de socket Unix ou de conninfo client.
+TLS verify-full et serveur read-write sont imposés.
+
+Pour conserver FILES en mode direct dans le même processus, seules les variables
+`PGSERVICEFILE` et `PGPASSFILE` peuvent sélectionner ses fichiers privés0600,
+montés en lecture seule en conteneur. ACCESS ne sélectionne aucun service et
+transmet toujours le mot de passe frais obtenu dans Vault ; il ne reprend ni
+service ni passfile FILES. Toutes les autres variables `PG*` non vides sont
+refusées avant le provider/SQL, même inconnues. `PGSERVICE` doit être **absent** :
+même vide, il peut sélectionner une section `[]`. Cela vaut pour le runtime,
+`postgres_operator` et le build du job de maintenance `retention_846` ; ses
+contrats/holds restent inchangés et désactivés hors profil prévu. Aucun code
+ne retire/restaure des variables dans l'environnement partagé. Si un outil
+opérateur séparé exige d'autres variables, lui donner son propre environnement
+dans un processus distinct, jamais les injecter dans le service Tools.
+
+La [documentation libpq](https://www.postgresql.org/docs/17/libpq-pgservice.html)
+décrit la sélection du service ; le [passfile](https://www.postgresql.org/docs/17/libpq-pgpass.html)
+ne sert qu'en l'absence d'un mot de passe explicite. La qualification de cette
+combinaison doit relever les versions effectives de Python/libpq **et** de
+l'image, sans les déduire d'une lecture de source PG17. Utiliser un canari de
+service non explicitement surchargé par ACCESS (`hostaddr=192.0.2.1`, ou
+`sslcert`/`sslkey` invalides), plus `PGSERVICE=''` avec section `[]`. Des kwargs
+mockés ne prouvent pas que libpq n'a pas lu un fichier. Les tests logiciels de
+coexistence ne remplacent pas la recette PG/S3/Vault réelle, restart et rollback.
 
 ```sh
 PYTHONPATH=src python3 -m mcp_tools.auth.postgres_operator install --app-role tools_access_app --maintenance-role tools_access_maintenance

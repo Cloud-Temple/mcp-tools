@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import secrets
 import re
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -14,6 +13,7 @@ from .postgres_contract import Credential, authenticate_row, utc
 from .access_cursors import AccessCursors
 from .context import current_access_operation
 from .token_store import TokenStoreUnavailable
+from .postgres_credentials import access_environment_allowed
 
 # Retenir les tâches jusqu'à leur terminaison, même pendant l'arrêt d'un appel.
 _ACTIVE: set[asyncio.Task] = set()
@@ -69,7 +69,7 @@ class PostgresAccessStore:
         import psycopg
         from psycopg.rows import dict_row
 
-        if any(key.startswith('PG') and value for key, value in os.environ.items()):
+        if not access_environment_allowed():
             raise TokenStoreUnavailable('Ambient PostgreSQL settings forbidden')
         if not psycopg.capabilities.has_cancel_safe():
             raise TokenStoreUnavailable('Access cancellation unavailable')

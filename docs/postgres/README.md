@@ -50,6 +50,12 @@ Direct : service/passfile app privés 0600, CA en lecture seule. Secrets hors
 TLS verify-full et target_session_attrs read-write sont imposés par le code.
 Ce mode demeure légitime et autonome ; il est hors profil Vault-first.
 
+Avec ACCESS PostgreSQL/Vault dans le même processus, les sélecteurs FILES
+`PGSERVICEFILE`/`PGPASSFILE` restent utilisables sans modifier l'environnement
+pendant une connexion. `PGSERVICE` doit rester absent, même vide ; les autres
+variables PG non vides restent interdites côté ACCESS. Voir le
+[contrat de coexistence et ses limites de qualification](access-activity.md#installation-autonome).
+
 Vault : aucun service/passfile direct de secours. Fournisseur **MCP Vault**
 public, API `secret_read(vault_id,path)`, réponse status ok avec `data`. Secret
 custom Tools : `host`, `port`, `dbname`, `user`, `password`, valeurs DB/rôle

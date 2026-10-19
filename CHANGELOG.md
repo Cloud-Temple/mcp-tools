@@ -33,6 +33,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Destinataire hub optionnel avec mapping local administré, contexte ES256
   limité à l'admission et batch de métadonnées revalidé avant restitution.
 
+### Fixed
+
+- #46 : les sélecteurs de fichiers libpq FILES `PGSERVICEFILE`/`PGPASSFILE`
+  peuvent coexister avec ACCESS Vault. Politique commune runtime/opérateur/
+  maintenance846, autres PG non vides refusés et PGSERVICE interdit même vide,
+  sans mutation de l'environnement, direct ACCESS, cache ou fallback.
+  Tests logiciels uniquement ; qualification PG/S3/Vault de la combinaison à venir.
+
 ### Qualification
 
 - Delta SQL admin qualifié sur PostgreSQL17 isolé (29 groupes) ; raccords

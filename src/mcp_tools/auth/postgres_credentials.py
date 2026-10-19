@@ -1,8 +1,21 @@
 """Projection #31 vers le connecteur Vault public #30, lecture fraîche à chaque fois."""
 from types import SimpleNamespace
+import os
 
 from ..storage.files_credentials import Credentials, StorageUnavailable
 from .token_store import TokenStoreUnavailable
+
+
+def access_environment_allowed():
+    """Only Files file selectors may coexist with explicit Vault Access kwargs.
+
+    Access never selects a libpq service and always supplies a nonempty Vault
+    password. PGSERVICE must be absent: even an empty value selects section [].
+    No environment is changed, including while Files connections are in flight.
+    """
+    return 'PGSERVICE' not in os.environ and not any(
+        name.startswith('PG') and value and name not in ('PGSERVICEFILE', 'PGPASSFILE')
+        for name, value in os.environ.items())
 
 
 class AccessCredentials:
