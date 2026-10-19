@@ -62,14 +62,44 @@ def private_directory(path):
     return path
 
 
-def write_new(path, content, mode=0o600):
+def check_owner_change(owner):
+    if type(owner) is not int or owner < 0:
+        raise Refused('Measured PG UID required')
+    if owner != os.geteuid():
+        # Linux CAP_CHOWN, including root in a capability-restricted operator job.
+        try:
+            caps = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
+                        if line.startswith('CapEff:'))
+            allowed = bool(int(caps, 16) & 1)
+        except (OSError, StopIteration, ValueError):
+            allowed = False
+        if not allowed:
+            raise Refused('CAP_CHOWN required before creating PG-owned material')
+
+
+def write_new(path, content, mode=0o600, owner=None):
     path = Path(path)
     private_directory(path.parent)
+    if owner is not None:
+        check_owner_change(owner)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    with os.fdopen(fd, 'wb') as output:
-        output.write(content.encode() if isinstance(content, str) else content)
-        output.flush()
-        os.fsync(output.fileno())
+    created = os.fstat(fd)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            if owner is not None and owner != os.geteuid():
+                os.fchown(output.fileno(), owner, -1)
+            output.write(content.encode() if isinstance(content, str) else content)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        # Remove only our exclusive, incomplete output; never adopt another file.
+        try:
+            current = path.lstat()
+            if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     directory = os.open(path.parent, os.O_DIRECTORY)
     try:
         os.fsync(directory)
@@ -139,13 +169,11 @@ async def role_verifier(job, destination):
 
 
 async def initial_password(job, destination, server_uid):
-    if type(server_uid) is not int or server_uid<0:
-        raise Refused('Measured PG UID required for the initial password file')
+    check_owner_change(server_uid)
     if job['user'] != 'tools_prepare' or job['database'] != 'postgres':
         raise Refused('Only local initial provisioner scope accepted')
     value = await credential(job)
-    write_new(destination, strong_password(value['password']) + '\n')
-    os.chown(destination,server_uid,-1)
+    write_new(destination, strong_password(value['password']) + '\n', owner=server_uid)
 
 
 def runtime_config(files, access, system_identifier, timeline, destination):
@@ -172,15 +200,29 @@ def runtime_config(files, access, system_identifier, timeline, destination):
     write_new(destination,''.join(f'{name}={quoted(value)}\n' for name,value in sorted(values.items())))
 
 
-def hba(database):
+def hba(database, operator_cidrs):
     database=identifier(database)
     if database in ('postgres','template0','template1'):
         raise Refused('Dedicated Tools database required')
-    return ('local all tools_prepare scram-sha-256\n'
-            'hostssl postgres tools_prepare 127.0.0.1/32 scram-sha-256\n'
-            'hostssl postgres tools_prepare ::1/128 scram-sha-256\n'
-            f'hostssl {database} tools_prepare,{",".join(LOGIN)} 0.0.0.0/0 scram-sha-256\n'
-            f'hostssl {database} tools_prepare,{",".join(LOGIN)} ::/0 scram-sha-256\n'
+    if not operator_cidrs:
+        raise Refused('Explicit measured operator source CIDRs required')
+    sources = []
+    for value in operator_cidrs:
+        try:
+            source = ipaddress.ip_network(value, strict=True)
+        except (TypeError, ValueError):
+            raise Refused('Canonical operator host CIDR required') from None
+        if (str(source) != value or '%' in value or source.num_addresses != 1
+                or source.network_address.is_unspecified or source.network_address.is_multicast):
+            raise Refused('One measured source per /32 or /128 CIDR required')
+        if value in sources:
+            raise Refused('Duplicate operator source')
+        sources.append(value)
+    admin = ''.join(f'hostssl postgres,{database} tools_prepare {source} scram-sha-256\n'
+                    for source in sources)
+    return ('local all tools_prepare scram-sha-256\n' + admin +
+            f'hostssl {database} {",".join(LOGIN)} 0.0.0.0/0 scram-sha-256\n'
+            f'hostssl {database} {",".join(LOGIN)} ::/0 scram-sha-256\n'
             'host all all 0.0.0.0/0 reject\nhost all all ::/0 reject\n')
 
 
@@ -295,7 +337,7 @@ async def public_job(job, system_identifier, timeline, module, args):
         raise Refused('Public operator job unconfirmed; inspect without replay')
 
 
-async def install(files, access, provisioner, system_identifier, timeline, state_directory, token_file, tenant_id, service_id):
+async def install(files, access, provisioner, system_identifier, timeline, state_directory, token_file, tenant_id, service_id, close_local_provisioner=False):
     private_directory(state_directory)
     if not isinstance(system_identifier,str) or not re.fullmatch(r'[0-9]+',system_identifier) or type(timeline) is not int or timeline<1:
         raise Refused('Observed cluster identity and timeline required')
@@ -305,6 +347,8 @@ async def install(files, access, provisioner, system_identifier, timeline, state
         raise Refused('Previous installation exists; use verification/inspection, not replay')
     if files['user'] != 'tools_files_install' or access['user'] != 'tools_access_install' or files['database'] != access['database'] or provisioner['database'] != files['database']:
         raise Refused('Separate canonical installer profiles on one Tools database required')
+    if close_local_provisioner != (provisioner['user'] == 'tools_prepare'):
+        raise Refused('Explicit local provisioner closure required; external identities are never retired')
     private_directory(Path(token_file).parent)
     if Path(token_file).exists():
         raise Refused('New private bootstrap token file required')
@@ -335,10 +379,16 @@ async def install(files, access, provisioner, system_identifier, timeline, state
         await c.execute(sql.SQL('REVOKE CREATE ON DATABASE {} FROM tools_access_owner').format(sql.Identifier(files['database'])))
         for owner in OWNERS:
             await c.execute(sql.SQL('REVOKE {} FROM {}').format(sql.Identifier(owner),sql.Identifier(provisioner['user'])))
+        if close_local_provisioner:
+            async with c.transaction():
+                await c.execute(sql.SQL('REVOKE CONNECT ON DATABASE {} FROM tools_prepare').format(sql.Identifier(files['database'])))
+                # Last SQL before closing this privileged session. No runtime identity changes.
+                await c.execute('ALTER ROLE tools_prepare NOLOGIN')
     write_new(Path(state_directory)/'install.done.json', json.dumps({'state':'operators_confirmed_readiness_required'})+'\n')
 
 
 def certificates(directory, names, server_uid, renew=False):
+    check_owner_change(server_uid)  # before any exclusive CA/key/certificate creation
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -373,8 +423,7 @@ def certificates(directory, names, server_uid, renew=False):
         except ValueError: san.append(x509.DNSName(name))
     leaf=x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,names[0])])).issuer_name(ca.subject).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-timedelta(minutes=5)).not_valid_after(now+timedelta(days=397)).add_extension(x509.SubjectAlternativeName(san),critical=False).add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),critical=False).sign(ca_key,hashes.SHA256())
     if not renew:
-        write_new(directory/'server.key',key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
-        os.chown(directory/'server.key',server_uid,-1)
+        write_new(directory/'server.key',key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()),owner=server_uid)
         write_new(directory/'server.crt',leaf.public_bytes(serialization.Encoding.PEM),0o644)
     else:
         temporary=directory/'server.crt.new'
@@ -426,6 +475,8 @@ def main():
     parser.add_argument('--server-uid',type=int)
     parser.add_argument('--app-uid',type=int)
     parser.add_argument('--renew',action='store_true')
+    parser.add_argument('--operator-cidr',action='append',default=[])
+    parser.add_argument('--close-local-provisioner',action='store_true')
     parser.add_argument('--bearer-file',type=Path,action='append',default=[])
     parser.add_argument('--ca-file',type=Path,action='append',default=[])
     args=parser.parse_args()
@@ -433,12 +484,12 @@ def main():
         if args.action=='role-verifier': await role_verifier(profile(args.profile),args.output)
         elif args.action=='initial-password': await initial_password(profile(args.profile),args.output,args.server_uid)
         elif args.action=='runtime-config': runtime_config(profile(args.files_profile),profile(args.access_profile),args.system_identifier,args.timeline,args.output)
-        elif args.action=='hba': write_new(args.output,hba(args.database),0o644)
+        elif args.action=='hba': write_new(args.output,hba(args.database,args.operator_cidr),0o644)
         elif args.action=='inspect':
             async with connection(profile(args.profile)) as (_,row):
                 return {key:row[key] for key in ('system_identifier','timeline','db','role')}
         elif args.action=='provision': await provision(profile(args.profile),profile(args.target_profile),args.database,args.verifier_dir,args.state_dir,args.system_identifier)
-        elif args.action=='install': await install(profile(args.files_profile),profile(args.access_profile),profile(args.profile),args.system_identifier,args.timeline,args.state_dir,args.token_file,args.tenant_id,args.service_id)
+        elif args.action=='install': await install(profile(args.files_profile),profile(args.access_profile),profile(args.profile),args.system_identifier,args.timeline,args.state_dir,args.token_file,args.tenant_id,args.service_id,args.close_local_provisioner)
         elif args.action=='certificates':
             if args.server_uid is None: raise Refused('Measured server UID required')
             certificates(args.cert_dir,args.hosts,args.server_uid,args.renew)

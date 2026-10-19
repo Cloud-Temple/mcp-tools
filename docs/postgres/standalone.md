@@ -17,8 +17,8 @@ Compose ni une HA/PITR d'instance unique, et ne sont pas réattribuées au candi
 
 | Parcours | Hôte du secret app et ACCESS_PG_HOSTS | SAN serveur | Profil opérateur |
 | --- | --- | --- | --- |
-| Compose/local | `postgresql` | DNS `postgresql` | Opérateur hôte sur `127.0.0.1`, SAN IP correspondant |
-| Python/local | `127.0.0.1` | IP `127.0.0.1` | Même hôte ; aucun `localhost` implicite |
+| Compose/local | `postgresql` | DNS `postgresql` | Opérateur hôte vers `127.0.0.1` (SAN IP) ; source vue par PG mesurée, généralement gateway bridge, autorisée explicitement en HBA |
+| Python/local | `127.0.0.1` | IP `127.0.0.1` | Même destination loopback publiée ; source PG mesurée du bridge, pas loopback du conteneur ; aucun `localhost` implicite |
 | Compose/externe dédié | DNS réellement résolu depuis le conteneur | Ce DNS exact | DNS réellement résolu par le poste opérateur |
 | Python/externe dédié | DNS du service PG depuis Python | Ce DNS exact | Même règle d'identité, pas de socket de secours |
 | Compose/externe partagé | DNS autorisé du PG, base/rôles Tools propres | Ce DNS exact | Droits limités au nouveau domaine ; voisin séparé |
@@ -81,6 +81,17 @@ de refus découvert après un effet partiel, préserver le marqueur et inspecter
 HBA et rôles des bases voisines
 ne sont jamais modifiés par cet opérateur. Les privilèges transitoires du
 provisionneur sur les nouveaux owners sont retirés après les jobs.
+Le nom `tools_prepare` est réservé à l'amorçage local de cette instance neuve.
+Son `install` exige `--close-local-provisioner` : après confirmation des cinq
+jobs produit et retrait des memberships, CONNECT explicite sur Tools est retiré
+et le dernier SQL passe ce rôle `NOLOGIN`, puis ferme la session. Le rôle
+d'amorçage reste SUPERUSER mais ne peut plus ouvrir de connexion ; aucun secret
+ni droit privilégié ne passe aux apps. Travailler sous verrou opérateur exclusif,
+sans autre session de ce rôle : NOLOGIN ne termine pas une session déjà ouverte.
+La réactivation éventuelle relève d'une procédure DBA locale autorisée et auditée,
+jamais d'une relance automatique du CLI ni d'un fallback. En externe, employer
+une identité séparée, omettre ce flag : son LOGIN et ses droits globaux ne sont
+pas modifiés. Les sélections incohérentes sont refusées avant Vault et effets.
 
 Créer un fichier JSON0600 **par job**, contenant exactement ces clés et aucun
 mot de passe (exemple à adapter pour un rôle app Compose/local) :
@@ -111,10 +122,35 @@ Charger d'abord les images PG17 et Tools approuvées, **épinglées par digest**
 puis relever le UID réel postgres et le UID réel mcp de ces images.
 Ils ne sont pas déduits d'une valeur999 ou
 d'un tag. Ne pas présenter les UID de tests Python comme ceux des conteneurs.
+Si UID_PG diffère de l'UID du job de préparation, celui-ci doit disposer de
+`CAP_CHOWN` Linux effective (y compris s'il est root). Le script vérifie cette
+capacité avant toute création exclusive de mot de passe ou PKI ; une plateforme
+où cette capacité ne peut pas être vérifiée est refusée. Exécuter ce seul job
+initial dans un contexte opérateur explicitement habilité, jamais l'app avec
+ce privilège. Le propriétaire est posé par `fchown` sur le nouveau descripteur
+avant d'y écrire le secret. Un refus filesystem retire uniquement cette sortie
+incomplète créée par le job ; un fichier préexistant n'est ni adopté ni effacé.
+Une panne ultérieure de PKI peut laisser des matériaux partiels : les préserver
+et inspecter, sans prétendre reprendre automatiquement ni écraser la CA.
+
+Préparer le réseau canonique `mcp-tools-network` sous la procédure opérateur,
+avant de générer HBA. Inspecter sa configuration (`docker network inspect
+mcp-tools-network`) et relever l'adresse source **vue par PG** du poste opérateur
+sur le chemin publié. Avec un bridge Linux, c'est généralement sa gateway, et
+non `127.0.0.1` du conteneur. La valeur doit être mesurée pour la cible ; ne pas
+copier une gateway d'exemple, adopter un réseau tiers ou calculer un fallback.
+Avant `provision`, confirmer ce chemin dans les journaux/probes TLS du PG neuf ;
+si la source diffère, arrêter et faire valider une nouvelle HBA explicite.
+Le paramètre `--operator-cidr` est obligatoire pour `hba`, répétable, et accepte
+uniquement un hôte IPv4 canonique `/32` ou IPv6 `/128`. Fournir chaque source
+mesurée nécessaire, y compris un loopback seulement si le job utilise réellement
+ce chemin. Les réseaux larges, valeurs vides/invalides et doublons sont refusés,
+sans `samenet`, `trust`, auto-détection ou règle admin universelle.
 
 ```sh
 python scripts/prepare_postgres.py certificates --cert-dir /operator/pki --server-uid UID_PG
-python scripts/prepare_postgres.py hba --database tools --output /operator/pki/pg_hba.conf
+python scripts/prepare_postgres.py hba --database tools \
+  --operator-cidr CIDR_SOURCE_OPERATEUR_MESURE --output /operator/pki/pg_hba.conf
 python scripts/prepare_postgres.py initial-password --profile /operator/profiles/provision-postgres.json \
   --server-uid UID_PG --output /operator/pki/initial-password
 ```
@@ -123,8 +159,11 @@ Le fichier initial contient uniquement le secret du provisionneur et appartient
 au UID PG0600 ; il n'est jamais monté dans Tools. Fournir dans un fichier privé
 les paramètres `TOOLS_POSTGRES_IMAGE` (PG17 **épinglé par digest**),
 `TOOLS_PG_SERVER_CERT`, `TOOLS_PG_SERVER_KEY`, `TOOLS_PG_INITIAL_PASSWORD_FILE` et
-`TOOLS_PG_HBA_FILE`. Le profil local exige TLS/SCRAM et limite HBA à la base Tools
-et au provisionneur initial sur loopback ; les autres connexions sont rejetées.
+`TOOLS_PG_HBA_FILE`. Le profil local exige TLS/SCRAM : seuls les CIDR opérateur
+explicites accèdent comme `tools_prepare` à `postgres` et Tools. Les règles app
+restent limitées à Tools et aux huit rôles canoniques, sans provisionneur dans
+leurs règles larges ; les autres connexions sont rejetées. L'accès socket local
+du provisionneur exige aussi SCRAM et sera fermé par NOLOGIN après installation.
 
 ```sh
 docker compose --env-file /operator/local.env -f compose.postgres-local.yml up -d postgresql
@@ -134,6 +173,9 @@ python scripts/prepare_postgres.py inspect --profile /operator/profiles/provisio
 Ce fichier Compose autonome lance **PG seul** pour Python. En externe, sauter la
 création PKI/serveur et utiliser le PG TLS existant autorisé ; `inspect` reste
 nécessaire. Conserver system_identifier et timeline observés, pas des constantes.
+En externe dédié ou partagé, ne pas transposer l'hypothèse de gateway Docker :
+le DBA configure TLS/HBA pour les sources réelles et délégations de cette cible,
+sans régénérer sa HBA ni modifier ses voisins avec le profil local.
 
 Sous chacun des huit scopes LOGIN du tableau, exécuter le job suivant avec son
 profil et remettre **seulement** le fichier SCRAM privé au provisionneur :
@@ -157,6 +199,7 @@ python scripts/prepare_postgres.py provision --database tools --system-identifie
   --target-profile /operator/profiles/provision-tools.json \
   --verifier-dir /operator/verifiers --state-dir /operator/state
 python scripts/prepare_postgres.py install --system-identifier ID_OBSERVE --timeline TIMELINE_OBSERVEE \
+  --close-local-provisioner \
   --profile /operator/profiles/provision-tools.json \
   --files-profile /operator/profiles/files-install.json \
   --access-profile /operator/profiles/access-install.json \
@@ -174,6 +217,11 @@ Même après succès, réexécuter provision/install refuse : inspecter les obje
 utiliser les vérifications publiques sous une habilitation temporaire explicite,
 pas supprimer le marqueur pour recommencer. Le token admin n'est écrit que par
 le bootstrap produit,0600 après COMMIT ; son échéance24h est conservée.
+La commande `install` ci-dessus est locale. Pour une cible externe, remplacer les
+profils par l'identité externe déléguée et omettre `--close-local-provisioner`.
+Un échec laisse `install.pending.json` sans `install.done.json` ; il ne prouve
+ni la clôture du provisionneur ni une installation complète. Inspecter avant
+toute action ; ne pas rouvrir automatiquement un rôle ni rejouer les jobs.
 
 ## Configurer et démarrer le même MCP
 
@@ -208,6 +256,8 @@ et lancer `PYTHONPATH=src python -m mcp_tools`. S3 et les mêmes scopes Vault re
 requis. La ligne Dockerfile/code ne change pas selon la cible. `/health` prouve
 la vie ; attendre `/ready` et ses contrats avant le parcours métier. Le verdict
 FILES peut être réutilisé5s ; le healthcheck Docker seul ne prouve pas PG prêt.
+Les fichiers Compose n'ajoutent pas de `depends_on` : l'opérateur attend
+explicitement PG puis `/ready` avant les parcours, y compris après restart.
 
 Avant démarrage/qualification, vérifier les **UID effectifs**, pas uniquement
 le mode d'un secret Compose bind-monté :

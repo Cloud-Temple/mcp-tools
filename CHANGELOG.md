@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opérateur Tools de préparation explicite TLS/base/rôles/config, SCRAM côté
   client et scopes Vault propres, sans runtime DDL ou modification des défauts
   S3. Hub off ; six parcours et UID/restart/reprise natifs restent à qualifier.
+  HBA locale : sources opérateur mesurées explicites /32 ou /128 ; provisionneur
+  restreint puis NOLOGIN après installation. Précontrôle CAP_CHOWN et retrait
+  de la seule sortie exclusive incomplète si l'attribution d'UID échoue.
 
 - #846 Access : extension holds846 sur domaine neuf. Les calls Mission n'ont plus
   d'échéance par date et ne partent que par un retrait appuyé sur une claim Mission
