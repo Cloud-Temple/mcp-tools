@@ -63,11 +63,22 @@ async def install(args):
         if args.check:
             if not exists["present"]:
                 raise StorageUnavailable("Schéma absent")
-            row = await cat.one(c,sql.SQL("SELECT version,checksum FROM {}.schema_version WHERE singleton").format(sql.Identifier(args.schema)))
-            if row!={"version":VERSION,"checksum":CHECKSUM}:
-                raise StorageUnavailable("Schéma incompatible")
-            await cat.check_schema(c,role=args.app_role)
-            await cat.infrastructure(c)
+            async with cat.transaction(c):
+                await c.execute("SET TRANSACTION READ ONLY")
+                authority = await cat.one(c,
+                    "SELECT pg_catalog.has_schema_privilege(current_user,%s,'USAGE') AS usage,"
+                    "pg_catalog.pg_has_role(current_user,%s,'SET') AS can_set",
+                    (args.schema,s.files_pg_owner))
+                # Preserve explicit operator grants (including DBaaS probes).
+                # NOINHERIT installers use only their existing SET authority.
+                if not authority['usage'] and authority['can_set']:
+                    await c.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(s.files_pg_owner)))
+                await c.execute(sql.SQL("SET LOCAL search_path TO pg_catalog, {}").format(sql.Identifier(args.schema)))
+                row = await cat.one(c,sql.SQL("SELECT version,checksum FROM {}.schema_version WHERE singleton").format(sql.Identifier(args.schema)))
+                if row!={"version":VERSION,"checksum":CHECKSUM}:
+                    raise StorageUnavailable("Schéma incompatible")
+                await cat.check_schema(c,role=args.app_role)
+                await cat.infrastructure(c)
             return {"status":"ok","action":"check","version":VERSION,"checksum":CHECKSUM}
         if exists["present"]:
             raise StorageUnavailable("Schéma existant : utiliser --check, aucun replay installation")
@@ -90,7 +101,7 @@ async def install(args):
             if recovery_ddl is not None:
                 await c.execute(recovery_ddl,prepare=False)
         return {"status":"ok","action":"apply","version":VERSION,"checksum":CHECKSUM,
-                "next":"installer la probe infrastructure opérateur, retirer membership temporaire puis --check et /ready app"}
+                "next":"installer la probe infrastructure opérateur, --check sous opérateur, retirer membership/LOGIN temporaires puis /ready sous app"}
 
 
 def main():

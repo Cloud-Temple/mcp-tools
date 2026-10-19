@@ -127,9 +127,20 @@ inconnu. Une fois schema créé, provisionneur installe probe étroite
 fixe/EXECUTE PUBLIC retiré ; elle est autorisée aux identités de jobs nécessaires
 et app seulement. Cet exemple cible tools_files ; adapter au schéma opérateur
 explicitement, aucune exécution automatique app. Owner reçoit seulement probes
-et stats nécessaires, jamais app/pg_monitor. Puis `--check` en lecture seule
-vérifie checksum/grants du rôle app et politique/cluster ; lancer app sous ses
-propres credentials et exiger `/ready` 200. `/health` n'est pas cette preuve.
+et stats nécessaires, jamais app/pg_monitor. Puis `--check`, sous le même
+opérateur avant retrait de sa membership/LOGIN, vérifie checksum/grants du rôle
+`--app-role` et politique/cluster dans une transaction READ ONLY. Identité,
+base et cluster sont contrôlés avant tout changement de rôle. Si l'opérateur
+n'a pas USAGE sur le schéma mais possède SET owner, le contrôle fait
+`SET LOCAL ROLE owner` avec cette seule autorité existante ; sinon il garde ses
+droits actuels. Le search_path local place pg_catalog avant le schéma ; le rôle
+local disparaît à la fin de la transaction. Un opérateur qui a déjà USAGE garde
+ses grants explicites, notamment EXECUTE sur une probe DBaaS ; cela ne promet
+aucun accès supplémentaire si ses autres droits manquent. Aucun grant
+USAGE/SELECT compensatoire à l'installateur n'est nécessaire pour le chemin
+NOINHERIT/SET owner. Après succès du check, retirer membership et LOGIN
+temporaires, puis lancer app sous ses propres credentials et exiger `/ready`
+200. `/health` n'est pas cette preuve.
 
 remote_apply : renseigner `FILES_REPLICATION_ROSTER` tableau d'objets
 `id,name,role,address,slot,dn`, membres distincts, standby_names `ANY k (noms)`
@@ -157,8 +168,9 @@ Avant import, restaurer Vault/auth, créer **base/volume neufs**, rétablir les
 rôles/ownership/defaults/grants sous provisionneur autorisé ; le dump ne fournit
 pas les rôles globaux, aucune collision corrigée au détriment d'un voisin.
 Import vérifie archive/pins/rôles et refuse schema déjà présent, ne fait aucun
-DROP/recreate/migration. Rétablir scopes/probes HBA et révoquer membership temporaire,
-contrôler app readiness et droits/auth actuels avant raccord. Le provider S3
+DROP/recreate/migration. Rétablir scopes/probes HBA, effectuer `--check` sous le
+rôle restore, puis retirer sa membership/LOGIN temporaires ; contrôler app
+readiness et droits/auth actuels avant raccord. Le provider S3
 doit préserver VersionId exact ; sinon reprise arrêtée sans réécriture pins.
 
 Pour une copie logique aux identités distinctes, `import --project-roles
