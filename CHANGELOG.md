@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Contrôle FILES opérateur NOINHERIT : `--check` utilise son SET owner existant
+  seulement sans USAGE du schéma, dans une transaction READ ONLY et avec rôle
+  LOCAL. Les lectures explicites DBaaS, les contrôles des droits app et la probe
+  infrastructure sont conservés. Ordre documenté : probe, check, retrait des
+  droits temporaires, readiness app. Qualification moteur PG17 isolée ; le
+  parcours natif Catalog/TLS/Vault complet reste à qualifier après intégration.
+
 ### Added
 
 - #846 Access : extension holds846 sur domaine neuf. Les calls Mission n'ont plus

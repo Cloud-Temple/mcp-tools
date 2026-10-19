@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
-from psycopg.rows import dict_row
 
 from src.mcp_tools.config import Settings
 from src.mcp_tools.storage import files_backup, files_bootstrap
@@ -32,21 +31,154 @@ def connect(socket, database="postgres", user="postgres"):
                            connect_timeout=2, options="-c statement_timeout=5000 -c lock_timeout=3000")
 
 
-async def exercise(socket, folder, name):
+def cause(error):
+    while error.__context__ is not None:
+        error = error.__context__
+    return error
+
+
+async def exercise(socket, folder, name, check_stage="both"):
+    observed_roles = []
+    readonly_checks = []
+
     class FixtureCatalog(Catalog):
+        credential_override = None
+        checking = False
+
+        async def check_schema(self, c, role=None):
+            if self.checking:
+                row = await self.one(c, "SELECT current_user AS role,current_setting('transaction_read_only') AS readonly,current_setting('search_path') AS path")
+                assert row['readonly']=='on' and row['path']=='pg_catalog, tools_files'
+                expected = self.s.files_pg_role if self.s.files_pg_role=='source_reader' else self.s.files_pg_owner
+                assert row['role']==expected
+                readonly_checks.append(row)
+            await super().check_schema(c,role=role)
+
+
         @asynccontextmanager
         async def connection(self, service=None, operator=False):
-            c = await psycopg.AsyncConnection.connect(host=str(socket), dbname=self.s.files_pg_database,
-                                                     user=self.s.files_pg_role, autocommit=True, row_factory=dict_row)
+            async def fixture_credential(service=None):
+                return self.credential_override or dict(host=str(socket), dbname=self.s.files_pg_database,
+                                                       user=self.s.files_pg_role)
+            # Only the credential boundary is synthetic: Catalog, libpq, identity,
+            # cluster, transactions, privilege checks and SQL are real. Unix
+            # socket trust is this isolated fixture, never a TLS/Vault claim.
+            with patch.object(self.credentials, 'sql', fixture_credential):
+                async with super().connection(service=service, operator=operator) as c:
+                    try:
+                        yield c
+                    finally:
+                        row = await self.one(c, "SELECT current_user AS role,current_setting('transaction_read_only') AS readonly")
+                        assert row == {'role': self.s.files_pg_role, 'readonly': 'off'}
+                        observed_roles.append(row)
+
+    def snapshot(database):
+        with connect(socket, database) as c:
+            return [c.execute(query).fetchall() for query in (
+                "SELECT nspname,nspowner,nspacl::text FROM pg_namespace ORDER BY oid",
+                "SELECT relname,relowner,relacl::text FROM pg_class WHERE relnamespace='tools_files'::regnamespace ORDER BY oid",
+                "SELECT proname,proowner,proacl::text FROM pg_proc WHERE pronamespace='tools_files'::regnamespace ORDER BY oid",
+                "SELECT * FROM tools_files.schema_version",
+                "SELECT * FROM pg_auth_members ORDER BY roleid,member",
+                "SELECT rolname,rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles ORDER BY oid")]+[
+                    c.execute(psycopg.sql.SQL("SELECT to_jsonb(t) FROM {} t ORDER BY 1").format(
+                        psycopg.sql.Identifier('tools_files',table))).fetchall()
+                    for (table,) in c.execute("SELECT tablename FROM pg_tables WHERE schemaname='tools_files' ORDER BY tablename").fetchall()]
+
+    async def checked(settings, label, error=None):
+        before = snapshot(settings.files_pg_database)
+        with patch.object(files_bootstrap, 'Catalog', FixtureCatalog), patch.object(files_bootstrap, 'get_settings', return_value=settings), patch.object(FixtureCatalog,'checking',True):
+            args = SimpleNamespace(schema='tools_files', app_role='source_app' if settings.files_pg_database=='source30' else 'copy_app',
+                                   operator_service=None, check=True)
             try:
-                await c.execute("SET search_path=tools_files,pg_catalog")
-                await c.execute("SET statement_timeout=5000")
-                c._tools_operator = operator
-                c._tools_notices = []
-                c.add_notice_handler(lambda d: c._tools_notices.append((d.severity_nonlocalized, d.sqlstate)))
-                yield c
+                result = await files_bootstrap.install(args)
+            except (StorageUnavailable, psycopg.Error) as refused:
+                if error is None:
+                    raise
+                assert error in str(cause(refused)), (label, type(refused).__name__, str(cause(refused)))
+            else:
+                assert error is None, (label, 'unexpected success')
+                assert result['status']=='ok'
+        assert snapshot(settings.files_pg_database)==before, label+' changed ACL/data/memberships'
+        return label
+
+    async def check_negatives(settings):
+        results=[]
+        with connect(socket) as c:
+            c.execute('GRANT source_owner TO source_install WITH INHERIT FALSE, SET FALSE')
+        results.append(await checked(settings, 'set-false', 'permission denied for schema'))
+        with connect(socket) as c:
+            c.execute('REVOKE source_owner FROM source_install')
+        results.append(await checked(settings, 'membership-revoked', 'permission denied for schema'))
+        with connect(socket) as c:
+            c.execute('GRANT source_owner TO source_install WITH INHERIT FALSE, SET TRUE')
+            c.execute('ALTER ROLE source_install NOLOGIN')
+        results.append(await checked(settings, 'installer-retired', 'not permitted to log in'))
+        with connect(socket) as c:
+            c.execute('ALTER ROLE source_install LOGIN')
+            c.execute('GRANT source_owner TO source_app WITH INHERIT FALSE, SET TRUE')
+        results.append(await checked(settings, 'app-membership', 'Membership application interdite'))
+        with connect(socket) as c:
+            c.execute('REVOKE source_owner FROM source_app')
+            c.execute('ALTER ROLE source_app NOLOGIN')
+        results.append(await checked(settings, 'app-nologin', 'Rôles opérateur/application incompatibles'))
+        with connect(socket) as c:
+            c.execute('ALTER ROLE source_app LOGIN')
+        with connect(socket,'source30') as c:
+            c.execute('GRANT CREATE ON SCHEMA tools_files TO source_app')
+        results.append(await checked(settings, 'app-ddl', 'Privilèges schéma application invalides'))
+        with connect(socket,'source30') as c:
+            c.execute('REVOKE CREATE ON SCHEMA tools_files FROM source_app')
+            c.execute("UPDATE tools_files.schema_version SET checksum='altered'")
+        results.append(await checked(settings, 'checksum', 'Schéma incompatible'))
+        with connect(socket,'source30') as c:
+            from src.mcp_tools.storage.files_schema import CHECKSUM
+            c.execute('UPDATE tools_files.schema_version SET checksum=%s',(CHECKSUM,))
+        for label, update, credential, error in (
+            ('identity', {'files_pg_role':'source_app'}, {'host':str(socket),'dbname':'source30','user':'source_install'}, 'Cible SQL/identité invalide'),
+            ('database', {'files_pg_database':'copy30'}, {'host':str(socket),'dbname':'source30','user':'source_install'}, 'Cible SQL/identité invalide'),
+            ('cluster', {'files_pg_system_identifier':'1'}, None, 'Cluster/epoch opérateur invalide')):
+            FixtureCatalog.credential_override=credential
+            try:
+                with patch.object(files_bootstrap,'Catalog',FixtureCatalog),patch.object(files_bootstrap,'get_settings',return_value=settings.model_copy(update=update)):
+                    try:
+                        await files_bootstrap.install(SimpleNamespace(schema='tools_files',app_role='source_app',operator_service=None,check=True))
+                    except StorageUnavailable as refused:
+                        assert error in str(refused), (label,str(refused))
+                    else:
+                        raise AssertionError(label+' accepted')
+                results.append(label)
             finally:
-                await c.close()
+                FixtureCatalog.credential_override=None
+        # Legacy read grants and a DBA-owned probe: preserve the authenticated
+        # role, including when it also has SET owner. No grants to installer.
+        with connect(socket) as c:
+            c.execute('CREATE ROLE source_reader LOGIN INHERIT')
+            c.execute('GRANT CONNECT ON DATABASE source30 TO source_reader')
+        with connect(socket,'source30') as c:
+            c.execute('GRANT USAGE ON SCHEMA tools_files TO source_reader')
+            c.execute('GRANT SELECT ON tools_files.schema_version TO source_reader')
+            c.execute('GRANT EXECUTE ON FUNCTION pg_control_system(),pg_control_checkpoint() TO source_reader')
+            c.execute('ALTER FUNCTION tools_files.files_infrastructure() OWNER TO postgres')
+            c.execute('REVOKE ALL ON FUNCTION tools_files.files_infrastructure() FROM source_owner')
+            c.execute('GRANT EXECUTE ON FUNCTION tools_files.files_infrastructure() TO source_reader')
+        reader=settings.model_copy(update={'files_pg_role':'source_reader'})
+        results.append(await checked(reader,'explicit-read-no-set'))
+        with connect(socket) as c:
+            c.execute('GRANT source_owner TO source_reader WITH INHERIT TRUE, SET TRUE')
+        results.append(await checked(reader,'explicit-read-with-inherit-set-dba-probe'))
+        with connect(socket,'source30') as c:
+            c.execute('ALTER FUNCTION tools_files.files_infrastructure() OWNER TO source_owner')
+            c.execute('REVOKE ALL ON FUNCTION tools_files.files_infrastructure() FROM source_reader')
+            c.execute('REVOKE ALL ON tools_files.schema_version FROM source_reader')
+            c.execute('REVOKE ALL ON SCHEMA tools_files FROM source_reader')
+            c.execute('REVOKE ALL ON FUNCTION pg_control_system(),pg_control_checkpoint() FROM source_reader')
+        with connect(socket) as c:
+            c.execute('REVOKE source_owner FROM source_reader')
+            c.execute('REVOKE CONNECT ON DATABASE source30 FROM source_reader')
+            c.execute('DROP ROLE source_reader')
+        results.append(await checked(settings,'owner-probe-restored'))
+        return results
 
     class Pins:
         def __init__(self, settings):
@@ -97,7 +229,7 @@ async def exercise(socket, folder, name):
     with connect(socket, "copy30") as c:
         assert c.execute("SELECT rolname FROM pg_roles WHERE pg_has_role('copy_owner',oid,'MEMBER') ORDER BY rolname").fetchall() == [("copy_owner",), ("pg_database_owner",)]
     common = dict(files_pg_schema="tools_files", files_pg_system_identifier=cluster, files_pg_timeline=timeline,
-                  files_durability="local", files_credentials_mode="direct")
+                  files_durability="local", files_credentials_mode="direct", files_pg_ca_file="/dev/null")
     settings = Settings(_env_file=None, files_pg_database="source30", files_pg_owner="source_owner",
                         files_pg_role="source_install", **common)
     with patch.object(files_bootstrap, "Catalog", FixtureCatalog), patch.object(files_bootstrap, "get_settings", return_value=settings):
@@ -116,6 +248,11 @@ async def exercise(socket, folder, name):
                   (generation, oid, psycopg.types.json.Jsonb({"key": "fixture", "version_id": "immutable-version"})))
         c.execute("INSERT INTO refs(path,revision,generation,operation,deleted) VALUES('fixture',1,%s,%s,false)", (generation, oid))
         c.execute("INSERT INTO receipts(id,operation,kind,detail) VALUES(%s,%s,'publication','{}')", (uuid.uuid4(), oid))
+    checks=[]
+    if check_stage in ('both','after-apply'):
+        checks.append(await checked(settings,'after-apply'))
+        checks.extend(await check_negatives(settings))
+    with connect(socket,'source30') as c:
         c.execute("ALTER ROLE source_app NOLOGIN")
     archive = folder / "archive"
     settings = settings.model_copy(update={"files_pg_role": "source_backup"})
@@ -146,6 +283,8 @@ async def exercise(socket, folder, name):
                     c.execute(f"ALTER DEFAULT PRIVILEGES FOR ROLE copy_owner REVOKE {privilege} ON {objects} FROM source_app")
             imported = await files_backup.recipe(SimpleNamespace(action="import", project_roles=True, app_role="copy_app", archive=str(archive), max_generations=64))
     assert exported["status"] == imported["status"] == "ok"
+    if check_stage in ('both','after-import'):
+        checks.append(await checked(target,'after-import-without-apply'))
     with connect(socket, "copy30", "copy_app") as c:
         c.execute("SET search_path=tools_files,pg_catalog")
         assert c.execute("SELECT revision,deleted FROM refs WHERE path='fixture'").fetchone() == (1, False)
@@ -174,12 +313,14 @@ async def exercise(socket, folder, name):
     return {"archive_real": True, "projection": True, "pins_preserved_software": True,
             "source_connect_denied": True, "history_immutable": True, "installer_closed": True,
             "owner_membership_refused": True, "foreign_defaults_refused": 3,
-            "implicit_database_owner_verified": True}
+            "implicit_database_owner_verified": True, "operator_checks": checks,
+            "local_role_reset_observations": len(observed_roles), "readonly_checks": readonly_checks, "real_catalog_unix_credentials_only_fixture": True}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--check-stage",choices=("both","after-apply","after-import"),default="both")
     args = parser.parse_args()
     folder = args.results.resolve()
     folder.mkdir(mode=0o700, exist_ok=False)
@@ -215,11 +356,14 @@ def main():
             time.sleep(.2)
         else:
             raise TimeoutError("fixture readiness")
-        report.update(asyncio.run(asyncio.wait_for(exercise(socket, folder, name), 400)))
+        report.update(asyncio.run(asyncio.wait_for(exercise(socket, folder, name, args.check_stage), 400)))
         report["pass"] = True
     except BaseException as error:
         failed = error
         report["failure_type"] = type(error).__name__
+        report["cause_type"] = type(cause(error)).__name__
+        report["sqlstate"] = getattr(cause(error),"sqlstate",None)
+        report["reason"] = str(cause(error))
     finally:
         removed = subprocess.run(["docker", "rm", "--force", name], capture_output=True, text=True, timeout=15)
         absent = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, timeout=5)
