@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- #45 (candidat local) : profils Compose PostgreSQL externe/local unique et
+  opérateur Tools de préparation explicite TLS/base/rôles/config, SCRAM côté
+  client et scopes Vault propres, sans runtime DDL ou modification des défauts
+  S3. Hub off ; six parcours et UID/restart/reprise natifs restent à qualifier.
+
 - #846 Access : extension holds846 sur domaine neuf. Les calls Mission n'ont plus
   d'échéance par date et ne partent que par un retrait appuyé sur une claim Mission
   vérifiée (`python -m src.mcp_tools.retention_846`, cinq étapes, `reconcile`).
@@ -43,8 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Qualification
 
-- Delta SQL admin qualifié sur PostgreSQL17 isolé (29 groupes) ; raccords
-  publics, TLS/Vault, délégation hub et rollback encore non qualifiés/non prêts.
+- #30/PR37 et #31/PR38 livrés avec leurs preuves publiques/natives et limites
+  aux révisions publiées ; le nouveau profil #45 n'en hérite pas une qualification
+  Compose/volume/UID/reprise. Aucun déploiement ou HA/PITR implicite.
 
 ## [0.10.0] — 2026-10-14
 

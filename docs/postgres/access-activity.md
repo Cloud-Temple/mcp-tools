@@ -1,8 +1,10 @@
 # Accès et activité durable Tools
 
-Candidat #31 en préparation. Les tests SQL isolés du delta admin ne qualifient
-pas encore le raccord HTTP/MCP, TLS, Vault, les pannes ou le rollback. Ne pas
-présenter ce candidat comme prêt au déploiement.
+Capacité #31 livrée par [PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38)
+(candidat37d3b6b, merge268a0e8d) : standalone, HTTP/MCP/CLI/console, TLS/Vault,
+révocation/restart, pannes et rollback avec leurs preuves/limites publiées.
+Le nouveau [profil de déploiement #45](standalone.md) reste à qualifier sur ses
+propres images/cibles ; cette documentation ne constitue pas une requalification.
 
 `ACCESS_BACKEND=postgres` sélectionne une autorité distincte du magasin S3.
 Le runtime n'initialise pas `_tokens/`, ne charge aucun ancien token et n'utilise
@@ -137,12 +139,11 @@ devient jamais une corrélation de confiance. Aucune dépendance fonctionnelle
 
 ## Destinataire hub optionnel
 
-Le destinataire Tools est candidat et testé sur un émetteur ES256 contrôlé.
-Il ne modifie pas l'émetteur Mission/Agent. L'émetteur courant doit prendre en
-charge le contrat Tools ci-dessous pour activer ce profil ; le contrat Agent
-`hub-agent-reports-v1` ne convient pas. La qualification flotte déléguée reste
-non livrée tant que ce raccord réel n'a pas été testé. Laisser le profil désactivé
-n'affecte pas le standalone.
+Le destinataire et la chaîne réelle Agent→Mission→Tools ont été qualifiés dans
+#31/PR38, séparément du standalone et aux révisions publiées. L'émetteur doit
+prendre en charge le contrat Tools ci-dessous pour activer ce profil ; le contrat
+Agent `hub-agent-reports-v1` ne convient pas. Le profil standalone #45 laisse le
+hub désactivé ; il n'en revendique pas une nouvelle qualification flotte.
 
 Configurer `HUB_ACTIVITY_ENABLED=true`, `HUB_ACTIVITY_ISSUER`, audience exacte
 `HUB_ACTIVITY_AUDIENCE` de cette instance Tools, owner producteur
@@ -214,5 +215,6 @@ Les tombstones de révocation sans échéance restent conservés.
 Avant un rollback : préserver la Source, restaurer sur cible neuve fermée avec
 identités backup/restore distinctes, puis recopier les révocations courantes
 connues ou maintenir tous les accès restaurés fermés. Un backup d'accès n'est
-pas une autorité fraîche. La qualification de ce parcours reste à produire avant
-Ready ; aucune bascule S3 ou remise en service automatique n'est autorisée.
+pas une autorité fraîche. La preuve historique #31/PR38 porte une copie fermée
+avec tombstone et Source préservée ; le nouveau profil #45 doit être vérifié
+séparément. Aucune bascule S3 ou remise en service automatique n'est autorisée.

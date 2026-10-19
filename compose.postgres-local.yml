@@ -1,0 +1,49 @@
+# One local TLS PG, no cluster/HA/PITR claim; no change to the MCP image or schema.
+services:
+  postgresql:
+    image: ${TOOLS_POSTGRES_IMAGE:?supply reviewed PG17 image pinned by digest}
+    pull_policy: never
+    environment:
+      POSTGRES_USER: tools_prepare
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/tools/initial-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/run/tools/server.crt,
+              -c, ssl_key_file=/run/tools/server.key, -c, hba_file=/run/tools/pg_hba.conf]
+    volumes:
+      - tools_pg_data:/var/lib/postgresql/data
+      - type: bind
+        source: ${TOOLS_PG_SERVER_CERT:?server certificate required}
+        target: /run/tools/server.crt
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_PG_SERVER_KEY:?private server key required}
+        target: /run/tools/server.key
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_PG_INITIAL_PASSWORD_FILE:?private initial password file required}
+        target: /run/tools/initial-password
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_PG_HBA_FILE:?reviewed hostssl HBA required}
+        target: /run/tools/pg_hba.conf
+        read_only: true
+        bind: {create_host_path: false}
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks: [mcp-tools-network]
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, tools_prepare, -d, postgres]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+volumes:
+  tools_pg_data: {}
+networks:
+  mcp-tools-network:
+    name: mcp-tools-network
+    driver: bridge

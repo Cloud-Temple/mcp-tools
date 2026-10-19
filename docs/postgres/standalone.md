@@ -1,0 +1,259 @@
+# Déployer Tools avec PostgreSQL local ou externe
+
+Profil neuf uniquement : même code/image Tools, schémas/API/droits et fournisseurs
+de secrets dans toutes les topologies. S3 conserve les contenus/versions, PG les
+catalogues et accès. Aucune migration, runtime DDL, nouvelle authentification ou
+suppression de Vault/OpenBao. Hub et extensions Mission restent désactivés.
+
+Les profils et l'opérateur ci-dessous sont un candidat #45 ; leur matrice native
+PG/S3/Vault, les UID/montages réels, restart PG et rollback sur ce candidat ne
+sont **pas encore qualifiés**. Les livraisons historiques [#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37)
+et [#31/PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38) restent distinctes :
+app #30 b7a06ced/imagee3b34dc7 et opérateur83b7e7f ; merge11ef86ed. #31 candidat37d3b6b,
+merge268a0e8d, avec chaîne hub qualifiée séparément. Elles ne prouvent ni ce
+Compose ni une HA/PITR d'instance unique, et ne sont pas réattribuées au candidat.
+
+## Choisir les noms TLS et les secrets avant toute installation
+
+| Parcours | Hôte du secret app et ACCESS_PG_HOSTS | SAN serveur | Profil opérateur |
+| --- | --- | --- | --- |
+| Compose/local | `postgresql` | DNS `postgresql` | Opérateur hôte sur `127.0.0.1`, SAN IP correspondant |
+| Python/local | `127.0.0.1` | IP `127.0.0.1` | Même hôte ; aucun `localhost` implicite |
+| Compose/externe dédié | DNS réellement résolu depuis le conteneur | Ce DNS exact | DNS réellement résolu par le poste opérateur |
+| Python/externe dédié | DNS du service PG depuis Python | Ce DNS exact | Même règle d'identité, pas de socket de secours |
+| Compose/externe partagé | DNS autorisé du PG, base/rôles Tools propres | Ce DNS exact | Droits limités au nouveau domaine ; voisin séparé |
+| Python/externe partagé | DNS autorisé depuis Python | Ce DNS exact | Refus CONNECT/SET ROLE vers les voisins vérifiés |
+
+Les noms externes sont ceux de votre cible ; `pg-tools.example.invalid` est un
+exemple non routable, pas un endpoint à utiliser. Pour local, le certificat
+généré couvre `postgresql`, `localhost` et `127.0.0.1`, mais les secrets sélectionnent
+**exactement** les hôtes de leur cellule. Ne pas mettre `localhost` dans un secret
+destiné au conteneur : il désignerait ce conteneur. Pour le même rôle SQL,
+plusieurs paths Vault peuvent décrire les endpoints Compose/Python en conservant
+le même mot de passe géré par Vault. Des rôles ou mots de passe différents par
+cible neuve restent des identités distinctes ; ne pas les recopier entre clusters.
+
+ACCESS exige le port entier5432. Le PG interne et la publication locale loopback
+utilisent5432 ; aucun nouveau flag de port n'est introduit. Si ce port est occupé
+sur l'hôte ou si le service externe impose un autre port, signaler cette
+restriction avant de lancer : ne pas changer le provider ni contourner TLS/Vault.
+
+## Matériel et scopes opérateur
+
+Installer les dépendances publiques du [guide FILES](README.md#installation-publique)
+dans un environnement privé. Tous les jobs utilisent MCP Vault HTTPS avant SQL,
+avec token privé et CA explicitement configurés. Vault doit déjà être disponible
+et déverrouillé selon ses procédures ; ce CLI ne crée pas de coffre ni de secrets.
+Chaque secret custom expose `host`, entier`port=5432`, `dbname`, `user`, `password`.
+Pas de mount technique SQL interne de Vault, ni password dans un profil, argv ou
+variable PGPASSWORD. Les mots de passe sont générés dans l'autorité existante :
+32–256 caractères ASCII imprimables sans espaces. Les secrets ne sont pas saisis
+dans les commandes de ce guide.
+
+Ce préparateur privilégié tout-Vault exige un processus sans variables PG
+ambiantes, y compris les sélecteurs FILES ; il refuse avant provider/SQL si elles
+sont présentes non vides (`PGSERVICE` est refusé même vide). Cela ne change pas
+la coexistence du runtime/opérateur ACCESS #46. Lancer les commandes de
+préparation dans un processus isolé, par exemple
+`env -i PATH="$PATH" LANG=C /operator/venv/bin/python scripts/prepare_postgres.py ...`,
+avec profils et chemins absolus. Les workers produit reçoivent eux-mêmes un
+environnement minimal, jamais une modification de l'environnement partagé.
+
+`scripts/prepare_postgres.py` est un opérateur produit hors runtime. Il prépare
+uniquement les noms canoniques `tools_files_*`/`tools_access_*`, une base Tools
+neuve (nom réglable) et `tools_files`/`tools_access`. Pour des noms de rôles/schémas
+différents, conserver les procédures détaillées existantes et les faire vérifier
+explicitement ; ce CLI ne transforme pas un domaine existant.
+
+| Identité/scope | Secret lu par le job | Droits et durée |
+| --- | --- | --- |
+| Provisionneur `tools_prepare` local, ou identité externe séparée | Ses propres profils `postgres` puis base Tools | Créer base/rôles neufs, accorder/reprendre memberships, probes contrôle et pg_read_all_stats au seul owner FILES. Capacité temporaire, jamais fournie à l'app. |
+| Chaque app/install/maintenance/backup/restore | Son propre path et bearer | Job `role-verifier` calcule un SCRAM privé ; aucun droit de lire les secrets des autres rôles. |
+| FILES install / ACCESS install | Leur propre secret SQL et scope | SET ROLE owner temporaire, installation/vérification ; NOLOGIN et membership/CONNECT retirés ensuite. |
+| Apps FILES / ACCESS | Chacun son secret et bearer runtime | Seulement les droits app des procédures produit, pas de membership privilégiée. |
+| ACCESS maintenance | Son secret propre | Routines maintenance existantes seulement. |
+| FILES backup / restore / maintenance | Secrets et identités distincts | Backup lecture du domaine seulement ; restore sans CONNECT à la Source, droits temporaires à préparer sur cible neuve. Maintenance recovery non activée par ce profil. |
+
+Un provisionneur externe doit disposer des délégations nécessaires aux probes et
+grants décrits, pas seulement CREATEDB. Vérifier ces prérequis avant de commencer ;
+s'ils manquent, arrêter sans accorder ces droits à l'app pour débloquer. En cas
+de refus découvert après un effet partiel, préserver le marqueur et inspecter.
+HBA et rôles des bases voisines
+ne sont jamais modifiés par cet opérateur. Les privilèges transitoires du
+provisionneur sur les nouveaux owners sont retirés après les jobs.
+
+Créer un fichier JSON0600 **par job**, contenant exactement ces clés et aucun
+mot de passe (exemple à adapter pour un rôle app Compose/local) :
+
+```json
+{
+  "database": "tools", "user": "tools_files_app", "hosts": "postgresql",
+  "pg_ca_file": "/operator/pki/ca.crt",
+  "vault_url": "https://vault.example.invalid", "vault_id": "tools",
+  "vault_path": "sql/files-app/compose-local",
+  "vault_token_file": "/operator/scopes/files-app.token",
+  "vault_ca_file": "/operator/trust/vault-ca.pem"
+}
+```
+
+Tous les chemins CA/credential sont absolus. Le profil du provisionneur initial
+porte database`postgres`, user`tools_prepare`, host`127.0.0.1`. Son profil cible
+porte la nouvelle base, même rôle et endpoints. Les profils installateurs
+portent leurs propres rôles et hôtes opérateur, pas les bearers app. Les deux
+profils runtime doivent partager base/endpoints/CA PG et bundle CA Vault ; un
+bundle contenant les autorités requises peut être préparé par l'opérateur.
+
+## Préparer un PG local et les identités
+
+Exemples à exécuter uniquement sur le domaine neuf autorisé ; les répertoires
+`/operator/...` doivent exister, être privés0700 et appartenir à l'identité du job.
+Charger d'abord les images PG17 et Tools approuvées, **épinglées par digest**,
+puis relever le UID réel postgres et le UID réel mcp de ces images.
+Ils ne sont pas déduits d'une valeur999 ou
+d'un tag. Ne pas présenter les UID de tests Python comme ceux des conteneurs.
+
+```sh
+python scripts/prepare_postgres.py certificates --cert-dir /operator/pki --server-uid UID_PG
+python scripts/prepare_postgres.py hba --database tools --output /operator/pki/pg_hba.conf
+python scripts/prepare_postgres.py initial-password --profile /operator/profiles/provision-postgres.json \
+  --server-uid UID_PG --output /operator/pki/initial-password
+```
+
+Le fichier initial contient uniquement le secret du provisionneur et appartient
+au UID PG0600 ; il n'est jamais monté dans Tools. Fournir dans un fichier privé
+les paramètres `TOOLS_POSTGRES_IMAGE` (PG17 **épinglé par digest**),
+`TOOLS_PG_SERVER_CERT`, `TOOLS_PG_SERVER_KEY`, `TOOLS_PG_INITIAL_PASSWORD_FILE` et
+`TOOLS_PG_HBA_FILE`. Le profil local exige TLS/SCRAM et limite HBA à la base Tools
+et au provisionneur initial sur loopback ; les autres connexions sont rejetées.
+
+```sh
+docker compose --env-file /operator/local.env -f compose.postgres-local.yml up -d postgresql
+python scripts/prepare_postgres.py inspect --profile /operator/profiles/provision-postgres.json
+```
+
+Ce fichier Compose autonome lance **PG seul** pour Python. En externe, sauter la
+création PKI/serveur et utiliser le PG TLS existant autorisé ; `inspect` reste
+nécessaire. Conserver system_identifier et timeline observés, pas des constantes.
+
+Sous chacun des huit scopes LOGIN du tableau, exécuter le job suivant avec son
+profil et remettre **seulement** le fichier SCRAM privé au provisionneur :
+
+```sh
+python scripts/prepare_postgres.py role-verifier --profile /operator/profiles/ROLE.json \
+  --output /operator/verifiers/ROLE.json
+```
+
+`ROLE` est exactement l'un des huit noms LOGIN du tableau ; les deux owners
+NOLOGIN n'ont pas de mot de passe. La remise des vérificateurs conserve0600 et
+la confidentialité ; ils restent des données sensibles. Le provisionneur n'a
+pas besoin des droits Vault de lecture des huit mots de passe. PBKDF2/HMAC sont
+calculés côté client ([SCRAM-SHA-256](https://www.rfc-editor.org/rfc/rfc7677.html)) ;
+seul le vérificateur SCRAM atteint CREATE ROLE PASSWORD, jamais le plaintext.
+Les journaux SQL contenant des vérificateurs restent réservés aux opérateurs.
+
+```sh
+python scripts/prepare_postgres.py provision --database tools --system-identifier ID_OBSERVE \
+  --profile /operator/profiles/provision-postgres.json \
+  --target-profile /operator/profiles/provision-tools.json \
+  --verifier-dir /operator/verifiers --state-dir /operator/state
+python scripts/prepare_postgres.py install --system-identifier ID_OBSERVE --timeline TIMELINE_OBSERVEE \
+  --profile /operator/profiles/provision-tools.json \
+  --files-profile /operator/profiles/files-install.json \
+  --access-profile /operator/profiles/access-install.json \
+  --state-dir /operator/state --token-file /operator/bootstrap/admin.token \
+  --tenant-id TENANT_CHOISI --service-id SERVICE_CHOISI
+```
+
+La base est créée fermée avec template0 avant ses ACL. Les cibles/rôles neufs
+sont vérifiés, les procédures `files_bootstrap`, infrastructure produit et
+`postgres_operator` appelées, puis habilitations install retirées. Chaque worker
+est un processus à environnement minimal, authentifié dans son scope ; aucune
+mutation de l'environnement du processus parent. Un marqueur pending précède
+le premier effet ; résultat inconnu/collision/schéma existant arrête sans replay.
+Même après succès, réexécuter provision/install refuse : inspecter les objets et
+utiliser les vérifications publiques sous une habilitation temporaire explicite,
+pas supprimer le marqueur pour recommencer. Le token admin n'est écrit que par
+le bootstrap produit,0600 après COMMIT ; son échéance24h est conservée.
+
+## Configurer et démarrer le même MCP
+
+Créer une configuration par cellule depuis les profils **app**, sans lire leurs
+secrets SQL ; les hôtes des deux profils doivent être identiques :
+
+```sh
+python scripts/prepare_postgres.py runtime-config --system-identifier ID_OBSERVE --timeline TIMELINE_OBSERVEE \
+  --files-profile /operator/profiles/files-app-CELLULE.json \
+  --access-profile /operator/profiles/access-app-CELLULE.json --output /operator/runtime-CELLULE.env
+```
+
+Compléter S3/versioning, `TOOLS_IMAGE` (même digest Tools approuvé pour toutes
+les cellules) et les paramètres applicatifs existants dans une copie
+privée. Ne pas ajouter les secrets SQL/provisionneur. Les champs PG générés sont
+non secrets, hormis leurs références de fichiers privés ; FILES est explicitement
+en Vault, ACCESS en postgres, hub off. En conteneur le profil PG remplace les
+chemins hôte par `/run/tools/...`, avec quatre mounts RO sans création implicite
+de fichiers. Le Compose de base seul conserve les défauts S3 historiques.
+
+```sh
+# Externe : PG déjà préparé, aucun serveur PG ajouté par ce profil.
+docker compose --env-file /operator/runtime-externe.env -f docker-compose.yml -f compose.postgres.yml up -d --no-build
+# Local : même Tools, plus la seule instance et le volume préparés.
+docker compose --env-file /operator/local.env --env-file /operator/runtime-compose-local.env -f docker-compose.yml \
+  -f compose.postgres.yml -f compose.postgres-local.yml up -d --no-build
+```
+
+Pour Python, placer la configuration privée choisie dans `.env` du checkout
+public isolé (ou exporter explicitement ses paramètres non secrets et chemins)
+et lancer `PYTHONPATH=src python -m mcp_tools`. S3 et les mêmes scopes Vault restent
+requis. La ligne Dockerfile/code ne change pas selon la cible. `/health` prouve
+la vie ; attendre `/ready` et ses contrats avant le parcours métier. Le verdict
+FILES peut être réutilisé5s ; le healthcheck Docker seul ne prouve pas PG prêt.
+
+Avant démarrage/qualification, vérifier les **UID effectifs**, pas uniquement
+le mode d'un secret Compose bind-monté :
+
+```sh
+python scripts/prepare_postgres.py check-material --app-uid UID_MCP \
+  --bearer-file /operator/scopes/files-app.token --bearer-file /operator/scopes/access-app.token \
+  --ca-file /operator/pki/ca.crt --ca-file /operator/trust/vault-ca.pem \
+  --server-key /operator/pki/server.key --server-uid UID_PG \
+  --server-cert /operator/pki/server.crt --hosts postgresql,127.0.0.1
+```
+
+Les tokens app0600 doivent appartenir à UID_MCP, la clé serveur0600 à UID_PG,
+les CA doivent être lisibles et non modifiables par groupe/autres. Les scopes
+opérateur et fichiers SCRAM ne sont pas montés dans l'app. Ces contrôles hôte ne
+remplacent pas les probes de lecture sous les vrais UID dans l'image future.
+
+## PKI, restart et reprise
+
+La leaf locale dure397jours, avec renouvellement explicite avant la marge30jours.
+`check-material` refuse une leaf proche de l'expiration ou sans les SAN demandés.
+Programmer ce contrôle dans l'exploitation existante ; pas de TTL7jours sans
+renouvellement. Sous verrou opérateur exclusif, sauvegarder les matériaux puis
+`certificates --renew` avec les mêmes SAN/UID : CA et clé serveur sont conservées,
+le certificat est remplacé atomiquement. Recharger PG selon sa procédure après
+vérification ; aucune commande de reload n'est lancée par ce CLI. Une CA proche
+de l'expiration refuse la leaf397jours : préparer une rotation coordonnée de CA,
+distribuer la confiance puis remplacer les matériaux, sans supprimer l'ancienne
+autorité avant validation des consommateurs.
+
+Le volume PG reste sur arrêt/restart. Ne jamais employer `down -v` ou supprimer
+le volume pour une relance. Qualifier séparément restart Tools puis PG+Tools :
+fichiers/pins/access/activité relus, révocation persistante, curseurs RAM repris
+de la première page. Pour la reprise logique, réutiliser [export/import FILES](README.md#parcours-et-reprise)
+et [droits/révocations ACCESS](access-activity.md#maintenance-et-rollback) : arrêter
+writers, retenir versions S3, Vault/auth actuels avant SQL, cible neuve fermée et
+droits distincts Source/cible. Un backup n'est pas une autorité fraîche de droits.
+Rollback : arrêter consommateurs, préserver volume/Source/archives, raccorder
+explicitement une cible contrôlée ou revenir Source, jamais deux writers,
+migration/remap ou relance aveugle. Une absence incertaine ne déclenche aucune
+purge. Le voisin partagé est relu avec sa propre identité en fin de lot.
+
+Les tests logiciels de cette branche contrôlent configuration réelle Settings,
+SCRAM et orchestration sans service. Restent à exécuter après revue du diff :
+fusion Compose réelle, build/imports/scans, UID/RO, les six cellules du tableau,
+installation → accès → write/list/read/activité → révocation → restart, pannes
+PG/Vault sans effet, état SQL/S3 final et reprise/rollback. Même SHA/digest app
+par cellule, version libpq Python et image relevées séparément ; pas de preuve
+native déduite d'un double SQL ni de charge ou HA/PITR non mesurées.

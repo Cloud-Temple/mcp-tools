@@ -1,7 +1,9 @@
 # Données files : S3 et catalogue PostgreSQL
 
-Statut : design et candidat d'implémentation pour #30. Qualification réelle,
-revue indépendante du résultat et livraison restent à établir. Ce document
+Statut : capacité #30 livrée par [PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37),
+merge11ef86ed. Qualification/revues publiées avec provenances app b7a06ced/imagee3b34dc7
+et opérateur83b7e7f distinctes. Le [nouveau profil #45](../../docs/postgres/standalone.md)
+reste candidat, sans nouvelle qualification native attribuée à ces preuves. Ce document
 complète [ARCHITECTURE.md](ARCHITECTURE.md). Le parcours et la CI publics ne
 requièrent aucun dépôt, service, schéma ou identité Mission.
 
@@ -167,7 +169,8 @@ anciens écrivains/requêtes arrêtés, restart sans redispatch, reconcile expli
 révoque/fence dans nouvel epoch avant clôture. Rollback avec sources préservées,
 cible cohérente/raccord explicite, jamais fallback. Voisin B et grants/pins
 relus avant/après par ses identités ; lecture finale indépendante avant cleanup.
-RTO/RPO non mesurés ; aucune qualification exécutée à ce stade.
+RTO/RPO non mesurés. Rollback historique #30/PR37 qualifié sur sa copie fermée ;
+aucune preuve de reprise/volume du nouveau profil #45 n'en est déduite.
 
 ## 7. Qualification et livraison
 
@@ -183,7 +186,7 @@ et delta review, sans répéter toute campagne sans raison.
 
 | Épreuve | État |
 | --- | --- |
-| Contrôles statiques/contrats locaux | À consigner sur candidat stabilisé |
-| PostgreSQL/S3/Vault réels, restart/fautes/rollback | À exécuter après admission |
-| État final persistant, voisins, secrets, droits | Relecture indépendante requise avant cleanup |
-| Revue résultat et publication | Non réalisées ; aucun merge/deploy/release autorisé |
+| Contrôles statiques/contrats locaux | Historiques #30/PR37 ; nouveaux contrôles #45 à consigner sur son candidat |
+| PostgreSQL/S3/Vault réels, restart/fautes/rollback | Historiques #30/PR37 ; nouvelle matrice #45 non exécutée |
+| État final persistant, voisins, secrets, droits | Preuves historiques publiées ; nouvelle relecture requise avant cleanup #45 |
+| Revue résultat et publication | #30 livré ; #45 attend revue/qualification de son diff, aucun déploiement déduit |

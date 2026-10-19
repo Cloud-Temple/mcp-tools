@@ -1,5 +1,12 @@
 # 🔧 MCP Tools
 
+PostgreSQL files/access capabilities are delivered through
+[PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37) and
+[PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38). The new
+[local/external Compose and Python operator guide](docs/postgres/standalone.md)
+describes the separate candidate deployment profiles and their remaining native
+qualification. Legacy S3 defaults remain unchanged.
+
 > **Executable tool library for AI agents** — Cloud Temple MCP Server
 >
 > [Version française](README.md)

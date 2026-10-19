@@ -1,9 +1,13 @@
 # Installer le catalogue files PostgreSQL
 
-Candidat non qualifié sur moteurs à ce stade. Le design est dans
-[DATA_DESIGN](../../DESIGN/mcp-tools/DATA_DESIGN.md), les épreuves requises dans
-`tests/postgres_files/public_recipe.py`. Infrastructure propre ou base externe
-partagée : même code/API/droits, aucun composant Mission requis.
+Catalogue livré par [#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37)
+(merge11ef86ed), avec preuves PG/S3/Vault, restart/fautes et rollback aux
+révisions/provenances publiées. Le design est dans
+[DATA_DESIGN](../../DESIGN/mcp-tools/DATA_DESIGN.md), la recette publique dans
+`tests/postgres_files/public_recipe.py`. Le [profil Compose/Python #45](standalone.md)
+reste à qualifier sur ses propres images/cibles ; il ne réattribue pas ces
+preuves historiques. Infrastructure propre ou base externe partagée : même
+code/API/droits, aucun composant Mission requis.
 
 ## Installation publique
 
@@ -18,7 +22,8 @@ python3 -m pip check
 ```
 
 Le Dockerfile embarque libpq5 et ce driver, sans bibliothèque PostgreSQL privée.
-Build/lock complet image/CI à qualifier séparément ; aucun build exécuté ici.
+Les builds/CI de PR37 sont historiques ; toute nouvelle image/profil doit être
+vérifiée à sa révision, sans déduire sa qualification du guide.
 Modules : `PYTHONPATH=src python3 -m mcp_tools.storage.files_bootstrap`, ou
 `python3 -m src.mcp_tools.storage.files_bootstrap` depuis racine.
 
