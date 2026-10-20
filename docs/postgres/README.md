@@ -164,6 +164,21 @@ conserve les pins et opérations actives, SHA256 streaming. Chiffrer archive,
 retenir versions/markers S3 et chaîne auth Vault séparée. Quiesced est une
 assertion opérateur, pas une API qui arrête les writers automatiquement.
 
+Export et les deux modes d'import lisent les blobs par le transport opérateur
+versionné, sans contexte ni token MCP fabriqué. Configurer un endpoint S3 explicite,
+`S3_BUCKET_NAME`, `FILES_S3_PREFIX`, `S3_ACCESS_KEY_ID` et `S3_SECRET_ACCESS_KEY`
+pour chaque job, avec sa CA TLS et ses seuls droits de lecture des versions.
+Un profil à clés implicites est refusé dès le constructeur, avant création ou
+lecture de l'archive. Le profil restore doit viser le **même bucket et préfixe
+que la Source**, avec VersionId, taille et SHA256 inchangés ; aucune copie ou
+réécriture S3 n'est faite par ces jobs. Un préfixe différent est refusé.
+Le catalogue et les binaires SQL gardent leurs identités et contrôles Vault
+existants ; S3 applique séparément les droits IAM courants à chaque GET.
+Une révocation SQL/Vault n'invalide pas à elle seule une clef IAM indépendante,
+ni une session SQL déjà ouverte : retirer aussi les sessions selon la procédure
+d'autorité existante. Les gardes ACCESS des outils MCP restent obligatoires ;
+ce transport opérateur n'accorde aucun droit runtime et ne restaure aucun token.
+
 Avant import, restaurer Vault/auth, créer **base/volume neufs**, rétablir les
 rôles/ownership/defaults/grants sous provisionneur autorisé ; le dump ne fournit
 pas les rôles globaux, aucune collision corrigée au détriment d'un voisin.

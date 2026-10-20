@@ -1,6 +1,8 @@
 """Archive PG17 réelle, isolée : ne qualifie ni Vault, TLS, S3 ni service natif."""
 import argparse
 import asyncio
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -180,13 +182,13 @@ async def exercise(socket, folder, name, check_stage="both"):
         results.append(await checked(settings,'owner-probe-restored'))
         return results
 
-    class Pins:
-        def __init__(self, settings):
-            pass
+    content = b"confirmed fixture bytes"
 
-        async def get(self, pin):
-            assert pin == {"key": "fixture", "version_id": "immutable-version"}
-            return b"confirmed fixture bytes"
+    class PinnedS3:
+        def get_object(self, **kwargs):
+            assert kwargs == {"Bucket": "fixture", "Key": "files-generations/" + str(generation),
+                              "VersionId": "immutable-version"}
+            return {"Body": io.BytesIO(content), "VersionId": "immutable-version"}
 
     async def binary(settings, argv, output):
         process = await asyncio.create_subprocess_exec(
@@ -229,7 +231,9 @@ async def exercise(socket, folder, name, check_stage="both"):
     with connect(socket, "copy30") as c:
         assert c.execute("SELECT rolname FROM pg_roles WHERE pg_has_role('copy_owner',oid,'MEMBER') ORDER BY rolname").fetchall() == [("copy_owner",), ("pg_database_owner",)]
     common = dict(files_pg_schema="tools_files", files_pg_system_identifier=cluster, files_pg_timeline=timeline,
-                  files_durability="local", files_credentials_mode="direct", files_pg_ca_file="/dev/null")
+                  files_durability="local", files_credentials_mode="direct", files_pg_ca_file="/dev/null",
+                  s3_endpoint_url="https://fixture.invalid", s3_bucket_name="fixture",
+                  s3_access_key_id="fixture", s3_secret_access_key="fixture")
     settings = Settings(_env_file=None, files_pg_database="source30", files_pg_owner="source_owner",
                         files_pg_role="source_install", **common)
     with patch.object(files_bootstrap, "Catalog", FixtureCatalog), patch.object(files_bootstrap, "get_settings", return_value=settings):
@@ -245,7 +249,9 @@ async def exercise(socket, folder, name, check_stage="both"):
         c.execute("INSERT INTO operations(id,path,request_digest,intent_digest,intent,attempt,generation,expected_revision,phase,publication_allowed,revocation,closed) "
                   "VALUES(%s,'fixture',%s,%s,'{}',%s,%s,0,'EFFECT_COMMITTED',false,%s,true)", (oid, "a" * 64, "b" * 64, attempt, generation, fence))
         c.execute("INSERT INTO generations(id,operation,path,pin,manifest) VALUES(%s,%s,'fixture',%s,'{}')",
-                  (generation, oid, psycopg.types.json.Jsonb({"key": "fixture", "version_id": "immutable-version"})))
+                  (generation, oid, psycopg.types.json.Jsonb({"key": "files-generations/" + str(generation),
+                    "version_id": "immutable-version", "sha256": hashlib.sha256(content).hexdigest(),
+                    "size": len(content)})))
         c.execute("INSERT INTO refs(path,revision,generation,operation,deleted) VALUES('fixture',1,%s,%s,false)", (generation, oid))
         c.execute("INSERT INTO receipts(id,operation,kind,detail) VALUES(%s,%s,'publication','{}')", (uuid.uuid4(), oid))
     checks=[]
@@ -256,7 +262,7 @@ async def exercise(socket, folder, name, check_stage="both"):
         c.execute("ALTER ROLE source_app NOLOGIN")
     archive = folder / "archive"
     settings = settings.model_copy(update={"files_pg_role": "source_backup"})
-    with patch.object(files_backup, "Catalog", FixtureCatalog), patch.object(files_backup, "Blobs", Pins), patch.object(files_backup, "pg_job", binary):
+    with patch.object(files_backup, "Catalog", FixtureCatalog), patch("boto3.client", return_value=PinnedS3()), patch.object(files_backup, "pg_job", binary):
         with patch.object(files_backup, "get_settings", return_value=settings):
             exported = await files_backup.recipe(SimpleNamespace(action="export", app_role="source_app", archive=str(archive), max_generations=64))
         target = settings.model_copy(update={"files_pg_database": "copy30", "files_pg_owner": "copy_owner", "files_pg_role": "copy_install"})

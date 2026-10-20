@@ -38,7 +38,7 @@ class RestoreRoleContract(IsolatedAsyncioTestCase):
             job = AsyncMock()
             with patch.object(files_backup, "get_settings", return_value=settings), \
                  patch.object(files_backup, "Catalog", return_value=Catalog()), \
-                 patch.object(files_backup, "Blobs"), \
+                 patch.object(files_backup, "RecoveryBlobs"), \
                  patch.object(files_backup, "pg_job", job):
                 result = await files_backup.recipe(SimpleNamespace(action="import", archive=directory,
                                                                     max_generations=64))

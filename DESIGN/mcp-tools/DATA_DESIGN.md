@@ -154,6 +154,15 @@ copie métier concurrente runtime ; pas de backup app automatique ni PITR/HA
 implicite. Jobs ≤600s, pg tools ≤120s, générations ≤10000/opérations actives ≤64 ;
 dépasser budget échoue en incomplet, préserver les artefacts pour inspection.
 
+Export et import normal/projeté utilisent la lecture opérateur existante
+`RecoveryBlobs.read`, distincte de `Blobs.get` et de son admission ACCESS runtime.
+Le job contrôle SQL sous son identité ; S3 contrôle séparément son IAM courant.
+Profil endpoint/bucket/préfixe/clefs explicite, même bucket/préfixe Source au
+restore, clé UUID et version/taille/SHA exacts : aucun contexte MCP artificiel,
+aucun PUT/DELETE S3 dans ces jobs ni nouveaux droits SQL/S3. Les révocations
+restent contrôlées aux frontières actuelles ; l'archive ne restaure pas l'autorité
+ACCESS et n'accorde aucun droit runtime.
+
 Arrêter écrivains et admins de mutation, exporter point quiescent catalogue et
 pins/markers exacts, retenir versions S3 de toute archive. Vault/clefs/auth
 avant SQL de reprise ; provisionneur crée base/volume **neufs**, restaure rôles,

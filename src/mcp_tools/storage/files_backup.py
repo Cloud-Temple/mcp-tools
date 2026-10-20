@@ -11,7 +11,7 @@ from pathlib import Path
 from ..config import get_settings
 from .files_credentials import Credentials, StorageUnavailable, private_text
 from .files_postgres import Catalog
-from .files_s3 import Blobs
+from .files_recovery_s3 import RecoveryBlobs
 from .files_restore import project, structure, target_roles
 
 
@@ -56,7 +56,7 @@ async def pg_job(s, argv, output):
 async def recipe(args):
     s=get_settings()
     cat=Catalog(s)
-    blobs=Blobs(s)
+    blobs=RecoveryBlobs(s)
     destination=Path(args.archive)
     if args.action=="export":
         destination.mkdir(mode=0o700,parents=False,exist_ok=False)
@@ -83,7 +83,7 @@ async def recipe(args):
                     if not rows:
                         break
                     for row in rows:
-                        await blobs.get(row["pin"])
+                        await blobs.read(row["pin"])
                         f.write(json.dumps({"generation":str(row["id"]),"pin":row["pin"]})+"\n")
                     total+=len(rows)
                     if total>args.max_generations:
@@ -152,7 +152,7 @@ async def recipe(args):
                 count+=1
                 if count>args.max_generations:
                     raise StorageUnavailable("Budget restore dépassé")
-                await blobs.get(item["pin"])  # le pin original doit survivre ; aucune réécriture cachée
+                await blobs.read(item["pin"])  # le pin original doit survivre ; aucune réécriture cachée
     argv=["pg_restore","--exit-on-error","--single-transaction","--role="+s.files_pg_owner]
     if getattr(args,"project_roles",False):
         argv += ["--no-owner","--no-acl"]

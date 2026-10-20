@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Export/import FILES opérateur : lecture des versions S3 par le transport
+  opérateur existant, sans contexte MCP artificiel. Profil S3 explicite et pins
+  Source conservés ; gardes ACCESS runtime et droits SQL/S3 inchangés.
+
 - Profil PostgreSQL #45 : le provisionneur accorde au backup EXECUTE sur la seule
   probe infrastructure nécessaire à l'export, sans SET owner ni droit d'écriture.
   Les ACL d'import normal et le retrait complet des accès jobs sont explicités.
