@@ -390,9 +390,9 @@ Le service réel passe `/ready`, bootstrap admin, tokens limités, MCP et CLI vi
 WAF HTTPS, écritures/lectures/pagination/activité. Après restart de l'application
 **seule**, la première continuation FILES réussit, les pins restent identiques
 et l'ancien bearer révoqué reçoit 401. Les curseurs ACCESS sont transitoires :
-l'ancien reçoit 400 après restart, une première page et sa nouvelle continuation
-fonctionnent et retrouvent l'activité. Ce refus est le contrat existant,
-pas une restauration de curseur ACCESS.
+l'ancien reçoit 400 après restart ; une nouvelle pagination fonctionne
+(première page et continuation), sans vérification du contenu pré-restart.
+Ce refus est le contrat existant, pas une restauration de curseur ACCESS.
 
 Huit négatifs natifs distincts refusent l'accès sans contenu ni contournement :
 service absent, permissions du passfile incorrectes, CA FILES incorrecte,

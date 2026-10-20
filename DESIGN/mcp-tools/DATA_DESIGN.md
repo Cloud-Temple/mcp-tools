@@ -195,7 +195,7 @@ et delta review, sans répéter toute campagne sans raison.
 
 | Épreuve | État |
 | --- | --- |
-| Contrôles statiques/contrats locaux | 20/10/2026, source 48a7976 : HOST 499 +8 subtests, quatre sondes image et CI 49 E2E sans skip ; historiques #30/#31 distincts |
+| Contrôles statiques/contrats locaux | Rapport du 20/10/2026, source 48a7976 : acquis HOST 499 +8 subtests et CI R28 (quatre sondes image, 49 E2E sans skip) ; dates d'exécution non revérifiées ici ; historiques #30/#31 distincts |
 | PostgreSQL/S3/Vault réels, restart/fautes/rollback | Source 48a7976 : six cellules #45 PASS ; imports normal/projeté sur cibles neuves, Copy fermée avant retour Source |
 | État final persistant, voisins, secrets, droits | Six égalités catalogue/ACL avant export/après retour ; deux cellules partagées avec voisin préexistant inchangé, révocations distinctes IAM/Vault ; complément #46 FILES direct + ACCESS Vault réel PASS |
 | Revue résultat et publication | Qualification locale datée, aucune fusion/publication ou fermeture #45/#46 déduite ; CI finale à rattacher à sa révision |
