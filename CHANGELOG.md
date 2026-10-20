@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Profil PostgreSQL #45 : le provisionneur accorde au backup EXECUTE sur la seule
+  probe infrastructure nécessaire à l'export, sans SET owner ni droit d'écriture.
+  Les ACL d'import normal et le retrait complet des accès jobs sont explicités.
+
 - Contrôle FILES opérateur NOINHERIT : `--check` utilise son SET owner existant
   seulement sans USAGE du schéma, dans une transaction READ ONLY et avec rôle
   LOCAL. Les lectures explicites DBaaS, les contrôles des droits app et la probe

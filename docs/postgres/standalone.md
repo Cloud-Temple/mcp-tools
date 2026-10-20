@@ -76,7 +76,12 @@ explicitement ; ce CLI ne transforme pas un domaine existant.
 
 Un provisionneur externe doit disposer des délégations nécessaires aux probes et
 grants décrits, pas seulement CREATEDB. Vérifier ces prérequis avant de commencer ;
-s'ils manquent, arrêter sans accorder ces droits à l'app pour débloquer. En cas
+les GRANT USAGE/SELECT/EXECUTE du backup sont exécutés sous son identité courante,
+hors SET ROLE owner. Un simple membership owner INHERIT FALSE, SET TRUE ne suffit
+pas à ces GRANT : l'autorité courante doit pouvoir les déléguer. Le provisionneur
+local tools_prepare est SUPERUSER ; cela ne qualifie pas un provisionneur externe
+non superuser. Aucun élargissement automatique ne remplace un prérequis manquant.
+Si ces prérequis manquent, arrêter sans accorder ces droits à l'app pour débloquer. En cas
 de refus découvert après un effet partiel, préserver le marqueur et inspecter.
 HBA et rôles des bases voisines
 ne sont jamais modifiés par cet opérateur. Les privilèges transitoires du
@@ -300,7 +305,32 @@ explicitement une cible contrôlée ou revenir Source, jamais deux writers,
 migration/remap ou relance aveugle. Une absence incertaine ne déclenche aucune
 purge. Le voisin partagé est relu avec sa propre identité en fin de lot.
 
-Les tests logiciels de cette branche contrôlent configuration réelle Settings,
+Le provisionneur autorise le backup à exécuter seulement la fonction étroite
+`tools_files.files_infrastructure()`, en plus de ses USAGE/SELECT et probes PG
+déjà prévues. Aucun SET owner, membership, DDL, écriture ou GRANT OPTION ne lui
+est accordé. L'export ne se donne aucun droit et refuse une probe non autorisée.
+Avant export, suspendre réellement les écrivains ; `--quiesced` ne les arrête pas.
+Le scope Vault et les credentials S3 du job sont propres et réautorisés ; aucun
+dump ne rétablit cette autorité ni ne remplace ses CA/identités actuelles.
+
+Après export confirmé, l'autorité opérateur ferme l'accès SQL du job par NOLOGIN
+ou par retrait effectif de CONNECT, termine ses sessions et vérifie un refus de
+connexion frais ; elle retire aussi ses transports/scopes selon leurs procédures.
+Révoquer le seul EXECUTE ferme la sonde et l'export, mais laisse possibles les
+SELECT SQL tant que LOGIN/CONNECT/USAGE/SELECT restent effectifs. Ne pas rouvrir
+automatiquement tools_prepare ni ajouter une commande runtime pour ce retrait.
+
+L'import normal restaure les ACL du dump : un dump pris avant retrait peut donc
+restituer EXECUTE au rôle backup cible déjà provisionné, ainsi que USAGE/SELECT.
+Contrôler ces droits et l'auth actuelle avant raccord ; ne pas promettre leur
+absence. À l'inverse, `--project-roles` utilise `--no-owner --no-acl` puis projette
+seulement owner/app cible : il ne transporte pas l'identité backup Source. Les
+habilitations de nouveaux jobs cible relèvent ensuite du provisionneur autorisé.
+
+La fixture PG17 `tests/postgres_files/restore_projection.py --backup-install`
+contrôle la vraie initialisation et l’export sous backup sans SET owner, via
+credentials de test et socket Unix ; elle ne qualifie pas TLS/Vault/S3 natifs.
+Les tests de configuration de cette branche contrôlent les Settings réels,
 SCRAM et orchestration sans service. Restent à exécuter après revue du diff :
 fusion Compose réelle, build/imports/scans, UID/RO, les six cellules du tableau,
 installation → accès → write/list/read/activité → révocation → restart, pannes

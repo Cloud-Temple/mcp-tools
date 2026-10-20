@@ -238,6 +238,8 @@ def test_install_scopes_order_and_no_provisioner_secret_in_child_environment(pre
     before=dict(os.environ)
     asyncio.run(prep.install(*args,close_local_provisioner=True))
     assert len(model.children)==5 and dict(os.environ)==before
+    assert model.statements.count('GRANT EXECUTE ON FUNCTION tools_files.files_infrastructure() TO tools_files_backup')==1
+    assert not any('tools_files_owner TO tools_files_backup' in row for row in model.statements)
     assert [argv[3] for argv,env in model.children]==['--apply','--check','install','verify','bootstrap']
     for argv,env in model.children:
         assert model.password not in ' '.join(argv) and model.password not in str(env)

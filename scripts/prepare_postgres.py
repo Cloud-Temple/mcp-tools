@@ -363,6 +363,7 @@ async def install(files, access, provisioner, system_identifier, timeline, state
         await c.execute((ROOT/'docs/postgres/infrastructure.sql').read_text(),prepare=False)
         await c.execute('GRANT USAGE ON SCHEMA tools_files TO tools_files_backup')
         await c.execute('GRANT SELECT ON ALL TABLES IN SCHEMA tools_files TO tools_files_backup')
+        await c.execute('GRANT EXECUTE ON FUNCTION tools_files.files_infrastructure() TO tools_files_backup')
     await public_job(files,system_identifier,timeline,'src.mcp_tools.storage.files_bootstrap',['--check'])
     for action in ('install','verify','bootstrap'):
         args=[action]
