@@ -10,13 +10,15 @@ exactes. Candidat désactivé avec le hub ; qualification native843 encore atten
 
 MCP Tools est un serveur MCP passif qui expose des **outils** (shell, réseau, HTTP, recherche IA…) aux agents autonomes via le protocole **Streamable HTTP**. C'est la « boîte à outils » de l'écosystème Cloud Temple.
 
-## Accès et activité PostgreSQL (candidat #31)
+## Accès et activité PostgreSQL
 
-Le profil explicite `ACCESS_BACKEND=postgres` prépare l'authentification fraîche,
+Le profil explicite `ACCESS_BACKEND=postgres` fournit l'authentification fraîche,
 les mutations administratives sous CAS et l'activité durable, avec API, CLI et
 console. Le [guide accès/activité](docs/postgres/access-activity.md) décrit
-l'opérateur, le premier admin offline et les limites de qualification restantes.
-Ce candidat n'est pas encore prêt au déploiement.
+l'opérateur et le premier admin offline. [#31/PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38)
+est livré (merge268a0e8d), avec preuves standalone et hub distinctes.
+Le nouveau [parcours Compose/Python local ou externe](docs/postgres/standalone.md)
+reste candidat #45, sans nouvelle qualification moteur revendiquée.
 
 ## Catalogue fichiers PostgreSQL (optionnel)
 
@@ -25,7 +27,9 @@ sélectionne un catalogue unique, avec contenu S3 versionné, pages/batch et
 journal d'opérations incertaines. Installation et reprise publiques autonomes,
 en infrastructure propre ou base externe : [guide](docs/postgres/README.md),
 [design](DESIGN/mcp-tools/DATA_DESIGN.md).
-Le candidat doit encore être qualifié sur moteurs réels et revu indépendamment.
+[#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37) est livré
+(merge11ef86ed), avec provenance app/opérateur et limites de reprise explicites.
+Les profils Compose PG et leur volume local restent à qualifier séparément.
 
 ## Démarrage rapide
 

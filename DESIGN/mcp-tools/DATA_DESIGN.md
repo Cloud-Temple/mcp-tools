@@ -1,7 +1,9 @@
 # Données files : S3 et catalogue PostgreSQL
 
-Statut : design et candidat d'implémentation pour #30. Qualification réelle,
-revue indépendante du résultat et livraison restent à établir. Ce document
+Statut : capacité #30 livrée par [PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37),
+merge11ef86ed. Qualification/revues publiées avec provenances app b7a06ced/imagee3b34dc7
+et opérateur83b7e7f distinctes. Le [nouveau profil #45](../../docs/postgres/standalone.md)
+reste candidat, sans nouvelle qualification native attribuée à ces preuves. Ce document
 complète [ARCHITECTURE.md](ARCHITECTURE.md). Le parcours et la CI publics ne
 requièrent aucun dépôt, service, schéma ou identité Mission.
 
@@ -152,6 +154,15 @@ copie métier concurrente runtime ; pas de backup app automatique ni PITR/HA
 implicite. Jobs ≤600s, pg tools ≤120s, générations ≤10000/opérations actives ≤64 ;
 dépasser budget échoue en incomplet, préserver les artefacts pour inspection.
 
+Export et import normal/projeté utilisent la lecture opérateur existante
+`RecoveryBlobs.read`, distincte de `Blobs.get` et de son admission ACCESS runtime.
+Le job contrôle SQL sous son identité ; S3 contrôle séparément son IAM courant.
+Profil endpoint/bucket/préfixe/clefs explicite, même bucket/préfixe Source au
+restore, clé UUID et version/taille/SHA exacts : aucun contexte MCP artificiel,
+aucun PUT/DELETE S3 dans ces jobs ni nouveaux droits SQL/S3. Les révocations
+restent contrôlées aux frontières actuelles ; l'archive ne restaure pas l'autorité
+ACCESS et n'accorde aucun droit runtime.
+
 Arrêter écrivains et admins de mutation, exporter point quiescent catalogue et
 pins/markers exacts, retenir versions S3 de toute archive. Vault/clefs/auth
 avant SQL de reprise ; provisionneur crée base/volume **neufs**, restaure rôles,
@@ -167,7 +178,8 @@ anciens écrivains/requêtes arrêtés, restart sans redispatch, reconcile expli
 révoque/fence dans nouvel epoch avant clôture. Rollback avec sources préservées,
 cible cohérente/raccord explicite, jamais fallback. Voisin B et grants/pins
 relus avant/après par ses identités ; lecture finale indépendante avant cleanup.
-RTO/RPO non mesurés ; aucune qualification exécutée à ce stade.
+RTO/RPO non mesurés. Rollback historique #30/PR37 qualifié sur sa copie fermée ;
+aucune preuve de reprise/volume du nouveau profil #45 n'en est déduite.
 
 ## 7. Qualification et livraison
 
@@ -183,7 +195,16 @@ et delta review, sans répéter toute campagne sans raison.
 
 | Épreuve | État |
 | --- | --- |
-| Contrôles statiques/contrats locaux | À consigner sur candidat stabilisé |
-| PostgreSQL/S3/Vault réels, restart/fautes/rollback | À exécuter après admission |
-| État final persistant, voisins, secrets, droits | Relecture indépendante requise avant cleanup |
-| Revue résultat et publication | Non réalisées ; aucun merge/deploy/release autorisé |
+| Contrôles statiques/contrats locaux | Rapport du 20/10/2026, source 48a7976 : acquis HOST 499 +8 subtests et CI R28 (quatre sondes image, 49 E2E sans skip) ; dates d'exécution non revérifiées ici ; historiques #30/#31 distincts |
+| PostgreSQL/S3/Vault réels, restart/fautes/rollback | Source 48a7976 : six cellules #45 PASS ; imports normal/projeté sur cibles neuves, Copy fermée avant retour Source |
+| État final persistant, voisins, secrets, droits | Six égalités catalogue/ACL avant export/après retour ; deux cellules partagées avec voisin préexistant inchangé, révocations distinctes IAM/Vault ; complément #46 FILES direct + ACCESS Vault réel PASS |
+| Revue résultat et publication | Qualification locale datée, aucune fusion/publication ou fermeture #45/#46 déduite ; CI finale à rattacher à sa révision |
+
+La [matrice datée et ses limites](../../docs/postgres/standalone.md#qualification-locale-du-20102026)
+porte le SHA produit complet et distingue image/libpq hôte, canari 16 et service
+hybride réel. Le complément #46 vérifie `/ready`, WAF HTTPS, activité, révocation,
+restart de l'app seule (continuation FILES conservée, curseur ACCESS transitoire
+refusé puis nouvelle pagination), huit négatifs et voisin inchangé. La correction
+documentaire n'est pas une nouvelle exécution des tests de 48a. PG17/fixtures
+locales uniquement : pas de DBaaS distant non superuser, PG18, HA/PITR ni expiration
+réelle qualifiés ; autres variantes identité/schéma/backend testées en logiciel.

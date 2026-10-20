@@ -1,9 +1,13 @@
 # Installer le catalogue files PostgreSQL
 
-Candidat non qualifié sur moteurs à ce stade. Le design est dans
-[DATA_DESIGN](../../DESIGN/mcp-tools/DATA_DESIGN.md), les épreuves requises dans
-`tests/postgres_files/public_recipe.py`. Infrastructure propre ou base externe
-partagée : même code/API/droits, aucun composant Mission requis.
+Catalogue livré par [#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37)
+(merge11ef86ed), avec preuves PG/S3/Vault, restart/fautes et rollback aux
+révisions/provenances publiées. Le design est dans
+[DATA_DESIGN](../../DESIGN/mcp-tools/DATA_DESIGN.md), la recette publique dans
+`tests/postgres_files/public_recipe.py`. Le [profil Compose/Python #45](standalone.md)
+reste à qualifier sur ses propres images/cibles ; il ne réattribue pas ces
+preuves historiques. Infrastructure propre ou base externe partagée : même
+code/API/droits, aucun composant Mission requis.
 
 ## Installation publique
 
@@ -18,7 +22,8 @@ python3 -m pip check
 ```
 
 Le Dockerfile embarque libpq5 et ce driver, sans bibliothèque PostgreSQL privée.
-Build/lock complet image/CI à qualifier séparément ; aucun build exécuté ici.
+Les builds/CI de PR37 sont historiques ; toute nouvelle image/profil doit être
+vérifiée à sa révision, sans déduire sa qualification du guide.
 Modules : `PYTHONPATH=src python3 -m mcp_tools.storage.files_bootstrap`, ou
 `python3 -m src.mcp_tools.storage.files_bootstrap` depuis racine.
 
@@ -49,6 +54,12 @@ Direct : service/passfile app privés 0600, CA en lecture seule. Secrets hors
 .env suivi/argv/image. Service peut définir plusieurs hosts/ports libpq ;
 TLS verify-full et target_session_attrs read-write sont imposés par le code.
 Ce mode demeure légitime et autonome ; il est hors profil Vault-first.
+
+Avec ACCESS PostgreSQL/Vault dans le même processus, les sélecteurs FILES
+`PGSERVICEFILE`/`PGPASSFILE` restent utilisables sans modifier l'environnement
+pendant une connexion. `PGSERVICE` doit rester absent, même vide ; les autres
+variables PG non vides restent interdites côté ACCESS. Voir le
+[contrat de coexistence et ses limites de qualification](access-activity.md#installation-autonome).
 
 Vault : aucun service/passfile direct de secours. Fournisseur **MCP Vault**
 public, API `secret_read(vault_id,path)`, réponse status ok avec `data`. Secret
@@ -152,6 +163,21 @@ Recette logique opérateur : `files_backup export|import --quiesced --archive
 conserve les pins et opérations actives, SHA256 streaming. Chiffrer archive,
 retenir versions/markers S3 et chaîne auth Vault séparée. Quiesced est une
 assertion opérateur, pas une API qui arrête les writers automatiquement.
+
+Export et les deux modes d'import lisent les blobs par le transport opérateur
+versionné, sans contexte ni token MCP fabriqué. Configurer un endpoint S3 explicite,
+`S3_BUCKET_NAME`, `FILES_S3_PREFIX`, `S3_ACCESS_KEY_ID` et `S3_SECRET_ACCESS_KEY`
+pour chaque job, avec sa CA TLS et ses seuls droits de lecture des versions.
+Un profil à clés implicites est refusé dès le constructeur, avant création ou
+lecture de l'archive. Le profil restore doit viser le **même bucket et préfixe
+que la Source**, avec VersionId, taille et SHA256 inchangés ; aucune copie ou
+réécriture S3 n'est faite par ces jobs. Un préfixe différent est refusé.
+Le catalogue et les binaires SQL gardent leurs identités et contrôles Vault
+existants ; S3 applique séparément les droits IAM courants à chaque GET.
+Une révocation SQL/Vault n'invalide pas à elle seule une clef IAM indépendante,
+ni une session SQL déjà ouverte : retirer aussi les sessions selon la procédure
+d'autorité existante. Les gardes ACCESS des outils MCP restent obligatoires ;
+ce transport opérateur n'accorde aucun droit runtime et ne restaure aucun token.
 
 Avant import, restaurer Vault/auth, créer **base/volume neufs**, rétablir les
 rôles/ownership/defaults/grants sous provisionneur autorisé ; le dump ne fournit

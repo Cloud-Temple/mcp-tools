@@ -316,13 +316,13 @@ def build(args):
 
     from . import retention_proof_846
     from .auth import postgres_retention_846 as holds846
-    from .auth.postgres_credentials import AccessCredentials
+    from .auth.postgres_credentials import AccessCredentials, access_environment_allowed
     from .config import get_settings
     from .storage.files_recovery import FileRecovery
 
     s = get_settings()
     if (s.access_backend != 'postgres' or not s.access_pg_ca_file or not s.access_mission_retention_enabled
-            or any(key.startswith('PG') and value for key, value in os.environ.items())):
+            or not access_environment_allowed()):
         raise Refused('Explicit Access 846 profile required')
 
     @asynccontextmanager

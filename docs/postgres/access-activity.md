@@ -1,8 +1,10 @@
 # Accès et activité durable Tools
 
-Candidat #31 en préparation. Les tests SQL isolés du delta admin ne qualifient
-pas encore le raccord HTTP/MCP, TLS, Vault, les pannes ou le rollback. Ne pas
-présenter ce candidat comme prêt au déploiement.
+Capacité #31 livrée par [PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38)
+(candidat37d3b6b, merge268a0e8d) : standalone, HTTP/MCP/CLI/console, TLS/Vault,
+révocation/restart, pannes et rollback avec leurs preuves/limites publiées.
+Le nouveau [profil de déploiement #45](standalone.md) reste à qualifier sur ses
+propres images/cibles ; cette documentation ne constitue pas une requalification.
 
 `ACCESS_BACKEND=postgres` sélectionne une autorité distincte du magasin S3.
 Le runtime n'initialise pas `_tokens/`, ne charge aucun ancien token et n'utilise
@@ -31,8 +33,31 @@ Paramètres : `ACCESS_PG_DATABASE`, `ACCESS_PG_ROLE` (identité du job courant),
 `ACCESS_PG_OWNER`, liste exacte `ACCESS_PG_HOSTS`, `ACCESS_PG_CA_FILE` ; provider
 `ACCESS_VAULT_URL/ID/PATH/TOKEN_FILE/CA_FILE`. Bearer privé0600 et CA RO, URL Vault
 HTTPS sans suffixe `/mcp`. Le secret SQL contient exactement host, port5432,
-dbname, user et password. Pas de variables libpq `PG*`, de socket Unix ou de
-conninfo client. TLS verify-full et serveur read-write sont imposés.
+dbname, user et password non vide. Pas de socket Unix ou de conninfo client.
+TLS verify-full et serveur read-write sont imposés.
+
+Pour conserver FILES en mode direct dans le même processus, seules les variables
+`PGSERVICEFILE` et `PGPASSFILE` peuvent sélectionner ses fichiers privés0600,
+montés en lecture seule en conteneur. ACCESS ne sélectionne aucun service et
+transmet toujours le mot de passe frais obtenu dans Vault ; il ne reprend ni
+service ni passfile FILES. Toutes les autres variables `PG*` non vides sont
+refusées avant le provider/SQL, même inconnues. `PGSERVICE` doit être **absent** :
+même vide, il peut sélectionner une section `[]`. Cela vaut pour le runtime,
+`postgres_operator` et le build du job de maintenance `retention_846` ; ses
+contrats/holds restent inchangés et désactivés hors profil prévu. Aucun code
+ne retire/restaure des variables dans l'environnement partagé. Si un outil
+opérateur séparé exige d'autres variables, lui donner son propre environnement
+dans un processus distinct, jamais les injecter dans le service Tools.
+
+La [documentation libpq](https://www.postgresql.org/docs/17/libpq-pgservice.html)
+décrit la sélection du service ; le [passfile](https://www.postgresql.org/docs/17/libpq-pgpass.html)
+ne sert qu'en l'absence d'un mot de passe explicite. La qualification de cette
+combinaison doit relever les versions effectives de Python/libpq **et** de
+l'image, sans les déduire d'une lecture de source PG17. Utiliser un canari de
+service non explicitement surchargé par ACCESS (`hostaddr=192.0.2.1`, ou
+`sslcert`/`sslkey` invalides), plus `PGSERVICE=''` avec section `[]`. Des kwargs
+mockés ne prouvent pas que libpq n'a pas lu un fichier. Les tests logiciels de
+coexistence ne remplacent pas la recette PG/S3/Vault réelle, restart et rollback.
 
 ```sh
 PYTHONPATH=src python3 -m mcp_tools.auth.postgres_operator install --app-role tools_access_app --maintenance-role tools_access_maintenance
@@ -114,12 +139,11 @@ devient jamais une corrélation de confiance. Aucune dépendance fonctionnelle
 
 ## Destinataire hub optionnel
 
-Le destinataire Tools est candidat et testé sur un émetteur ES256 contrôlé.
-Il ne modifie pas l'émetteur Mission/Agent. L'émetteur courant doit prendre en
-charge le contrat Tools ci-dessous pour activer ce profil ; le contrat Agent
-`hub-agent-reports-v1` ne convient pas. La qualification flotte déléguée reste
-non livrée tant que ce raccord réel n'a pas été testé. Laisser le profil désactivé
-n'affecte pas le standalone.
+Le destinataire et la chaîne réelle Agent→Mission→Tools ont été qualifiés dans
+#31/PR38, séparément du standalone et aux révisions publiées. L'émetteur doit
+prendre en charge le contrat Tools ci-dessous pour activer ce profil ; le contrat
+Agent `hub-agent-reports-v1` ne convient pas. Le profil standalone #45 laisse le
+hub désactivé ; il n'en revendique pas une nouvelle qualification flotte.
 
 Configurer `HUB_ACTIVITY_ENABLED=true`, `HUB_ACTIVITY_ISSUER`, audience exacte
 `HUB_ACTIVITY_AUDIENCE` de cette instance Tools, owner producteur
@@ -191,5 +215,6 @@ Les tombstones de révocation sans échéance restent conservés.
 Avant un rollback : préserver la Source, restaurer sur cible neuve fermée avec
 identités backup/restore distinctes, puis recopier les révocations courantes
 connues ou maintenir tous les accès restaurés fermés. Un backup d'accès n'est
-pas une autorité fraîche. La qualification de ce parcours reste à produire avant
-Ready ; aucune bascule S3 ou remise en service automatique n'est autorisée.
+pas une autorité fraîche. La preuve historique #31/PR38 porte une copie fermée
+avec tombstone et Source préservée ; le nouveau profil #45 doit être vérifié
+séparément. Aucune bascule S3 ou remise en service automatique n'est autorisée.

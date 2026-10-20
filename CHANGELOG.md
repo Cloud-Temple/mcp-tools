@@ -8,14 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Export/import FILES opérateur : lecture des versions S3 par le transport
+  opérateur existant, sans contexte MCP artificiel. Profil S3 explicite et pins
+  Source conservés ; gardes ACCESS runtime et droits SQL/S3 inchangés.
+
+- Profil PostgreSQL #45 : le provisionneur accorde au backup EXECUTE sur la seule
+  probe infrastructure nécessaire à l'export, sans SET owner ni droit d'écriture.
+  Les ACL d'import normal et le retrait complet des accès jobs sont explicités.
+
 - Contrôle FILES opérateur NOINHERIT : `--check` utilise son SET owner existant
   seulement sans USAGE du schéma, dans une transaction READ ONLY et avec rôle
   LOCAL. Les lectures explicites DBaaS, les contrôles des droits app et la probe
   infrastructure sont conservés. Ordre documenté : probe, check, retrait des
   droits temporaires, readiness app. Qualification moteur PG17 isolée ; le
-  parcours natif Catalog/TLS/Vault complet reste à qualifier après intégration.
+  parcours natif Catalog/TLS/Vault de la composition 48a est qualifié localement
+  le 20/10/2026 (voir la matrice et ses limites).
 
 ### Added
+
+- #45 (candidat local) : profils Compose PostgreSQL externe/local unique et
+  opérateur Tools de préparation explicite TLS/base/rôles/config, SCRAM côté
+  client et scopes Vault propres, sans runtime DDL ou modification des défauts
+  S3. Hub off ; six parcours et UID/restart/reprise qualifiés localement le
+  20/10/2026 sur 48a7976, sans qualification DBaaS distante.
+  HBA locale : sources opérateur mesurées explicites /32 ou /128 ; provisionneur
+  restreint puis NOLOGIN après installation. Précontrôle CAP_CHOWN et retrait
+  de la seule sortie exclusive incomplète si l'attribution d'UID échoue.
 
 - #846 Access : extension holds846 sur domaine neuf. Les calls Mission n'ont plus
   d'échéance par date et ne partent que par un retrait appuyé sur une claim Mission
@@ -42,10 +60,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Destinataire hub optionnel avec mapping local administré, contexte ES256
   limité à l'admission et batch de métadonnées revalidé avant restitution.
 
+### Fixed
+
+- #46 : les sélecteurs de fichiers libpq FILES `PGSERVICEFILE`/`PGPASSFILE`
+  peuvent coexister avec ACCESS Vault. Politique commune runtime/opérateur/
+  maintenance846, autres PG non vides refusés et PGSERVICE interdit même vide,
+  sans mutation de l'environnement, direct ACCESS, cache ou fallback.
+  Seize canaris PG/Vault acquis sur e064ca1 (gardes/connecteurs inchangés), puis
+  complément réel Python/externe partagé sur 48a7976 le 20/10/2026 : FILES direct +
+  ACCESS Vault, WAF HTTPS/readiness/restart/révocation et huit négatifs.
+  Ces preuves restent distinctes.
+
 ### Qualification
 
-- Delta SQL admin qualifié sur PostgreSQL17 isolé (29 groupes) ; raccords
-  publics, TLS/Vault, délégation hub et rollback encore non qualifiés/non prêts.
+- #45/#46 : [matrice locale du 20/10/2026](docs/postgres/standalone.md#qualification-locale-du-20102026)
+  sur 48a79768587a3e5233527663f1048d4213bb20c1, distincte des historiques
+  #30/PR37 et #31/PR38. HOST 499 +8, CI 49 sans skip/quatre sondes, six cellules
+  tout-Vault et complément hybride sont des preuves séparées. PG17 local,
+  imports logique normal/projeté et retour contrôlé ; pas de DBaaS distant
+  non superuser, PG18, HA/PITR ou expiration réelle qualifiés. Bao binaire non
+  relevé séparément ; Trivy historique informatif 125 HIGH/7 CRITICAL. Ces acquis
+  produit ne sont pas réattribués au SHA du seul delta documentaire ; aucun
+  déploiement, merge ou fermeture d'issue implicite.
 
 ## [0.10.0] — 2026-10-14
 

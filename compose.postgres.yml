@@ -1,0 +1,63 @@
+# Explicit public PostgreSQL profile; base Compose alone keeps legacy S3 defaults.
+# This profile targets an external PG. Add compose.postgres-local.yml for local PG.
+services:
+  mcp-tools:
+    image: ${TOOLS_IMAGE:?supply the same reviewed Tools image by digest for every topology}
+    pull_policy: never
+    environment:
+      FILES_METADATA_BACKEND: postgres
+      FILES_CREDENTIALS_MODE: vault
+      ACCESS_BACKEND: postgres
+      FILES_PG_DATABASE: ${FILES_PG_DATABASE:-tools}
+      FILES_PG_ROLE: ${FILES_PG_ROLE:-tools_files_app}
+      FILES_PG_OWNER: ${FILES_PG_OWNER:-tools_files_owner}
+      FILES_PG_SCHEMA: ${FILES_PG_SCHEMA:-tools_files}
+      FILES_PG_CA_FILE: /run/tools/pg-ca.pem
+      FILES_PG_SYSTEM_IDENTIFIER: ${FILES_PG_SYSTEM_IDENTIFIER:?operator must inspect target identity}
+      FILES_PG_TIMELINE: ${FILES_PG_TIMELINE:-1}
+      FILES_DURABILITY: local
+      FILES_VAULT_URL: ${FILES_VAULT_URL:?Tools Vault endpoint required}
+      FILES_VAULT_ID: ${FILES_VAULT_ID:?Tools Vault required}
+      FILES_VAULT_PATH: ${FILES_VAULT_PATH:?Files app scope required}
+      FILES_VAULT_TOKEN_FILE: /run/tools/files-vault.token
+      FILES_VAULT_CA_FILE: /run/tools/vault-ca.pem
+      FILES_S3_PREFIX: ${FILES_S3_PREFIX:-files-generations/}
+      FILES_S3_DATA_SIGNATURE: ${FILES_S3_DATA_SIGNATURE:-s3}
+      ACCESS_PG_DATABASE: ${ACCESS_PG_DATABASE:-tools}
+      ACCESS_PG_ROLE: ${ACCESS_PG_ROLE:-tools_access_app}
+      ACCESS_PG_OWNER: ${ACCESS_PG_OWNER:-tools_access_owner}
+      ACCESS_PG_HOSTS: ${ACCESS_PG_HOSTS:?exact app secret hosts required}
+      ACCESS_PG_CA_FILE: /run/tools/pg-ca.pem
+      ACCESS_VAULT_URL: ${ACCESS_VAULT_URL:?Tools Vault endpoint required}
+      ACCESS_VAULT_ID: ${ACCESS_VAULT_ID:?Tools Vault required}
+      ACCESS_VAULT_PATH: ${ACCESS_VAULT_PATH:?Access app scope required}
+      ACCESS_VAULT_TOKEN_FILE: /run/tools/access-vault.token
+      ACCESS_VAULT_CA_FILE: /run/tools/vault-ca.pem
+      ACCESS_OPERATION_TIMEOUT: ${ACCESS_OPERATION_TIMEOUT:-5}
+      ACCESS_CURSOR_TTL_SECONDS: ${ACCESS_CURSOR_TTL_SECONDS:-60}
+      ACCESS_CURSOR_CAPACITY: ${ACCESS_CURSOR_CAPACITY:-1024}
+      HUB_ACTIVITY_ENABLED: "false"
+      FILES_MISSION_DEPENDENCIES_ENABLED: "false"
+      FILES_RECOVERY_ENABLED: "false"
+      ACCESS_MISSION_RETENTION_ENABLED: "false"
+    volumes:
+      - type: bind
+        source: ${TOOLS_PG_CA_FILE:?host PG CA path required}
+        target: /run/tools/pg-ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_VAULT_CA_FILE:?host Vault CA path required}
+        target: /run/tools/vault-ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_FILES_VAULT_TOKEN_FILE:?Files app bearer file required}
+        target: /run/tools/files-vault.token
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TOOLS_ACCESS_VAULT_TOKEN_FILE:?Access app bearer file required}
+        target: /run/tools/access-vault.token
+        read_only: true
+        bind: {create_host_path: false}

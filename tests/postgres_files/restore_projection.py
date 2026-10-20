@@ -1,6 +1,8 @@
 """Archive PG17 réelle, isolée : ne qualifie ni Vault, TLS, S3 ni service natif."""
 import argparse
 import asyncio
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -180,13 +182,13 @@ async def exercise(socket, folder, name, check_stage="both"):
         results.append(await checked(settings,'owner-probe-restored'))
         return results
 
-    class Pins:
-        def __init__(self, settings):
-            pass
+    content = b"confirmed fixture bytes"
 
-        async def get(self, pin):
-            assert pin == {"key": "fixture", "version_id": "immutable-version"}
-            return b"confirmed fixture bytes"
+    class PinnedS3:
+        def get_object(self, **kwargs):
+            assert kwargs == {"Bucket": "fixture", "Key": "files-generations/" + str(generation),
+                              "VersionId": "immutable-version"}
+            return {"Body": io.BytesIO(content), "VersionId": "immutable-version"}
 
     async def binary(settings, argv, output):
         process = await asyncio.create_subprocess_exec(
@@ -229,7 +231,9 @@ async def exercise(socket, folder, name, check_stage="both"):
     with connect(socket, "copy30") as c:
         assert c.execute("SELECT rolname FROM pg_roles WHERE pg_has_role('copy_owner',oid,'MEMBER') ORDER BY rolname").fetchall() == [("copy_owner",), ("pg_database_owner",)]
     common = dict(files_pg_schema="tools_files", files_pg_system_identifier=cluster, files_pg_timeline=timeline,
-                  files_durability="local", files_credentials_mode="direct", files_pg_ca_file="/dev/null")
+                  files_durability="local", files_credentials_mode="direct", files_pg_ca_file="/dev/null",
+                  s3_endpoint_url="https://fixture.invalid", s3_bucket_name="fixture",
+                  s3_access_key_id="fixture", s3_secret_access_key="fixture")
     settings = Settings(_env_file=None, files_pg_database="source30", files_pg_owner="source_owner",
                         files_pg_role="source_install", **common)
     with patch.object(files_bootstrap, "Catalog", FixtureCatalog), patch.object(files_bootstrap, "get_settings", return_value=settings):
@@ -245,7 +249,9 @@ async def exercise(socket, folder, name, check_stage="both"):
         c.execute("INSERT INTO operations(id,path,request_digest,intent_digest,intent,attempt,generation,expected_revision,phase,publication_allowed,revocation,closed) "
                   "VALUES(%s,'fixture',%s,%s,'{}',%s,%s,0,'EFFECT_COMMITTED',false,%s,true)", (oid, "a" * 64, "b" * 64, attempt, generation, fence))
         c.execute("INSERT INTO generations(id,operation,path,pin,manifest) VALUES(%s,%s,'fixture',%s,'{}')",
-                  (generation, oid, psycopg.types.json.Jsonb({"key": "fixture", "version_id": "immutable-version"})))
+                  (generation, oid, psycopg.types.json.Jsonb({"key": "files-generations/" + str(generation),
+                    "version_id": "immutable-version", "sha256": hashlib.sha256(content).hexdigest(),
+                    "size": len(content)})))
         c.execute("INSERT INTO refs(path,revision,generation,operation,deleted) VALUES('fixture',1,%s,%s,false)", (generation, oid))
         c.execute("INSERT INTO receipts(id,operation,kind,detail) VALUES(%s,%s,'publication','{}')", (uuid.uuid4(), oid))
     checks=[]
@@ -256,7 +262,7 @@ async def exercise(socket, folder, name, check_stage="both"):
         c.execute("ALTER ROLE source_app NOLOGIN")
     archive = folder / "archive"
     settings = settings.model_copy(update={"files_pg_role": "source_backup"})
-    with patch.object(files_backup, "Catalog", FixtureCatalog), patch.object(files_backup, "Blobs", Pins), patch.object(files_backup, "pg_job", binary):
+    with patch.object(files_backup, "Catalog", FixtureCatalog), patch("boto3.client", return_value=PinnedS3()), patch.object(files_backup, "pg_job", binary):
         with patch.object(files_backup, "get_settings", return_value=settings):
             exported = await files_backup.recipe(SimpleNamespace(action="export", app_role="source_app", archive=str(archive), max_generations=64))
         target = settings.model_copy(update={"files_pg_database": "copy30", "files_pg_owner": "copy_owner", "files_pg_role": "copy_install"})
@@ -317,9 +323,150 @@ async def exercise(socket, folder, name, check_stage="both"):
             "local_role_reset_observations": len(observed_roles), "readonly_checks": readonly_checks, "real_catalog_unix_credentials_only_fixture": True}
 
 
+async def backup_install(socket, folder, name):
+    # Real prepare.install and its real child entrypoints. Only credential and
+    # Unix transport are replaced; no SQL, public_job or role/grant is mocked.
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location('prepare_fixture', ROOT/'scripts/prepare_postgres.py')
+    prep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prep)
+    spec = importlib.util.spec_from_file_location('unix_credentials', Path(__file__).with_name('unix_credentials.py'))
+    seam = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seam)
+    seam.activate(socket)
+    startup = folder/'startup'
+    startup.mkdir(mode=0o700)
+    (startup/'sitecustomize.py').write_text(
+        "from unix_credentials import activate\nactivate("+repr(str(socket))+")\n")
+    real_spawn = asyncio.create_subprocess_exec
+    children = []
+    async def spawn(*argv, **kwargs):
+        if argv[0] == sys.executable:
+            children.append(list(argv))
+            kwargs['env'] = dict(kwargs['env'], PYTHONPATH=str(startup)+os.pathsep+
+                str(ROOT/'tests/postgres_files')+os.pathsep+str(ROOT))
+        return await real_spawn(*argv, **kwargs)
+    def job(user, database='tools'):
+        return dict(user=user, database=database, hosts='127.0.0.1',
+            pg_ca_file='/fixture-not-tls/pg.crt', vault_url='https://fixture.invalid',
+            vault_id='fixture', vault_path=user, vault_token_file='/fixture/token',
+            vault_ca_file='/fixture-not-tls/vault.crt')
+    state = folder/'state'
+    state.mkdir(mode=0o700)
+    verifiers = folder/'verifiers'
+    verifiers.mkdir(mode=0o700)
+    for role in prep.LOGIN:
+        p = verifiers/(role+'.json')
+        p.write_text(json.dumps(dict(role=role,database='tools',hosts='127.0.0.1',
+            verifier=prep.scram_verifier('fixture-only-not-a-real-secret-123456'))))
+        p.chmod(0o600)
+    with connect(socket) as c:
+        server_version = c.execute('SHOW server_version').fetchone()[0]
+        assert server_version.startswith('17.')
+        identity = c.execute('SELECT system_identifier::text FROM pg_control_system()').fetchone()[0]
+        timeline = c.execute('SELECT timeline_id FROM pg_control_checkpoint()').fetchone()[0]
+        c.execute('CREATE DATABASE neighbor24')
+    with connect(socket,'neighbor24') as c:
+        c.execute('REVOKE CONNECT ON DATABASE neighbor24 FROM PUBLIC')
+        c.execute('CREATE TABLE untouched(value text)')
+        c.execute("INSERT INTO untouched VALUES ('neighbor')")
+    await prep.provision(job('postgres','postgres'),job('postgres'),'tools',verifiers,state,identity)
+    with patch.object(asyncio,'create_subprocess_exec',spawn):
+        await prep.install(job('tools_files_install'),job('tools_access_install'),job('postgres'),
+            identity,timeline,state,folder/'admin.token','fixture','backup24')
+    assert (state/'install.done.json').exists() and len(children)==5
+    (folder/'child-entrypoints.json').write_text(json.dumps(children,indent=2))
+    with connect(socket,'tools') as c:
+        assert c.execute("SELECT pg_has_role('tools_files_backup','tools_files_owner','SET')").fetchone()==(False,)
+        assert c.execute("SELECT rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname='tools_files_backup'").fetchone()==(False,)*6
+        assert c.execute("SELECT count(*) FROM pg_auth_members WHERE member='tools_files_backup'::regrole").fetchone()==(0,)
+        acl = c.execute("SELECT has_function_privilege('tools_files_backup','tools_files.files_infrastructure()','EXECUTE')").fetchone()[0]
+        grants = c.execute("SELECT pg_get_userbyid(a.grantee),a.privilege_type,a.is_grantable FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a WHERE p.oid='tools_files.files_infrastructure()'::regprocedure ORDER BY 1,2").fetchall()
+        (folder/'probe-acl.json').write_text(json.dumps(dict(execute=acl,grants=grants)))
+        # Seed data is a fixture, not a public/natively authenticated write.
+        c.execute("INSERT INTO tools_files.operations(id,path,request_digest,intent_digest,intent,attempt,generation,expected_revision,phase,publication_allowed,revocation,closed) VALUES(%s,'fixture',%s,%s,'{}',%s,%s,0,'EFFECT_COMMITTED',false,%s,true)",
+            (uuid.uuid4(),'a'*64,'b'*64,uuid.uuid4(),uuid.uuid4(),uuid.uuid4()))
+    def snapshot():
+        with connect(socket,'tools') as c:
+            return [c.execute(q).fetchall() for q in (
+                "SELECT table_name,grantee,privilege_type,is_grantable FROM information_schema.table_privileges WHERE table_schema='tools_files' ORDER BY 1,2,3",
+                "SELECT nspacl::text FROM pg_namespace WHERE nspname='tools_files'",
+                "SELECT proname,proacl::text FROM pg_proc WHERE pronamespace='tools_files'::regnamespace ORDER BY 1",
+                "SELECT * FROM tools_files.operations ORDER BY id",
+                "SELECT roleid,member,admin_option,inherit_option,set_option FROM pg_auth_members ORDER BY 1,2")]
+    before = snapshot()
+    with connect(socket,'neighbor24') as c:
+        neighbor = c.execute('SELECT * FROM untouched').fetchall()
+        neighbor_acl = c.execute("SELECT relacl::text FROM pg_class WHERE oid='untouched'::regclass").fetchall()
+    settings = Settings(_env_file=None, files_metadata_backend='postgres',files_credentials_mode='vault',
+        files_pg_role='tools_files_backup',files_pg_database='tools',files_pg_ca_file='/fixture-not-tls/pg.crt',
+        files_pg_system_identifier=identity,files_pg_timeline=timeline,files_durability='local',
+        s3_endpoint_url='https://fixture.invalid',s3_access_key_id='fixture',
+        s3_secret_access_key='fixture',s3_bucket_name='fixture')
+    binaries = []
+    async def binary(s, argv, output):
+        binaries.append(argv[0])
+        # Existing fixture transport: real PG17 pg_dump, as the actual backup
+        # login, over its private Unix socket. No --role=owner or SQL replacement.
+        run(['docker','exec','--user',f'{os.getuid()}:{os.getgid()}',
+            '-e','PGHOST=/fixture-socket','-e','PGUSER='+s.files_pg_role,
+            '-e','PGDATABASE='+s.files_pg_database,name,*argv],120)
+        if output:output.chmod(0o600)
+    with patch.object(files_backup,'get_settings',return_value=settings), patch.object(files_backup,'pg_job',binary):
+        result = await files_backup.recipe(SimpleNamespace(action='export',archive=str(folder/'archive'),
+            app_role='tools_files_app',max_generations=64))
+        assert result['status']=='ok' and binaries==['pg_dump']
+        listing = run(['docker','exec',name,'pg_restore','--list',str(folder/'archive/domain.dump')])
+        assert 'files_infrastructure' in listing and 'operations' in listing
+        assert acl and ('tools_files_backup','EXECUTE',False) in grants
+        assert all(not grantable for role,_,grantable in grants if role=='tools_files_backup')
+        assert snapshot()==before
+        denied=[]
+        for query in ('CREATE TABLE tools_files.forbidden(x int)',
+                      'INSERT INTO tools_files.schema_version VALUES(false,1,\'x\')',
+                      'UPDATE tools_files.schema_version SET version=version',
+                      'DELETE FROM tools_files.schema_version', 'SET ROLE tools_files_owner'):
+            with connect(socket,'tools','tools_files_backup') as c:
+                try:c.execute(query)
+                except psycopg.Error as error:assert error.sqlstate=='42501';denied.append(query.split()[0])
+                else:raise AssertionError('backup gained privilege: '+query)
+        try:connect(socket,'neighbor24','tools_files_backup').close()
+        except psycopg.OperationalError:denied.append('neighbor')
+        else:raise AssertionError('backup connected neighbor')
+        with connect(socket,'tools','tools_files_app') as c:
+            try:c.execute('CREATE TABLE tools_files.app_forbidden(x int)')
+            except psycopg.Error as error:assert error.sqlstate=='42501';denied.append('app-CREATE')
+            else:raise AssertionError('app gained DDL')
+        assert snapshot()==before
+        with connect(socket,'neighbor24') as c:
+            assert c.execute('SELECT * FROM untouched').fetchall()==neighbor
+            assert c.execute("SELECT relacl::text FROM pg_class WHERE oid='untouched'::regclass").fetchall()==neighbor_acl
+        with connect(socket,'tools') as c:c.execute('REVOKE EXECUTE ON FUNCTION tools_files.files_infrastructure() FROM tools_files_backup')
+        try:
+            await files_backup.recipe(SimpleNamespace(action='export',archive=str(folder/'revoked-archive'),app_role='tools_files_app',max_generations=64))
+        except StorageUnavailable as error:assert getattr(cause(error),'sqlstate',None)=='42501'
+        else:raise AssertionError('revoked probe admitted export')
+        assert binaries==['pg_dump']
+    with connect(socket,'tools','tools_files_backup') as c:
+        assert c.execute('SELECT count(*) FROM tools_files.schema_version').fetchone()==(1,)
+    with connect(socket,'tools') as c:
+        c.execute('ALTER ROLE tools_files_backup NOLOGIN')
+    try:connect(socket,'tools','tools_files_backup').close()
+    except psycopg.OperationalError:pass
+    else:raise AssertionError('retired backup logged in')
+    return dict(server_version=server_version, pg_dump_version=run(['docker','exec',name,'pg_dump','--version']),
+        real_prepare_install=True, real_child_jobs=len(children), backup_execute=True,
+        grant_option=False, backup_set_owner=False, export_real_dump_readable=True,
+        denied=denied, source_neighbor_acl_unchanged=True, revoked_before_dump=True,
+        select_remains_after_execute_revoke=True, nologin_refused=True,
+        vault_tls_s3_native=False, fixture_credentials_unix_only=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--backup-install",action="store_true")
     parser.add_argument("--check-stage",choices=("both","after-apply","after-import"),default="both")
     args = parser.parse_args()
     folder = args.results.resolve()
@@ -356,7 +503,8 @@ def main():
             time.sleep(.2)
         else:
             raise TimeoutError("fixture readiness")
-        report.update(asyncio.run(asyncio.wait_for(exercise(socket, folder, name, args.check_stage), 400)))
+        operation = backup_install(socket, folder, name) if args.backup_install else exercise(socket, folder, name, args.check_stage)
+        report.update(asyncio.run(asyncio.wait_for(operation, 400)))
         report["pass"] = True
     except BaseException as error:
         failed = error
