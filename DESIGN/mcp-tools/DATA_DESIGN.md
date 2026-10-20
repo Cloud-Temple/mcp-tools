@@ -195,7 +195,16 @@ et delta review, sans répéter toute campagne sans raison.
 
 | Épreuve | État |
 | --- | --- |
-| Contrôles statiques/contrats locaux | Historiques #30/PR37 ; nouveaux contrôles #45 à consigner sur son candidat |
-| PostgreSQL/S3/Vault réels, restart/fautes/rollback | Historiques #30/PR37 ; nouvelle matrice #45 non exécutée |
-| État final persistant, voisins, secrets, droits | Preuves historiques publiées ; nouvelle relecture requise avant cleanup #45 |
-| Revue résultat et publication | #30 livré ; #45 attend revue/qualification de son diff, aucun déploiement déduit |
+| Contrôles statiques/contrats locaux | 20/10/2026, source 48a7976 : HOST 499 +8 subtests, quatre sondes image et CI 49 E2E sans skip ; historiques #30/#31 distincts |
+| PostgreSQL/S3/Vault réels, restart/fautes/rollback | Source 48a7976 : six cellules #45 PASS ; imports normal/projeté sur cibles neuves, Copy fermée avant retour Source |
+| État final persistant, voisins, secrets, droits | Six égalités catalogue/ACL avant export/après retour ; deux cellules partagées avec voisin préexistant inchangé, révocations distinctes IAM/Vault ; complément #46 FILES direct + ACCESS Vault réel PASS |
+| Revue résultat et publication | Qualification locale datée, aucune fusion/publication ou fermeture #45/#46 déduite ; CI finale à rattacher à sa révision |
+
+La [matrice datée et ses limites](../../docs/postgres/standalone.md#qualification-locale-du-20102026)
+porte le SHA produit complet et distingue image/libpq hôte, canari 16 et service
+hybride réel. Le complément #46 vérifie `/ready`, WAF HTTPS, activité, révocation,
+restart de l'app seule (continuation FILES conservée, curseur ACCESS transitoire
+refusé puis nouvelle pagination), huit négatifs et voisin inchangé. La correction
+documentaire n'est pas une nouvelle exécution des tests de 48a. PG17/fixtures
+locales uniquement : pas de DBaaS distant non superuser, PG18, HA/PITR ni expiration
+réelle qualifiés ; autres variantes identité/schéma/backend testées en logiciel.

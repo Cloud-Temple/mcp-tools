@@ -5,9 +5,12 @@ de secrets dans toutes les topologies. S3 conserve les contenus/versions, PG les
 catalogues et accès. Aucune migration, runtime DDL, nouvelle authentification ou
 suppression de Vault/OpenBao. Hub et extensions Mission restent désactivés.
 
-Les profils et l'opérateur ci-dessous sont un candidat #45 ; leur matrice native
-PG/S3/Vault, les UID/montages réels, restart PG et rollback sur ce candidat ne
-sont **pas encore qualifiés**. Les livraisons historiques [#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37)
+Qualification locale du **20/10/2026** sur le code
+[`48a79768587a3e5233527663f1048d4213bb20c1`](https://github.com/Cloud-Temple/mcp-tools/tree/48a79768587a3e5233527663f1048d4213bb20c1) :
+les six parcours #45 PG/S3/Vault sont exécutés avec succès. Un complément de
+service Python/externe partagé qualifie FILES direct + ACCESS Vault (#46).
+La [matrice et ses limites](#qualification-locale-du-20102026) ci-dessous
+séparent ces preuves des contrôles logiciels. Les livraisons historiques [#30/PR37](https://github.com/Cloud-Temple/mcp-tools/pull/37)
 et [#31/PR38](https://github.com/Cloud-Temple/mcp-tools/pull/38) restent distinctes :
 app #30 b7a06ced/imagee3b34dc7 et opérateur83b7e7f ; merge11ef86ed. #31 candidat37d3b6b,
 merge268a0e8d, avec chaîne hub qualifiée séparément. Elles ne prouvent ni ce
@@ -337,3 +340,96 @@ installation → accès → write/list/read/activité → révocation → restar
 PG/Vault sans effet, état SQL/S3 final et reprise/rollback. Même SHA/digest app
 par cellule, version libpq Python et image relevées séparément ; pas de preuve
 native déduite d'un double SQL ni de charge ou HA/PITR non mesurées.
+
+## Qualification locale du 20/10/2026
+
+Révision produit testée : `48a79768587a3e5233527663f1048d4213bb20c1`, arbre
+`cea31b743cd02628b1b832d7544c3424224c5254`. Les modifications documentaires
+ultérieures ne changent pas cette provenance. Les historiques #30/#31 cités
+plus haut gardent leurs propres révisions et ne sont pas comptés comme ces runs.
+
+| Cellule #45 | Autorités réellement exercées | Résultat |
+| --- | --- | --- |
+| Compose/local | PG17 TLS/SCRAM, S3 versionné HTTPS, FILES Vault + ACCESS Vault | PASS |
+| Python/local | Processus Python hôte, mêmes autorités réelles, WAF | PASS |
+| Compose/externe dédié | PG séparé du processus applicatif, fixture sur hôte local | PASS |
+| Python/externe dédié | Python hôte vers cette topologie PG séparée | PASS |
+| Compose/externe partagé | Voisin synthétique préexistant dans une autre base du PG local | PASS |
+| Python/externe partagé | Même isolation partagée depuis Python hôte | PASS |
+
+Chaque cellule utilise des états neufs et exerce le parcours public MCP/CLI :
+écriture, lecture de versions/pins, pagination, droits limités et révocation ;
+restart PG/application ; pannes PG/Vault puis retour ; export réel de quatre
+générations avec `pg_dump` 17.11. Deux cibles neuves distinctes vérifient l'import
+normal et `--project-roles`, les checks publics sans réappliquer le schéma, puis
+la lecture des pins historiques par de nouveaux lecteurs autorisés. Les anciens
+tokens ne sont pas restaurés : ils restent refusés, comme le nouveau lecteur
+interdit. L'import normal conserve les ACL du dump ; la projection ne restaure
+pas une autorité ACCESS historique. L'amorçage ACCESS de la copie normale précède
+l'import FILES ; celui de la copie projetée le suit.
+
+La Copy est fermée avant le retour à la Source. Les instantanés du catalogue
+FILES et des ACL avant export/après retour sont égaux dans les six cellules.
+Les refus backup SET owner/DDL/DML et app SET owner/DDL ont été observés. Les
+cellules partagées vérifient le voisin avant provisionnement, après installation,
+restart, fermeture Source, activation Copy et retour : données, propriétaires,
+ACL et rôles identiques ; accès croisés refusés. Cela qualifie ces fixtures
+locales, pas une offre DBaaS distante ou son provisionneur non superuser.
+
+### Complément #46 : FILES direct et ACCESS Vault dans le même service
+
+Une cellule **Python/externe partagé supplémentaire** emploie réellement
+`FILES_CREDENTIALS_MODE=direct`, un service libpq et un passfile privés 0600,
+avec seulement `PGSERVICEFILE`/`PGPASSFILE` comme variables PG. Aucun paramètre
+`FILES_VAULT_*` n'est fourni au processus. ACCESS utilise exclusivement son
+scope Vault HTTPS courant, avec son identité SQL distincte. `PGSERVICE` doit
+être **absent** : même une valeur vide est refusée, conformément à la garde.
+Les jobs de préparation privilégiés restent isolés et tout-Vault.
+
+Le service réel passe `/ready`, bootstrap admin, tokens limités, MCP et CLI via
+WAF HTTPS, écritures/lectures/pagination/activité. Après restart de l'application
+**seule**, la première continuation FILES réussit, les pins restent identiques
+et l'ancien bearer révoqué reçoit 401. Les curseurs ACCESS sont transitoires :
+l'ancien reçoit 400 après restart, une première page et sa nouvelle continuation
+fonctionnent et retrouvent l'activité. Ce refus est le contrat existant,
+pas une restauration de curseur ACCESS.
+
+Huit négatifs natifs distincts refusent l'accès sans contenu ni contournement :
+service absent, permissions du passfile incorrectes, CA FILES incorrecte,
+`PGSERVICE` vide, mot de passe Vault erroné, mot de passe Vault vide, Vault
+indisponible, PG indisponible. Avec ACCESS en échec Vault, le Catalog FILES
+direct conserve sa connexion SQL TLS indépendante, mais l'admission MCP reste
+fermée. Les profils corrects sont rétablis et relus après les fautes ; aucune
+écriture métier ambiguë n'est rejouée. Voisin préexistant inchangé et deux accès
+croisés refusés. Cinq opérations closes, aucune référence des écritures sous
+scope interdit. Ce parcours complète les **seize cas réels du canari #46**
+antérieur sur `e064ca193004faaae4e0b549f5b082cab1432c37` (PG/Vault,
+hôte/image, concurrence FILES/ACCESS et absence de fallback). Les gardes et
+connecteurs concernés sont inchangés jusqu'à `48a` ; ces cas ne sont ni
+réexécutés ni réattribués à ce SHA, et leurs comptes ne sont pas additionnés.
+
+### Versions, CI et limites
+
+- Image Tools ARM64 testée :
+  `sha256:d2573b7e62277038eae8edd2897c6fbbb91d0ba130f3625fa7e38a1299159228`,
+  Python 3.11.15, SDK 2.2.0, psycopg 3.3.6 implémentation Python/libpq170011.
+  Processus hôte : Python 3.11.16, même SDK/psycopg, extra CI binary/libpq180006.
+  Cette libpq hôte ne prouve pas celle de l'image. PG serveur et clients dump/
+  restore 17.11 ; MinIO `RELEASE.2025-09-07T16-13-09Z`, MCP Vault 0.20.1.
+  La version binaire Bao n'a pas été relevée séparément.
+- Contrôles acquis sur `48a` : **499 tests HOST +8 subtests**, quatre sondes image
+  entières, contrôles du catalogue de treize outils/imports, **49 E2E CI sans
+  skip**, projection PG17 réelle avec frontière credentials/S3 de fixture.
+  Les 499 tests, les seize canaris, les six cellules et le complément de service
+  sont des ensembles différents ; leurs comptes ne s'additionnent pas.
+- Aucun nouveau scan n'est déduit des builds : le Trivy historique informatif
+  rapporte **125 HIGH et 7 CRITICAL** ; ce n'est pas un résultat zéro vulnérabilité
+  ni un scan de la révision documentaire.
+- PG18, DBaaS distant non superuser, HA/PITR et expiration réelle IAM/Vault ne sont
+  pas qualifiés ici. Les révocations IAM et Vault observées sont distinctes.
+  Les identités/schémas invalides et les autres variantes backend restent couverts
+  par tests logiciels, sans prétendre une campagne native supplémentaire.
+- UID/montages relevés pour les runs ; aucun socket Docker hôte monté dans l'app.
+  Scopes Vault relus révoqués, clés IAM désactivées, jobs/connexions fermés et
+  seuls services de recette retirés. Volumes, PKI et archives sont conservés.
+  Ces résultats ne constituent ni un déploiement ni une livraison fusionnée.

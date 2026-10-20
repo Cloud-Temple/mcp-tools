@@ -21,14 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   LOCAL. Les lectures explicites DBaaS, les contrôles des droits app et la probe
   infrastructure sont conservés. Ordre documenté : probe, check, retrait des
   droits temporaires, readiness app. Qualification moteur PG17 isolée ; le
-  parcours natif Catalog/TLS/Vault complet reste à qualifier après intégration.
+  parcours natif Catalog/TLS/Vault de la composition 48a est qualifié localement
+  le 20/10/2026 (voir la matrice et ses limites).
 
 ### Added
 
 - #45 (candidat local) : profils Compose PostgreSQL externe/local unique et
   opérateur Tools de préparation explicite TLS/base/rôles/config, SCRAM côté
   client et scopes Vault propres, sans runtime DDL ou modification des défauts
-  S3. Hub off ; six parcours et UID/restart/reprise natifs restent à qualifier.
+  S3. Hub off ; six parcours et UID/restart/reprise qualifiés localement le
+  20/10/2026 sur 48a7976, sans qualification DBaaS distante.
   HBA locale : sources opérateur mesurées explicites /32 ou /128 ; provisionneur
   restreint puis NOLOGIN après installation. Précontrôle CAP_CHOWN et retrait
   de la seule sortie exclusive incomplète si l'attribution d'UID échoue.
@@ -64,13 +66,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   peuvent coexister avec ACCESS Vault. Politique commune runtime/opérateur/
   maintenance846, autres PG non vides refusés et PGSERVICE interdit même vide,
   sans mutation de l'environnement, direct ACCESS, cache ou fallback.
-  Tests logiciels uniquement ; qualification PG/S3/Vault de la combinaison à venir.
+  Seize canaris PG/Vault acquis sur e064ca1 (gardes/connecteurs inchangés), puis
+  complément réel Python/externe partagé sur 48a7976 le 20/10/2026 : FILES direct +
+  ACCESS Vault, WAF HTTPS/readiness/restart/révocation et huit négatifs.
+  Ces preuves restent distinctes.
 
 ### Qualification
 
-- #30/PR37 et #31/PR38 livrés avec leurs preuves publiques/natives et limites
-  aux révisions publiées ; le nouveau profil #45 n'en hérite pas une qualification
-  Compose/volume/UID/reprise. Aucun déploiement ou HA/PITR implicite.
+- #45/#46 : [matrice locale du 20/10/2026](docs/postgres/standalone.md#qualification-locale-du-20102026)
+  sur 48a79768587a3e5233527663f1048d4213bb20c1, distincte des historiques
+  #30/PR37 et #31/PR38. HOST 499 +8, CI 49 sans skip/quatre sondes, six cellules
+  tout-Vault et complément hybride sont des preuves séparées. PG17 local,
+  imports logique normal/projeté et retour contrôlé ; pas de DBaaS distant
+  non superuser, PG18, HA/PITR ou expiration réelle qualifiés. Bao binaire non
+  relevé séparément ; Trivy historique informatif 125 HIGH/7 CRITICAL. Ces acquis
+  produit ne sont pas réattribués au SHA du seul delta documentaire ; aucun
+  déploiement, merge ou fermeture d'issue implicite.
 
 ## [0.10.0] — 2026-10-14
 
