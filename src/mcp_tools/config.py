@@ -66,6 +66,9 @@ class Settings(BaseSettings):
 
     # Destinataire hub facultatif, séparé du bearer opaque Tools.
     hub_activity_enabled: bool = False
+    # Kill switch indépendant pour fermer les handlers hub lors d'un rollback.
+    # None conserve le contrôle historique par hub_activity_enabled.
+    hub_tools_enabled: bool | None = None
     hub_activity_issuer: str = ""
     hub_activity_audience: str = ""
     hub_activity_owner: str = ""

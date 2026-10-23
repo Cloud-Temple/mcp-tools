@@ -156,6 +156,21 @@ redirection, d'URL découverte depuis le JWT ni de clé secrète Mission côté 
 Timeout10s (2–30), maximum16 requêtes en vol (1–64), corps de contexte8MiB
 (16KiB–16MiB) ; le batch est borné à16KiB. Aucun JWT n'est retourné ou persisté.
 
+`HUB_TOOLS_ENABLED` est un kill switch optionnel limité au handler Files
+`/internal/hub/tools-files`. Sa valeur par défaut est absente (`None`) : le
+handler garde alors le comportement historique de `HUB_ACTIVITY_ENABLED`.
+`HUB_TOOLS_ENABLED=false` ferme Files avant authentification locale, store et
+S3; cela ne ferme ni l'activité hub (`/internal/hub/tools-activity`) ni les
+appels MCP délégués (`/mcp`). Les contrôles d'autorité normaux restent requis
+pour ces deux routes.
+
+Pour #948, déployer et qualifier Tools d'abord : les anciennes requêtes de
+contenu sans génération attendue échouent fermées. Déployer ensuite la version
+Mission compatible et n'ouvrir la lecture qu'avec cette paire. Pour revenir à
+l'ancien lecteur Mission, régler `HUB_TOOLS_ENABLED=false` côté Tools et
+confirmer la fermeture Files avant le rollback Mission. Ne réouvrir Files
+qu'après rétablissement d'une paire compatible.
+
 L'administrateur Tools crée d'abord un mapping explicite local, sous bearer
 opaque admin PG, par `POST /admin/api/hub-bindings` : objet exact `actor_id`
 (UUID Tools existant), `issuer`, `subject`, `owner_id`, `tenant_id`, `expires_at`
