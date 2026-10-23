@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+from botocore.exceptions import ClientError
 import pytest
 
 from test_hub_activity_31 import Client, Store, cfg, issuer
@@ -49,7 +50,7 @@ class Files:
         self.catalog = self
         self.blobs = SimpleNamespace(get_hub=self.get_hub)
         self.reads = 0
-        self.unavailable = self.removed = False
+        self.unavailable = self.removed = self.mutate_after_read = False
 
     @asynccontextmanager
     async def connection(self):
@@ -69,7 +70,10 @@ class Files:
 
     async def get_hub(self, pin, check):
         await check()
-        return await self.get(pin)
+        value = await self.get(pin)
+        if self.mutate_after_read:
+            self.generation = str(uuid4())
+        return value
 
 
 class FileStore(Store):
@@ -92,13 +96,16 @@ class FileStore(Store):
         return {**confirmed, 'activity_expires_at': self.deadline}
 
 
-async def request(store, body, monkeypatch, *, permission='tools.files.read', live=None):
+async def request(store, body, monkeypatch, *, permission='tools.files.read', live=None, enabled=True,
+                  tools_enabled=None):
     raw = json.dumps(body).encode()
     token, keys, _ = issuer(raw, permission)
     client = Client(keys, live or [True, True, True])
     monkeypatch.setattr(hub.ssl, 'create_default_context', lambda **kw: object())
     settings = cfg()
     settings.hub_files_page_bytes = 30000
+    settings.hub_activity_enabled = enabled
+    settings.hub_tools_enabled = tools_enabled
     async def inner(*args):
         raise AssertionError('Read must never execute MCP')
     middleware = hub.HubActivityMiddleware(inner, settings, client_factory=lambda **kw: client,
@@ -123,7 +130,8 @@ def test_file_route_reads_exact_origin_and_pin_without_exposing_physical_locatio
         code, data = await request(store, body, monkeypatch)
         assert code == 200 and data['files'][0]['version_id'] == 'historical-version'
         assert files.reads == 0 and 'PRIVATE' not in json.dumps(data) and 'NEVER-PUBLIC' not in json.dumps(data)
-        code, data = await request(store, dict(**body, content=True, offset=3, limit=4), monkeypatch)
+        code, data = await request(store, dict(**body, content=True, expected_generation=files.generation,
+                                                offset=3, limit=4), monkeypatch)
         assert code == 200 and base64.b64decode(data['files'][0]['content_base64']) == files.content[3:7]
         assert data['files'][0]['next_offset'] == 7 and data['files'][0]['end'] is False
         # Un call différent ne rattache pas une opération connue à une autre publication.
@@ -139,7 +147,8 @@ def test_revocation_capability_and_bad_range_never_return_private_projection(mon
         call, operation = str(uuid4()), str(uuid4())
         store, files = FileStore(call, operation), Files(call, operation)
         monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
-        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True, offset=0, limit=30)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    expected_generation=files.generation, offset=0, limit=30)
         if failure in {'opaque', 'mapping-after'}:
             store.change = 'mapping' if failure == 'mapping-after' else 'opaque'
         if failure == 'permission':
@@ -149,7 +158,8 @@ def test_revocation_capability_and_bad_range_never_return_private_projection(mon
         code, data = await request(store, body, monkeypatch,
                                    permission='tools.activity.read' if failure == 'capability' else 'tools.files.read',
                                    live=[True, False] if failure == 'live' else None)
-        assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
+        assert code == (400 if failure == 'range' else 403)
+        assert not {'files', 'count', 'cursor'} & data.keys()
         assert 'CANARY' not in json.dumps(data)
 
     asyncio.run(scenario())
@@ -163,7 +173,8 @@ def test_s3_fault_preserves_catalogue_metadata_but_content_is_unavailable(monkey
         monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
         body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
         assert (await request(store, body, monkeypatch))[0] == 200
-        code, data = await request(store, dict(**body, content=True, offset=0, limit=30), monkeypatch)
+        code, data = await request(store, dict(**body, content=True, expected_generation=files.generation,
+                                                offset=0, limit=30), monkeypatch)
         assert code == 503 and 'files' not in data and 'CANARY' not in json.dumps(data)
         files.removed = True
         code, data = await request(store, body, monkeypatch)
@@ -195,7 +206,8 @@ def test_real_blob_primitive_uses_hub_authority_without_opening_mcp_access(monke
             with pytest.raises(ValueError, match="permission 'access'"):
                 await blob.get(files.pin)
             assert reads == []
-            body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True, offset=0, limit=30)
+            body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                        expected_generation=files.generation, offset=0, limit=30)
             code, data = await request(store, body, monkeypatch)
             assert code == 200 and base64.b64decode(data['files'][0]['content_base64']) == files.content
             assert reads == [dict(Bucket='test', Key=files.pin['key'], VersionId='historical-version')]
@@ -230,7 +242,7 @@ def test_activity_purged_or_expired_during_s3_is_not_projected(monkeypatch, chan
         monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
         body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call])
         if surface == 'content':
-            body.update(content=True, offset=0, limit=30)
+            body.update(content=True, expected_generation=files.generation, offset=0, limit=30)
         pending = asyncio.create_task(request(store, body, monkeypatch))
         await entered.wait()
         if change == 'purge':
@@ -241,4 +253,87 @@ def test_activity_purged_or_expired_during_s3_is_not_projected(monkeypatch, chan
         code, data = await pending
         assert code == 403 and not {'files', 'count', 'cursor'} & data.keys()
         assert 'CANARY' not in json.dumps(data)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('bad_generation', [None, 'PIN', 'A81E0D43-49B2-47CB-A94C-B50A3C1A4CC2'])
+def test_content_requires_canonical_expected_generation_before_s3(monkeypatch, bad_generation):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    offset=0, limit=30)
+        if bad_generation is not None:
+            body['expected_generation'] = bad_generation
+        code, data = await request(store, body, monkeypatch)
+        assert code == 400 and data == {'status': 'error', 'code': 'FILE_REQUEST_INVALID'}
+        assert files.reads == 0 and 'content_base64' not in data
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('when', ['before-s3', 'during-s3'])
+def test_generation_change_returns_exact_409_without_content(monkeypatch, when):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        expected = files.generation
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        if when == 'before-s3':
+            files.generation = str(uuid4())
+        else:
+            files.mutate_after_read = True
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    expected_generation=expected, offset=0, limit=30)
+        code, data = await request(store, body, monkeypatch)
+        assert code == 409 and data == {'status': 'error', 'code': 'FILE_GENERATION_CHANGED'}
+        assert ('content_base64' not in data) and (files.reads == (0 if when == 'before-s3' else 1))
+    asyncio.run(scenario())
+
+
+def test_hub_tools_flag_false_closes_real_files_handler(monkeypatch):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        async def forbidden_store_access(*args):
+            pytest.fail('hub_tools_enabled=false must close Files before store access')
+        store.authenticate = forbidden_store_access
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    expected_generation=files.generation, offset=0, limit=30)
+        code, data = await request(store, body, monkeypatch, tools_enabled=False)
+        assert code == 404 and data == {'status': 'error', 'code': 'DELEGATION_DISABLED'}
+        assert files.reads == 0
+    asyncio.run(scenario())
+
+
+def test_hub_tools_flag_unset_preserves_files_handler(monkeypatch):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    expected_generation=files.generation, offset=0, limit=30)
+        code, data = await request(store, body, monkeypatch)
+        assert code == 200 and data['files'][0]['content_base64']
+    asyncio.run(scenario())
+
+
+def test_s3_nosuchkey_through_real_blob_handler_remains_503(monkeypatch):
+    async def scenario():
+        call, operation = str(uuid4()), str(uuid4())
+        store, files = FileStore(call, operation), Files(call, operation)
+        blob = object.__new__(Blobs)
+        blob.slots, blob.jobs, blob.data_signature, blob.bucket = asyncio.Semaphore(1), set(), 's3v4', 'test'
+        def get_object(**kwargs):
+            assert kwargs == {'Bucket': 'test', 'Key': 'NEVER-PUBLIC', 'VersionId': 'historical-version'}
+            raise ClientError({'Error': {'Code': 'NoSuchKey', 'Message': 'missing'}}, 'GetObject')
+        blob.clients = {'s3v4': SimpleNamespace(get_object=get_object)}
+        files.blobs = blob
+        monkeypatch.setattr(hub_files, 'get_files_service', lambda: files)
+        body = dict(mission_id='mis_1', root_agent_id='ag_root', call_ids=[call], content=True,
+                    expected_generation=files.generation, offset=0, limit=30)
+        code, data = await request(store, body, monkeypatch)
+        assert code == 503 and data == {'status': 'error', 'code': 'DELEGATION_UNAVAILABLE'}
+        assert 'files' not in data and not blob.jobs
     asyncio.run(scenario())

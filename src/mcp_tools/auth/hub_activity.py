@@ -17,6 +17,7 @@ import jwt
 from jwt.algorithms import ECAlgorithm
 
 from .token_store import TokenStoreUnavailable
+from ..storage.hub_files import FileGenerationChanged, HubFileRequestInvalid
 
 PATH = '/internal/hub/tools-activity'
 FILES_PATH = '/internal/hub/tools-files'
@@ -123,7 +124,8 @@ class HubActivityMiddleware:
         tokens = [v.decode('latin-1') for k, v in headers if k == b'x-tools-activity-context']
         if path not in {PATH, FILES_PATH} and not tokens:
             return await self.app(scope, receive, send)
-        if not self.cfg.hub_activity_enabled:
+        if (not self.cfg.hub_activity_enabled
+                or (path == FILES_PATH and getattr(self.cfg, 'hub_tools_enabled', None) is False)):
             return await response(send, 404 if path in {PATH, FILES_PATH} else 403, 'DELEGATION_DISABLED')
         if path not in {PATH, FILES_PATH, '/mcp'} or scope.get('method') != 'POST' or scope.get('query_string'):
             return await response(send, 400, 'INVALID_DELEGATION_REQUEST')
@@ -200,6 +202,14 @@ class HubActivityMiddleware:
                     return await self.app(scope, replay, tracked_send)
                 finally:
                     current_hub_context.reset(context)
+        except HubFileRequestInvalid:
+            if started:
+                raise
+            return await response(send, 400, 'FILE_REQUEST_INVALID')
+        except FileGenerationChanged:
+            if started:
+                raise
+            return await response(send, 409, 'FILE_GENERATION_CHANGED')
         except (ValueError, KeyError, TypeError, jwt.InvalidTokenError):
             if started:
                 raise
@@ -251,4 +261,7 @@ class HubActivityMiddleware:
         confirmed = (await store.confirm_hub_files(requester, info, binding, c, calls) if file_read
                      else await store.confirm_hub_access(requester, info, binding, c))
         check_expiry(c, confirmed)
-        return await response(send, 200, 'TOOLS_FILES' if file_read else 'TOOLS_ACTIVITY', **page)
+        # Les pages des stores portent déjà leur propre champ ``status`` ; le
+        # helper construit ce champ à partir du code de réponse.
+        return await response(send, 200, 'TOOLS_FILES' if file_read else 'TOOLS_ACTIVITY',
+                              **{key: value for key, value in page.items() if key != 'status'})
