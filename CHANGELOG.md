@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Magasin d'accès PostgreSQL : diagnostic interne `access.failure` avant
+  conversion en indisponibilité, limité à la phase, au type ASCII borné et au
+  SQLSTATE valide s'il est disponible. Aucun message SQL ni secret journalisé ;
+  refus métier, annulations et incertitude du COMMIT inchangés.
+
 - Outillage de build : setuptools figé à84.1.0, première version corrigée pour
   GHSA-xmj3-9gf7-h52w ; garde CVE conservée sans exclusion.
 - OpenTelemetry API figé à1.45.1 pour CVE-2026-114603, compatible avec le SDK MCP
