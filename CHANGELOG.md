@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GHSA-xmj3-9gf7-h52w ; garde CVE conservée sans exclusion.
 - OpenTelemetry API figé à1.45.1 pour CVE-2026-114603, compatible avec le SDK MCP
   et typing-extensions déjà figés ; aucune autre composante OTel ajoutée.
+- Certifi figé à2026.10.19 pour PYSEC-2026-4320 : retrait de la racine compromise
+  en conservant les racines non affectées, conformément à l'avis amont.
 
 - FILES catalogue : diagnostic interne corrélé avant absorption des refus et
   exceptions, limité au stade et au type borné ou au code statique du refus S3.
