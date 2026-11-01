@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Outillage de build : setuptools figé à84.1.0, première version corrigée pour
+  GHSA-xmj3-9gf7-h52w ; garde CVE conservée sans exclusion.
+- OpenTelemetry API figé à1.45.1 pour CVE-2026-114603, compatible avec le SDK MCP
+  et typing-extensions déjà figés ; aucune autre composante OTel ajoutée.
+- Certifi figé à2026.10.19 pour PYSEC-2026-4320 : retrait de la racine compromise
+  en conservant les racines non affectées, conformément à l'avis amont.
+
+- FILES catalogue : diagnostic interne corrélé avant absorption des refus et
+  exceptions, limité au stade et au type borné ou au code statique du refus S3.
+  Aucun argument, message d'erreur ou contenu n'est ajouté aux journaux ; les
+  réponses MCP et le comportement de reprise restent inchangés.
+
 - Export/import FILES opérateur : lecture des versions S3 par le transport
   opérateur existant, sans contexte MCP artificiel. Profil S3 explicite et pins
   Source conservés ; gardes ACCESS runtime et droits SQL/S3 inchangés.
