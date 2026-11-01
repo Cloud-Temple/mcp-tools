@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Outillage de build : setuptools figé à84.1.0, première version corrigée pour
   GHSA-xmj3-9gf7-h52w ; garde CVE conservée sans exclusion.
+- OpenTelemetry API figé à1.45.1 pour CVE-2026-114603, compatible avec le SDK MCP
+  et typing-extensions déjà figés ; aucune autre composante OTel ajoutée.
 
 - FILES catalogue : diagnostic interne corrélé avant absorption des refus et
   exceptions, limité au stade et au type borné ou au code statique du refus S3.
