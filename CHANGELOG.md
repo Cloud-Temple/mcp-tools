@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Outillage de build : setuptools figé à84.1.0, première version corrigée pour
+  GHSA-xmj3-9gf7-h52w ; garde CVE conservée sans exclusion.
+
 - FILES catalogue : diagnostic interne corrélé avant absorption des refus et
   exceptions, limité au stade et au type borné ou au code statique du refus S3.
   Aucun argument, message d'erreur ou contenu n'est ajouté aux journaux ; les
