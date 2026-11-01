@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- FILES catalogue : diagnostic interne corrélé avant absorption des refus et
+  exceptions, limité au stade et au type borné ou au code statique du refus S3.
+  Aucun argument, message d'erreur ou contenu n'est ajouté aux journaux ; les
+  réponses MCP et le comportement de reprise restent inchangés.
+
 - Export/import FILES opérateur : lecture des versions S3 par le transport
   opérateur existant, sans contexte MCP artificiel. Profil S3 explicite et pins
   Source conservés ; gardes ACCESS runtime et droits SQL/S3 inchangés.

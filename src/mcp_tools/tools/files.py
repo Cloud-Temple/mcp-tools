@@ -829,16 +829,30 @@ def register(mcp: MCPServer) -> None:
             backend = getattr(settings, "files_metadata_backend", "s3")
             if backend == "postgres":
                 if any(v is not None for v in (endpoint, access_key, secret_key, bucket, region)):
+                    try:
+                        record_activity(
+                            "files.failure", level="error", message="Échec Files",
+                            details={"phase": "catalog_validate", "code": "s3_override_forbidden"},
+                        )
+                    except Exception:
+                        pass
                     return {"status": "error", "message": "Override S3 interdit en mode catalogue"}
-                from ..storage.files_service import get_files_service
-                result = await get_files_service().dispatch(operation, {
-                    "path": path, "path2": path2, "content": content, "paths": paths,
-                    "separator": separator, "prefix": prefix, "version_id": version_id,
-                    "offset": offset, "limit": limit, "if_match": if_match,
-                    "max_keys": max(1, min(max_keys, FILES_MAX_KEYS)), "cursor": cursor,
-                    "operation_id": operation_id, "expected_revision": expected_revision,
-                    "timeout": timeout,
-                })
+                from ..storage.files_service import _record_files_failure, get_files_service
+                phase = "catalog_initialize"
+                try:
+                    service = get_files_service()
+                    phase = "catalog_dispatch"
+                    result = await service.dispatch(operation, {
+                        "path": path, "path2": path2, "content": content, "paths": paths,
+                        "separator": separator, "prefix": prefix, "version_id": version_id,
+                        "offset": offset, "limit": limit, "if_match": if_match,
+                        "max_keys": max(1, min(max_keys, FILES_MAX_KEYS)), "cursor": cursor,
+                        "operation_id": operation_id, "expected_revision": expected_revision,
+                        "timeout": timeout,
+                    })
+                except Exception as error:
+                    _record_files_failure(phase, error)
+                    raise
                 return {"operation": operation, **result}
             if backend != "s3":
                 return {"status": "error", "message": "Autorité fichiers invalide"}

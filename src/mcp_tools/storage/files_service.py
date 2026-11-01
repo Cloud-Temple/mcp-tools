@@ -4,11 +4,13 @@ import base64
 import difflib
 import hashlib
 import json
+import re
 import uuid
 from functools import lru_cache
 
 from ..auth.context import check_tool_access, current_token_info
 from ..config import get_settings
+from ..observability import record_activity
 from .files_credentials import StorageUnavailable
 from .files_postgres import Catalog, Conflict, CommitUnknown, digest
 from .files_s3 import Blobs
@@ -28,6 +30,26 @@ class DependencyRefused(Conflict):
 
 
 DEPENDENCY_ACTIVE = "Fichier protégé par une dépendance Mission active"
+
+
+def _record_files_failure(phase, error):
+    """Diagnostic interne corrélé ; aucune donnée de l'exception ni des arguments."""
+    try:
+        if phase not in {
+            "catalog_initialize", "catalog_dispatch", "ready", "access_refresh",
+            "mutate", "operation_info", "reconcile", "read", "validate",
+        }:
+            phase = "unclassified"
+        error_type = type(error).__name__
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", error_type):
+            error_type = "unclassified"
+        record_activity(
+            "files.failure", level="error", message="Échec Files",
+            details={"phase": phase, "error_type": error_type},
+        )
+    except Exception:
+        # Le diagnostic ne doit ni remplacer le refus ni modifier sa réponse.
+        pass
 
 
 def key(value):
@@ -580,37 +602,48 @@ class FilesService:
             raise Conflict("operation_id requis")
         if op in ("write","concat","delete"):
             oid = oid or str(uuid.uuid4())
+        phase = "ready"
         try:
             async with asyncio.timeout(max(1,min(args.get("timeout",30),60))):
                 async with self.calls:
                     await self.ready()
                     from ..auth.access_runtime import refresh_access
+                    phase = "access_refresh"
                     await refresh_access('files')
                     if op in ("write","concat","delete"):
+                        phase = "mutate"
                         return await self.mutate(op,args,oid)
                     if op=="operation_info":
+                        phase = "operation_info"
                         return await self.info(oid)
                     if op=="reconcile":
+                        phase = "reconcile"
                         return await self.reconcile(oid)
+                    phase = "validate"
                     if op=="enable_versioning":
                         raise Conflict("Versioning à provisionner par opérateur avant app")
                     if op not in ("list","read","info","diff","versions","metadata_batch"):
                         raise Conflict("Opération non supportée")
+                    phase = "read"
                     result = await self.read_operations(op,args)
+                    phase = "access_refresh"
                     await refresh_access('files')
                     return {"operation":op, **result}
         except DependencyRefused as e:
+            _record_files_failure(phase, e)
             # Refus connu : aucune publication, aucune opération ouverte, pas de reconcile.
             return {"status":"error","code":"mission_dependency_active","message":str(e),
                 "effect_state":"not_published","reconciliation_state":"not_required",
                 **({"operation_id":e.operation_id} if e.operation_id else {})}
         except Conflict as e:
+            _record_files_failure(phase, e)
             if op in ("write", "concat", "delete", "reconcile"):
                 return {"status":"incomplete","message":str(e),"remote_result":"uncertain",
                     "durability_state":"unverified","initial_confirmation":"unknown",
                     "reconciliation_state":"pending",**({"operation_id":oid} if oid else {})}
             return {"status":"error","message":str(e),**({"operation_id":oid} if oid else {})}
-        except (StorageUnavailable,TimeoutError):
+        except (StorageUnavailable,TimeoutError) as e:
+            _record_files_failure(phase, e)
             return {"status":"incomplete","message":"Dépendance/effet non confirmé ; inspection explicite requise",
                 "remote_result":"uncertain","effect_state":"unobserved","durability_state":"unverified",
                 "initial_confirmation":"unknown","reconciliation_state":"pending",**({"operation_id":oid} if oid else {})}
