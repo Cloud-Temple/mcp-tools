@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Sonde manuelle de concurrence SSH : huit appels `hostname` et mesure des durées côté client, sans changement du serveur.
+
 ### Fixed
 
 - Magasin d'accès PostgreSQL : diagnostic interne `access.failure` avant

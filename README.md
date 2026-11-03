@@ -183,7 +183,27 @@ python scripts/test_service.py --no-docker
 python scripts/test_service.py --test shell -v
 ```
 
-### 5. Développement local (sans Docker)
+### 5. Probe ciblé de concurrence SSH
+
+`scripts/ssh_concurrency_probe.py` ouvre huit sessions MCP indépendantes, puis
+libère exactement huit appels `ssh` simultanés exécutant uniquement `hostname`.
+Les secrets sont lus depuis `MCP_TOOLS_TOKEN` et `MCP_SSH_PRIVATE_KEY` ; ils ne
+sont ni acceptés en argument ni recopiés dans le rapport JSON.
+
+```bash
+python scripts/ssh_concurrency_probe.py \
+  --url https://mcp-tools.example.test/mcp \
+  --host 192.0.2.10 \
+  --username tester \
+  --expected-hostname canary-01
+```
+
+Ce probe mesure le comportement de bout en bout vu par le client. Il ne permet
+pas, à lui seul, d'attribuer une latence à Docker, à SSH ou au transport MCP.
+Son exécution sur une cible réelle crée huit conteneurs sandbox et reste une
+recette manuelle nécessitant un accord opérateur explicite.
+
+### 6. Développement local (sans Docker)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -191,7 +211,7 @@ pip install -r requirements.lock
 PYTHONPATH=src python -m mcp_tools
 ```
 
-### 6. Build reproductible
+### 7. Build reproductible
 
 `requirements.txt` est un **contrat de compatibilité** (bornes hautes obligatoires), pas la source d'installation. Ce sont `requirements.lock` — clôture transitive figée, outillage `pip`/`setuptools`/`wheel` inclus — et les images de base épinglées par digest qui garantissent qu'un rebuild d'un tag publié produit le même arbre de dépendances.
 
