@@ -15,7 +15,7 @@
 # un champ non traité, donc bloquant ; un champ venu d'une génération postérieure
 # est simplement absent et vaut disabled. MAIN_RULES.md fait foi sur ce point.
 
-schema_version: 3
+schema_version: 4
 
 project:
   # Nom court du dépôt, tel qu'il apparaît sur GitHub.
@@ -30,17 +30,15 @@ project:
   instructions_file: disabled
 
 memory:
-  live:
-    # Nom du serveur MCP Live Memory tel qu'il est déclaré côté client.
-    server: my-live-memory
-    # Espace mémoire du projet, casse exacte.
-    space_id: mcp-tools
-    consolidation_check_interval_hours: 24
-  graph:
-    # Index sémantique durable. Porter disabled sur les deux clés si le projet
-    # ne l'utilise pas ; ne pas retirer la section Graph Memory des règles.
-    server: disabled
-    memory_id: disabled
+  # Alias du connecteur MCP autorisé, tel qu'il figure dans le client.
+  # Vérifier son endpoint dans la configuration MCP ; un alias ne prouve pas
+  # l'identité d'une instance. Aucun endpoint ou secret dans ce fichier.
+  server: hivemind
+  # Identifiant exact de l'espace Hivemind, commun aux trois horizons.
+  space_id: mcp-tools
+  # Entier strictement positif en heures. disabled désactive cette seule
+  # échéance, pas les contrôles à la reprise et aux jalons. Aucun minuteur.
+  consolidation_check_interval_hours: 24
 
 review:
   # Fournisseur du relecteur indépendant : claude, codex ou llmaas.
