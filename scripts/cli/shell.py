@@ -7,12 +7,14 @@ via des options --key value. Les commandes sont alignées avec l'API MCP.
 """
 
 import asyncio
+import shlex
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
 from pathlib import Path
 
 from .client import MCPClient
+from .file_input import encode_content_file
 from .display import (
     console, show_error, show_warning, show_json,
     show_health_result, show_about_result,
@@ -36,7 +38,7 @@ SHELL_COMMANDS = {
     "calc":       "calc <expression> — Calcul math (math.sqrt, statistics.mean...)",
     "doc":        "doc <query> [--context C] [--model M] — Documentation technique via Perplexity",
     "ssh":        "ssh <op> <host> <user> [--password P] [--key K] [--command C] [--port N] [--remote-path P] [--content C] [--sudo] [--timeout N]",
-    "files":      "files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
+    "files":      "files <op> [--path P] [--content C|--content-base64 B|--content-file F] [--expected-sha256 H] [--source P]... [--separator S] [--path2 P] [--prefix P] [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]",
     "token":      "token <op> [name] [--tools T] [--permissions P] [--expires N] [--email E]",
     "quit":       "Quitter le shell",
 }
@@ -660,7 +662,11 @@ async def cmd_files(client, state, args="", json_output=False):
       files enable_versioning
       files delete --path old.json
     """
-    parts = args.strip().split()
+    try:
+        parts = shlex.split(args)
+    except ValueError:
+        show_warning("Arguments files mal cités")
+        return
     if not parts or parts[0] not in FILES_OPS:
         show_warning("Usage: files <op> [--path P] [--source P]... [--separator S] [--path2 P] [--content C] [--prefix P] [--version-id V] [--offset N] [--limit N] [--if-match E] [--max-keys N] [--bucket B] [--endpoint E] [--access-key A] [--secret-key S] [--region R] [--timeout N]")
         show_warning("")
@@ -697,6 +703,20 @@ async def cmd_files(client, state, args="", json_output=False):
             i += 2
         else:
             i += 1
+    if "content_file" in params:
+        if op != "write":
+            show_warning("content-file est réservé à write")
+            return
+        try:
+            params["content_base64"] = encode_content_file(
+                params.pop("content_file"), params.get("expected_sha256"),
+                content=params.get("content"), content_base64=params.get("content_base64"))
+        except ValueError as error:
+            show_warning(str(error))
+            return
+        except OSError:
+            show_warning("Lecture content-file impossible")
+            return
     result = await client.call_tool("files", params)
     if json_output:
         show_json(result)

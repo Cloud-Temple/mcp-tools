@@ -33,6 +33,7 @@ from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
 from ..observability import bind_activity, record_activity, traced_tool
+from ..storage.files_integrity import decode_write_content, validate_write_checksum
 
 
 # =============================================================================
@@ -150,6 +151,7 @@ def _build_python_script(
     if_match: Optional[str] = None,
     paths: Optional[list[str]] = None,
     separator: Optional[str] = None,
+    expected_sha256: Optional[str] = None,
 ) -> str:
     """
     Construit le script Python exécuté dans le conteneur sandbox.
@@ -168,6 +170,7 @@ def _build_python_script(
         "path": path or "",
         "path2": path2 or "",
         "content": content or "",
+        "expected_sha256": expected_sha256,
         "prefix": prefix or "",
         "max_keys": max_keys,
         "max_output_chars": max_output_chars,
@@ -415,14 +418,22 @@ def main():
             result["last_modified"] = resp["LastModified"].isoformat()
 
     elif op == "write":
+        body = content.encode("utf-8")
+        checksum = hashlib.sha256(body).hexdigest()
+        expected = params.get("expected_sha256")
+        if expected is not None and (not isinstance(expected, str) or checksum != expected.lower()):
+            print(json.dumps({"status": "error", "code": "content_checksum_mismatch",
+                              "effect_state": "not_published"}))
+            return
         client_v2.put_object(
             Bucket=bucket,
             Key=path,
-            Body=content.encode("utf-8"),
+            Body=body,
             ContentType="application/octet-stream",
         )
         result["path"] = path
-        result["size"] = len(content.encode("utf-8"))
+        result["size"] = len(body)
+        result["sha256"] = checksum
         result["message"] = f"Fichier écrit : {path} ({result['size']} octets)"
 
     elif op == "delete":
@@ -818,11 +829,19 @@ def register(mcp: MCPServer) -> None:
         cursor: Annotated[Optional[str], Field(default=None, description="Curseur opaque de catalogue list/versions (PostgreSQL)")] = None,
         operation_id: Annotated[Optional[str], Field(default=None, description="UUID de mutation ou journal ; retry = inspection, sans replay")] = None,
         expected_revision: Annotated[Optional[StrictInt], Field(default=None, description="CAS de destination du catalogue, facultatif")] = None,
+        expected_sha256: Annotated[Optional[str], Field(default=None, description="write uniquement : SHA-256 natif attendu (64 hex) des octets UTF-8 exacts de content ; mismatch refuse avant publication, aucun reformatage JSON")] = None,
+        content_base64: Annotated[Optional[str], Field(default=None, description="write vérifié : base64 canonique standard du texte UTF-8 (max5MB décodés), fourni par la source native ou un encodeur programmatique/CLI, jamais inventé par le modèle. Exclut content, exige expected_sha256 natif ; recommandé pour JSON avec SDK2.2.")] = None,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
         try:
             check_tool_access("files")
+            content, transport_error = decode_write_content(operation, content, content_base64, expected_sha256)
+            if transport_error:
+                return transport_error
+            integrity_error = validate_write_checksum(operation, content, expected_sha256)
+            if integrity_error:
+                return integrity_error
             settings = get_settings()
 
             # Autorité unique choisie au démarrage. Aucun override credentials/cible en catalogue.
@@ -849,6 +868,7 @@ def register(mcp: MCPServer) -> None:
                         "max_keys": max(1, min(max_keys, FILES_MAX_KEYS)), "cursor": cursor,
                         "operation_id": operation_id, "expected_revision": expected_revision,
                         "timeout": timeout,
+                        "expected_sha256": expected_sha256,
                     })
                 except Exception as error:
                     _record_files_failure(phase, error)
@@ -887,7 +907,7 @@ def register(mcp: MCPServer) -> None:
             if operation in ("read", "write", "delete", "info") and not path:
                 return {"status": "error", "message": f"Le paramètre 'path' est requis pour l'opération '{operation}'."}
 
-            if operation == "write" and not content:
+            if operation == "write" and (content is None or (not content and expected_sha256 is None)):
                 return {"status": "error", "message": "Le paramètre 'content' est requis pour l'opération 'write'."}
 
             if operation == "diff":
@@ -933,6 +953,7 @@ def register(mcp: MCPServer) -> None:
                 if_match=if_match,
                 paths=paths,
                 separator=separator,
+                expected_sha256=expected_sha256,
             )
 
             # --- Exécution ---

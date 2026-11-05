@@ -33,6 +33,7 @@ import asyncio
 import click
 from . import BASE_URL, TOKEN
 from .client import MCPClient
+from .file_input import encode_content_file
 from .display import (
     console, show_error, show_success, show_json,
     show_health_result, show_about_result,
@@ -660,6 +661,10 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
               help="Séparateur UTF-8 entre sources (pour concat, défaut : deux sauts de ligne)")
 @click.option("--content", "-c", default=None,
               help="Contenu à écrire (pour write, max 5 MB)")
+@click.option("--content-base64", default=None, help="Base64 standard canonique fourni par la source ; exige --expected-sha256")
+@click.option("--content-file", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Encode les octets du fichier ; exige --expected-sha256 natif")
+@click.option("--expected-sha256", default=None, help="Empreinte native attendue, jamais calculée sur un contenu reconstruit")
 @click.option("--prefix", default=None,
               help="Préfixe pour filtrer le listing (pour list)")
 @click.option("--version-id", default=None,
@@ -691,7 +696,8 @@ def ssh_cmd(ctx, host, username, operation, cmd, password, private_key, port, re
 @click.option("--json", "-j", "output_json", is_flag=True, help="Sortie JSON brute")
 @click.pass_context
 def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefix, version_id, offset, limit, if_match,
-              max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json, cursor, operation_id, expected_revision, catalog):
+              max_keys, endpoint, access_key, secret_key, bucket, region, timeout, output_json, cursor, operation_id, expected_revision, catalog,
+              content_base64, content_file, expected_sha256):
     """📁 Opérations fichiers sur S3 Dell ECS en sandbox Docker.
 
     \b
@@ -724,6 +730,16 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
       files delete -p "config/old.json"
       files list --endpoint "https://s3.custom.com" --bucket "my-bucket" --access-key "AK" --secret-key "SK"
     """
+    if content_file is not None:
+        if operation != "write":
+            raise click.UsageError("content-file est réservé à write")
+        try:
+            content_base64 = encode_content_file(content_file, expected_sha256,
+                                                content=content, content_base64=content_base64)
+        except ValueError as error:
+            raise click.UsageError(str(error)) from None
+        except OSError:
+            raise click.UsageError("Lecture content-file impossible") from None
     async def _run():
         client = MCPClient(ctx.obj["url"], ctx.obj["token"])
         params = {"operation": operation, "timeout": timeout, "max_keys": max_keys}
@@ -746,8 +762,12 @@ def files_cmd(ctx, operation, s3_path, path2, sources, separator, content, prefi
             params["paths"] = list(sources)
         if operation == "concat":
             params["separator"] = separator
-        if content:
+        if content is not None:
             params["content"] = content
+        if content_base64 is not None:
+            params["content_base64"] = content_base64
+        if expected_sha256 is not None:
+            params["expected_sha256"] = expected_sha256
         if prefix:
             params["prefix"] = prefix
         if version_id:

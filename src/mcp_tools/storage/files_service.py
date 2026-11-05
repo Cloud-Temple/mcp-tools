@@ -12,6 +12,7 @@ from ..auth.context import check_tool_access, current_token_info
 from ..config import get_settings
 from ..observability import record_activity
 from .files_credentials import StorageUnavailable
+from .files_integrity import validate_write_checksum
 from .files_postgres import Catalog, Conflict, CommitUnknown, digest
 from .files_s3 import Blobs
 
@@ -376,7 +377,8 @@ class FilesService:
             body = sep.encode().join(parts)
         elif op == "write":
             text = args.get("content")
-            if not isinstance(text, str) or not text or len(text)>5_000_000:
+            if (not isinstance(text, str) or len(text)>5_000_000
+                    or (not text and args.get("expected_sha256") is None)):
                 raise Conflict("Write : 1 à 5000000 caractères UTF-8 requis")
             body = text.encode()
         return expected, body, manifest
@@ -384,12 +386,15 @@ class FilesService:
     def request(self, op, args):
         binding = (current_token_info.get() or {}).get("credential_binding")
         content = args.get("content")
-        return digest({"profile": self.s.files_s3_prefix, "bucket": self.s.s3_bucket_name,
+        request = {"profile": self.s.files_s3_prefix, "bucket": self.s.s3_bucket_name,
             "operation": op, "path": args.get("path"), "binding": binding,
             "content_sha256": hashlib.sha256(content.encode()).hexdigest() if isinstance(content,str) else None,
             "paths": args.get("paths") if op=="concat" else None,
             "separator": args.get("separator", "\n\n") if op=="concat" else None,
-            "expected_revision": args.get("expected_revision")})
+            "expected_revision": args.get("expected_revision")}
+        if args.get("expected_sha256") is not None:
+            request["expected_sha256"] = args["expected_sha256"].lower()
+        return digest(request)
 
     async def phase(self, oid, phase, detail=None):
         cat = self.catalog
@@ -590,6 +595,12 @@ class FilesService:
 
     async def dispatch(self,op,args):
         check_tool_access("files")
+        if args.get("content_base64") is not None:
+            return {"status": "error", "code": "encoded_content_requires_public_entry",
+                    "effect_state": "not_published"}
+        integrity_error = validate_write_checksum(op, args.get("content"), args.get("expected_sha256"))
+        if integrity_error:
+            return integrity_error
         if op=="reconcile" and "admin" not in (current_token_info.get() or {}).get("permissions",[]):
             raise Conflict("Permission admin requise")
         oid = args.get("operation_id")
