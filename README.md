@@ -125,6 +125,26 @@ python scripts/mcp_cli.py token revoke agent-prod
 python scripts/mcp_cli.py shell
 ```
 
+#### Conserver une preuve texte avec son empreinte native
+
+L'outil MCP `files` accepte `expected_sha256` pour `operation="write"`, sur
+les backends S3 et catalogue PostgreSQL. Fournir les 64 chiffres hexadécimaux
+retournés par la source native et le texte original intégral dans `content`.
+Le serveur compare le SHA-256 des octets UTF-8 exacts avant toute publication :
+aucun reformatage JSON, changement de fin de ligne ou normalisation Unicode.
+Un refus renvoie un `code` fermé et `effect_state="not_published"`. La réponse
+d'écriture réussie contient `sha256`. Le mode vérifié est borné à 5 MB en octets.
+
+Un JSON équivalent reformatté n'est pas la même preuve et doit être refusé si
+l'empreinte d'origine ne correspond plus. Conserver une interprétation dans un
+autre fichier, avec ses références natives. Ne jamais recalculer une « attente »
+sur un contenu reconstruit pour faire passer cette vérification.
+
+Les écritures historiques sans `expected_sha256` restent disponibles, mais ne
+prouvent pas la correspondance à une source. Ce contrôle ne prouve ni la
+provenance d'une empreinte fournie par l'appelant, ni la conservation des
+artefacts binaires, ni l'absence d'effet après un timeout de transport.
+
 #### Concaténer des objets S3 sans recopier leur contenu
 
 `files concat` lit des objets UTF-8 dans l'ordre déclaré, les assemble dans la
