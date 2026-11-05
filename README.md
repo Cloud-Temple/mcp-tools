@@ -142,6 +142,11 @@ transporte les octets sans cette transformation. Il doit provenir d'une réponse
 native qui l'émet déjà (par exemple une lecture Files paginée) ou d'un encodeur
 programmatique, jamais d'une génération de texte par le modèle.
 
+Pour plusieurs pages, décoder chaque page puis réassembler **les octets**, et
+ré-encoder l'ensemble ; ne pas concaténer les chaînes base64. Une page ne porte
+pas à elle seule le SHA natif du fichier : reprendre celui du producteur
+d'origine, d'un résultat d'écriture ou d'un manifeste concat vérifié.
+
 ```sh
 python scripts/mcp_cli.py files write -p preuves/native.json --content-file native.json --expected-sha256 "$SHA_NATIF" --json
 ```
@@ -155,6 +160,10 @@ ligne ni alphabet urlsafe, bornée à 6 666 668 caractères avant décodage. Le 
 décodé doit être UTF-8 et tenir dans 5 MB. Le SHA doit correspondre, sinon aucune
 publication. Un objet vide est accepté seulement avec le SHA du vide ; `null`
 reste un refus, pas un objet vide.
+
+Le shell Files interprète désormais les guillemets et antislashs via `shlex` :
+citer les arguments contenant des espaces/apostrophes ou des antislashs à
+préserver (par exemple `--content "l'audit"`).
 
 Dans le catalogue, les deux transports du même texte ont le même digest de
 requête. Le service interne refuse un champ base64 non traité par l'entrée

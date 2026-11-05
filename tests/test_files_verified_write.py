@@ -245,6 +245,23 @@ def test_base64_is_bounded_before_decode(monkeypatch):
     assert error["code"] == "invalid_content_base64"
 
 
+def test_verified_base64_accepts_exact_byte_boundary():
+    from src.mcp_tools.storage.files_integrity import (
+        MAX_BASE64_CHARS,
+        MAX_VERIFIED_BYTES,
+        decode_write_content,
+        validate_write_checksum,
+    )
+    body = b"a" * MAX_VERIFIED_BYTES
+    encoded = base64.b64encode(body).decode()
+    expected = hashlib.sha256(body).hexdigest()
+    assert len(encoded) == MAX_BASE64_CHARS
+    text, error = decode_write_content("write", None, encoded, expected)
+    assert error is None
+    assert text.encode() == body
+    assert validate_write_checksum("write", text, expected) is None
+
+
 def test_catalogue_base64_matches_text_request_and_internal_entry_refuses_encoded(monkeypatch):
     server = real_server(monkeypatch, "postgres")
     service = SimpleNamespace(dispatch=AsyncMock(return_value={"status": "ok", "sha256": SHA}))
