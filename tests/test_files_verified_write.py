@@ -1,10 +1,12 @@
 """Écriture texte vérifiée : vrai handler/script, transports S3 et PG doublés."""
 import asyncio
+import base64
 import contextlib
 import hashlib
 import io
 import json
 import sys
+from datetime import UTC, datetime
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -39,7 +41,18 @@ def real_handler(monkeypatch, backend="s3"):
 
 def sandbox(monkeypatch):
     puts = []
-    client = SimpleNamespace(put_object=lambda **kw: puts.append(kw) or {"VersionId": "v1"})
+    stored = {}
+
+    def put(**kwargs):
+        puts.append(kwargs)
+        stored[kwargs["Key"]] = kwargs["Body"]
+        return {"VersionId": "v1"}
+
+    client = SimpleNamespace(
+        put_object=put,
+        get_object=lambda **kw: {"Body": io.BytesIO(stored[kw["Key"]]),
+                                  "ContentLength": len(stored[kw["Key"]]),
+                                  "LastModified": datetime(2026, 1, 1, tzinfo=UTC)})
     boto3 = ModuleType("boto3")
     boto3.client = lambda *a, **k: client
     botocore = ModuleType("botocore")
@@ -170,3 +183,129 @@ def test_catalogue_receives_verified_expectation_and_preserves_legacy_digest(mon
         assert raw.request("write", {**args, "expected_sha256": "0" * 64}) != raw.request("write", args)
     finally:
         current_token_info.reset(token)
+
+
+def real_server(monkeypatch, backend="s3"):
+    from mcp.server.mcpserver import MCPServer
+    real_handler(monkeypatch, backend)  # mêmes doubles d'admission/config, pas du SDK
+    server = MCPServer("verified-files-sdk-test")
+    files.register(server)
+    return server
+
+
+def sdk_call(server, **arguments):
+    result = asyncio.run(server.call_tool("files", arguments))
+    return result.structured_content or json.loads(result.content[0].text)
+
+
+@pytest.mark.parametrize("text", [ORIGINAL, "[1,2]\n", "null", ""])
+def test_sdk_entry_writes_and_reads_exact_base64_text(monkeypatch, text):
+    server = real_server(monkeypatch)
+    puts = sandbox(monkeypatch)
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    encoded = base64.b64encode(text.encode()).decode()
+    result = sdk_call(server, operation="write", path="evidence.json",
+                      content_base64=encoded, expected_sha256=digest)
+    assert result["status"] == "success"
+    assert result["sha256"] == digest
+    assert puts[0]["Body"] == text.encode()
+    observed = sdk_call(server, operation="read", path="evidence.json", content_base64=None)
+    assert observed["status"] == "success"
+    assert observed["content"] == text
+    assert observed["size"] == len(text.encode())
+
+
+@pytest.mark.parametrize("arguments,code", [
+    ({"content_base64": "e30=", "expected_sha256": "0" * 64}, "content_checksum_mismatch"),
+    ({"content_base64": "e30=", "expected_sha256": None}, "expected_sha256_required"),
+    ({"content_base64": "e30=", "content": ""}, "ambiguous_content"),
+    ({"content_base64": "e30=\n"}, "invalid_content_base64"),
+    ({"content_base64": "e31="}, "invalid_content_base64"),
+    ({"content_base64": "_w=="}, "invalid_content_base64"),
+    ({"content_base64": "/w=="}, "invalid_content_base64"),
+    ({"content_base64": "null"}, "invalid_verified_content"),
+    ({"content": "null"}, "invalid_verified_content"),
+    ({"operation": "read", "content_base64": "e30="}, "checksum_write_only"),
+])
+def test_sdk_entry_refuses_bad_proof_before_backend(monkeypatch, arguments, code):
+    server = real_server(monkeypatch)
+    run = AsyncMock(side_effect=AssertionError("no backend"))
+    monkeypatch.setattr(files, "_run_in_sandbox", run)
+    result = sdk_call(server, **{"operation": "write", "path": "evidence.json",
+                                "expected_sha256": SHA, **arguments})
+    assert result["code"] == code
+    assert result["effect_state"] == "not_published"
+    run.assert_not_awaited()
+
+
+def test_base64_is_bounded_before_decode(monkeypatch):
+    from src.mcp_tools.storage import files_integrity
+    monkeypatch.setattr(files_integrity.base64, "b64decode", Mock(side_effect=AssertionError("no decode")))
+    _, error = files_integrity.decode_write_content("write", None, "A" * (files_integrity.MAX_BASE64_CHARS + 1), SHA)
+    assert error["code"] == "invalid_content_base64"
+
+
+def test_catalogue_base64_matches_text_request_and_internal_entry_refuses_encoded(monkeypatch):
+    server = real_server(monkeypatch, "postgres")
+    service = SimpleNamespace(dispatch=AsyncMock(return_value={"status": "ok", "sha256": SHA}))
+    monkeypatch.setattr(files_service, "get_files_service", lambda: service)
+    sdk_call(server, operation="write", path="evidence.json", content_base64=base64.b64encode(ORIGINAL.encode()).decode(),
+             expected_sha256=SHA)
+    encoded_args = service.dispatch.call_args.args[1]
+    assert encoded_args["content"] == ORIGINAL
+    assert "content_base64" not in encoded_args
+    raw = object.__new__(files_service.FilesService)
+    raw.s = SimpleNamespace(files_s3_prefix="p", s3_bucket_name="b")
+    assert raw.request("write", encoded_args) == raw.request("write", {
+        "path": "evidence.json", "content": ORIGINAL, "expected_sha256": SHA})
+    monkeypatch.setattr(files_service, "check_tool_access", Mock())
+    raw.ready = AsyncMock()
+    refused = asyncio.run(raw.dispatch("write", {"content_base64": "e30="}))
+    assert refused["code"] == "encoded_content_requires_public_entry"
+    raw.ready.assert_not_awaited()
+
+
+def test_catalogue_prepares_verified_empty_body_only(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from src.mcp_tools.storage.files_postgres import Conflict
+    @asynccontextmanager
+    async def connection():
+        yield object()
+    raw = object.__new__(files_service.FilesService)
+    raw.catalog = SimpleNamespace(connection=connection)
+    raw.ref = AsyncMock(return_value=None)
+    args = {"path": "empty.txt", "content": "", "expected_sha256": hashlib.sha256(b"").hexdigest()}
+    assert asyncio.run(raw.prepare("write", args)) == (0, b"", [])
+    with pytest.raises(Conflict):
+        asyncio.run(raw.prepare("write", {**args, "expected_sha256": None}))
+
+
+@pytest.mark.parametrize("interface", ["click", "shell"])
+def test_cli_encodes_file_without_inventing_expected_digest(monkeypatch, tmp_path, interface):
+    from click.testing import CliRunner
+
+    from scripts.cli import commands, shell
+    source = tmp_path / "source proof.json"
+    source.write_bytes(ORIGINAL.encode())
+    client = SimpleNamespace(call_tool=AsyncMock(return_value={"status": "success"}))
+    monkeypatch.setattr(commands, "MCPClient", lambda *args: client)
+    if interface == "click":
+        result = CliRunner().invoke(commands.cli, ["files", "write", "-p", "evidence.json", "--content-file", str(source),
+                                                   "--expected-sha256", "0" * 64, "--json"])
+        assert result.exit_code == 0, result.output
+    else:
+        import shlex
+        asyncio.run(shell.cmd_files(client, None, "write --path evidence.json --content-file " + shlex.quote(str(source))
+                                    + " --expected-sha256 " + "0" * 64, json_output=True))
+    args = client.call_tool.call_args.args[1]
+    assert args["expected_sha256"] == "0" * 64  # ne remplace pas l'attente par SHA
+    assert base64.b64decode(args["content_base64"], validate=True) == ORIGINAL.encode()
+    assert "content_file" not in args
+    client.call_tool.reset_mock()
+    if interface == "click":
+        result = CliRunner().invoke(commands.cli, ["files", "write", "--content-file", str(source)])
+        assert result.exit_code != 0
+    else:
+        asyncio.run(shell.cmd_files(client, None, "write --content-file " + shlex.quote(str(source)), json_output=True))
+    client.call_tool.assert_not_awaited()

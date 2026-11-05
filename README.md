@@ -135,6 +135,32 @@ aucun reformatage JSON, changement de fin de ligne ou normalisation Unicode.
 Un refus renvoie un `code` fermé et `effect_state="not_published"`. La réponse
 d'écriture réussie contient `sha256`. Le mode vérifié est borné à 5 MB en octets.
 
+Pour un JSON, utiliser **`content_base64` avec `expected_sha256`**. Le SDK MCP2.2
+pré-décode les objets/tableaux JSON de l'ancien champ nullable `content` avant
+le handler ; cet ancien contrat est conservé avec sa limite. `content_base64`
+transporte les octets sans cette transformation. Il doit provenir d'une réponse
+native qui l'émet déjà (par exemple une lecture Files paginée) ou d'un encodeur
+programmatique, jamais d'une génération de texte par le modèle.
+
+```sh
+python scripts/mcp_cli.py files write -p preuves/native.json --content-file native.json --expected-sha256 "$SHA_NATIF" --json
+```
+
+L'option `--content-file`, disponible aussi dans le shell interactif, encode le
+fichier local en base64 sans calculer son empreinte attendue : celle-ci doit être
+fournie depuis la source native. `--content-base64` et `--expected-sha256` sont
+également exposées. `content` et `content_base64` s'excluent (y compris un
+`content=""` explicite). La base64 est standard et canonique, sans retours à la
+ligne ni alphabet urlsafe, bornée à 6 666 668 caractères avant décodage. Le texte
+décodé doit être UTF-8 et tenir dans 5 MB. Le SHA doit correspondre, sinon aucune
+publication. Un objet vide est accepté seulement avec le SHA du vide ; `null`
+reste un refus, pas un objet vide.
+
+Dans le catalogue, les deux transports du même texte ont le même digest de
+requête. Le service interne refuse un champ base64 non traité par l'entrée
+publique. Un ancien serveur qui ne connaît pas ce champ ne peut pas le publier
+comme une preuve réussie : sans `content`, il refuse l'écriture.
+
 Un JSON équivalent reformatté n'est pas la même preuve et doit être refusé si
 l'empreinte d'origine ne correspond plus. Conserver une interprétation dans un
 autre fichier, avec ses références natives. Ne jamais recalculer une « attente »
@@ -143,7 +169,10 @@ sur un contenu reconstruit pour faire passer cette vérification.
 Les écritures historiques sans `expected_sha256` restent disponibles, mais ne
 prouvent pas la correspondance à une source. Ce contrôle ne prouve ni la
 provenance d'une empreinte fournie par l'appelant, ni la conservation des
-artefacts binaires, ni l'absence d'effet après un timeout de transport.
+artefacts binaires, ni l'absence d'effet après un timeout de transport. Aucun
+transfert automatique SecTools→Files ni producteur base64 de la flotte complète
+n'est qualifié par cette PR : un appelant doit réellement fournir les octets et
+l'empreinte native.
 
 #### Concaténer des objets S3 sans recopier leur contenu
 

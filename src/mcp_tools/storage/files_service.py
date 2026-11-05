@@ -377,7 +377,8 @@ class FilesService:
             body = sep.encode().join(parts)
         elif op == "write":
             text = args.get("content")
-            if not isinstance(text, str) or not text or len(text)>5_000_000:
+            if (not isinstance(text, str) or len(text)>5_000_000
+                    or (not text and args.get("expected_sha256") is None)):
                 raise Conflict("Write : 1 à 5000000 caractères UTF-8 requis")
             body = text.encode()
         return expected, body, manifest
@@ -594,6 +595,9 @@ class FilesService:
 
     async def dispatch(self,op,args):
         check_tool_access("files")
+        if args.get("content_base64") is not None:
+            return {"status": "error", "code": "encoded_content_requires_public_entry",
+                    "effect_state": "not_published"}
         integrity_error = validate_write_checksum(op, args.get("content"), args.get("expected_sha256"))
         if integrity_error:
             return integrity_error

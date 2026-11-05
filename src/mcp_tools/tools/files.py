@@ -33,7 +33,7 @@ from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
 from ..observability import bind_activity, record_activity, traced_tool
-from ..storage.files_integrity import validate_write_checksum
+from ..storage.files_integrity import decode_write_content, validate_write_checksum
 
 
 # =============================================================================
@@ -830,11 +830,15 @@ def register(mcp: MCPServer) -> None:
         operation_id: Annotated[Optional[str], Field(default=None, description="UUID de mutation ou journal ; retry = inspection, sans replay")] = None,
         expected_revision: Annotated[Optional[StrictInt], Field(default=None, description="CAS de destination du catalogue, facultatif")] = None,
         expected_sha256: Annotated[Optional[str], Field(default=None, description="write uniquement : SHA-256 natif attendu (64 hex) des octets UTF-8 exacts de content ; mismatch refuse avant publication, aucun reformatage JSON")] = None,
+        content_base64: Annotated[Optional[str], Field(default=None, description="write vérifié : base64 canonique standard du texte UTF-8 (max5MB décodés), fourni par la source native ou un encodeur programmatique/CLI, jamais inventé par le modèle. Exclut content, exige expected_sha256 natif ; recommandé pour JSON avec SDK2.2.")] = None,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
         try:
             check_tool_access("files")
+            content, transport_error = decode_write_content(operation, content, content_base64, expected_sha256)
+            if transport_error:
+                return transport_error
             integrity_error = validate_write_checksum(operation, content, expected_sha256)
             if integrity_error:
                 return integrity_error
@@ -903,7 +907,7 @@ def register(mcp: MCPServer) -> None:
             if operation in ("read", "write", "delete", "info") and not path:
                 return {"status": "error", "message": f"Le paramètre 'path' est requis pour l'opération '{operation}'."}
 
-            if operation == "write" and not content:
+            if operation == "write" and (content is None or (not content and expected_sha256 is None)):
                 return {"status": "error", "message": "Le paramètre 'content' est requis pour l'opération 'write'."}
 
             if operation == "diff":
