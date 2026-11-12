@@ -20,6 +20,16 @@ est livré (merge268a0e8d), avec preuves standalone et hub distinctes.
 Le nouveau [parcours Compose/Python local ou externe](docs/postgres/standalone.md)
 reste candidat #45, sans nouvelle qualification moteur revendiquée.
 
+`ACCESS_VAULT_TIMEOUT_SECONDS` règle le sous-budget du protocole Vault complet
+(initialisation MCP, lecture du secret et fermeture), avec un défaut de 2 s.
+Une valeur de 3 s peut absorber une lecture ponctuellement plus lente. Elle ne
+prolonge pas `ACCESS_OPERATION_TIMEOUT` (5 s par défaut) : la deadline restante
+et sa réserve de nettoyage restent prioritaires. Aucun retry, cache de credential
+ou relâchement des contrôles d'accès n'est ajouté.
+En cas d'échec, le diagnostic existant `access.failure` ajoute `elapsed_ms`,
+les millisecondes passées dans chaque phase parcourue côté Tools. Ce relevé
+ne sépare pas le traitement interne de Vault de celui de sa base de données.
+
 ## Catalogue fichiers PostgreSQL (optionnel)
 
 Le pilote S3 historique reste le défaut. `FILES_METADATA_BACKEND=postgres`

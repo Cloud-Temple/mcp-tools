@@ -15,7 +15,24 @@ def provider():
     return AccessCredentials(SimpleNamespace(access_pg_hosts='pg1,pg2,pg3', access_pg_database='tools',
         access_pg_role='app', access_vault_url='https://vault', access_vault_id='access',
         access_vault_path='connection', access_vault_token_file='private',
-        access_vault_ca_file='ca', access_operation_timeout=5))
+        access_vault_ca_file='ca', access_operation_timeout=5, access_vault_timeout_seconds=2))
+
+
+@pytest.mark.parametrize('configured,total,expected', [(2, 5, 2), (3, 5, 3), (5, 5, 4), (3, 2, 1)])
+def test_vault_sub_budget_is_configurable_and_keeps_global_cleanup_reserve(configured, total, expected):
+    settings = SimpleNamespace(**vars(provider().provider.s), access_pg_hosts='pg1',
+        access_pg_database='tools', access_pg_role='app', access_vault_url='https://vault',
+        access_vault_id='access', access_vault_path='connection', access_vault_token_file='private',
+        access_vault_ca_file='ca', access_operation_timeout=total, access_vault_timeout_seconds=configured)
+    assert AccessCredentials(settings).provider.s.files_connect_timeout == expected
+
+
+def test_vault_budget_defaults_to_two_and_rejects_unbounded_values():
+    from src.mcp_tools.config import Settings
+    assert Settings(_env_file=None).access_vault_timeout_seconds == 2
+    for invalid in (0, -1, 6, float('inf'), float('nan')):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, access_vault_timeout_seconds=invalid)
 
 
 def test_host_order_can_follow_primary_but_credentials_are_always_fresh():

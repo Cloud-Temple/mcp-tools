@@ -95,10 +95,12 @@ def transport_double(monkeypatch, failing_phase=None, error=None):
     return store, flags
 
 
-def assert_diagnostic(record, phase, error_type, sqlstate=None):
+def assert_diagnostic(record, phase, error_type, sqlstate=None, elapsed=None):
     details = {"phase": phase, "error_type": error_type}
     if sqlstate is not None:
         details["sqlstate"] = sqlstate
+    if elapsed is not None:
+        details["elapsed_ms"] = elapsed
     record.assert_called_once_with(
         "access.failure", level="error", message="Échec du magasin d’accès", details=details,
     )
@@ -117,7 +119,10 @@ def test_run_records_exact_failure_phase_without_leaking_or_retrying(monkeypatch
     assert caught.value.args == ("Access operation unavailable or uncertain",)
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
-    assert_diagnostic(record, phase, "SecretError", "08006")
+    elapsed = record.call_args.kwargs['details']['elapsed_ms']
+    assert set(elapsed) == set(PHASES[:PHASES.index(phase) + 1])
+    assert all(type(value) is int and 0 <= value <= 5000 for value in elapsed.values())
+    assert_diagnostic(record, phase, "SecretError", "08006", elapsed)
     assert flags["credentials"] == 1
     assert flags["connect"] == (0 if phase == "credentials" else 1)
     assert flags["commits"] == (1 if phase == "commit" else 0)
@@ -199,6 +204,16 @@ def test_native_activity_context_is_preserved_without_exception_data(capsys):
     assert CANARY not in json.dumps(emitted, ensure_ascii=False)
 
 
+def test_elapsed_phase_fields_are_bounded_in_the_real_existing_log(capsys):
+    postgres_store._record_access_failure('credentials', SecretError(CANARY), {
+        'credentials': 2050, 'connect': True, 'schema': -1, 'operation': 5001, CANARY: 7,
+    })
+    emitted = json.loads(capsys.readouterr().err)['activity']
+    assert emitted['event'] == 'access.failure'
+    assert emitted['details']['elapsed_ms'] == {'credentials': 2050}
+    assert CANARY not in json.dumps(emitted)
+
+
 def test_logger_failure_preserves_commit_unknown_and_original_public_error(monkeypatch):
     record = Mock(side_effect=RuntimeError(CANARY))
     monkeypatch.setattr(postgres_store, "record_activity", record)
@@ -207,7 +222,9 @@ def test_logger_failure_preserves_commit_unknown_and_original_public_error(monke
         asyncio.run(store._run(QUERY, (CANARY,)))
     assert caught.value.args == ("Access operation unavailable or uncertain",)
     assert flags["commits"] == flags["closed"] == 1
-    assert_diagnostic(record, "commit", "SecretError", "08006")
+    elapsed = record.call_args.kwargs['details']['elapsed_ms']
+    assert set(elapsed) == set(PHASES)
+    assert_diagnostic(record, "commit", "SecretError", "08006", elapsed)
     assert not postgres_store._ACTIVE
 
 

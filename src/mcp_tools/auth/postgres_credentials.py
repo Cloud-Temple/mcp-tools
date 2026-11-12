@@ -28,7 +28,10 @@ class AccessCredentials:
             files_vault_path=settings.access_vault_path,
             files_vault_token_file=settings.access_vault_token_file,
             files_vault_ca_file=settings.access_vault_ca_file,
-            files_connect_timeout=min(2, settings.access_operation_timeout),
+            # _run borne aussi ce protocole par sa deadline réellement restante.
+            # Garder sa seconde réservée au nettoyage, même avec un sous-budget plus grand.
+            files_connect_timeout=min(settings.access_vault_timeout_seconds,
+                                      settings.access_operation_timeout - 1),
         ))
 
     async def sql(self):
