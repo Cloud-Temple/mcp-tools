@@ -30,9 +30,16 @@ def test_vault_sub_budget_is_configurable_and_keeps_global_cleanup_reserve(confi
 def test_vault_budget_defaults_to_two_and_rejects_unbounded_values():
     from src.mcp_tools.config import Settings
     assert Settings(_env_file=None).access_vault_timeout_seconds == 2
-    for invalid in (0, -1, 6, float('inf'), float('nan')):
+    for invalid in (0, 0.5, -1, 6, float('inf'), float('nan')):
         with pytest.raises(ValueError):
             Settings(_env_file=None, access_vault_timeout_seconds=invalid)
+
+
+def test_documented_compose_profile_transmits_vault_sub_budget():
+    import yaml
+    path = Path(__file__).resolve().parents[1] / 'compose.postgres.yml'
+    environment = yaml.safe_load(path.read_text())['services']['mcp-tools']['environment']
+    assert environment['ACCESS_VAULT_TIMEOUT_SECONDS'] == '${ACCESS_VAULT_TIMEOUT_SECONDS:-2}'
 
 
 def test_host_order_can_follow_primary_but_credentials_are_always_fresh():
