@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Accès PostgreSQL : rendre réglable le sous-budget de lecture du credential
+  Vault par `ACCESS_VAULT_TIMEOUT_SECONDS`, défaut 2 s conservé. La deadline
+  globale et sa réserve de nettoyage restent prioritaires ; aucun retry ni
+  cache d'autorité n'est ajouté. Le diagnostic d'échec existant reçoit les
+  durées bornées des phases parcourues, sans donnée de credential.
+  Le profil Compose PostgreSQL transmet le réglage. Avec un budget global
+  explicitement réduit à 2 s, la réserve limite le credential à 1 s, y compris
+  dans les commandes opérateur ; le défaut usuel reste 2 s sous le global 5 s.
+
 - Magasin d'accès PostgreSQL : diagnostic interne `access.failure` avant
   conversion en indisponibilité, limité à la phase, au type ASCII borné et au
   SQLSTATE valide s'il est disponible. Aucun message SQL ni secret journalisé ;

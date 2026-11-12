@@ -32,7 +32,7 @@ _HUB_ACCESS_ORIGIN = (
 )
 
 
-def _record_access_failure(phase, error):
+def _record_access_failure(phase, error, elapsed_by_phase=None):
     """Diagnostic interne fermé, dans le contexte natif de la requête."""
     try:
         if phase not in {'credentials', 'connect', 'schema', 'authority', 'operation', 'commit'}:
@@ -41,6 +41,10 @@ def _record_access_failure(phase, error):
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', error_type):
             error_type = 'unclassified'
         details = {'phase': phase, 'error_type': error_type}
+        if isinstance(elapsed_by_phase, dict):
+            details['elapsed_ms'] = {key: value for key, value in elapsed_by_phase.items()
+                if key in {'credentials', 'connect', 'schema', 'authority', 'operation', 'commit'}
+                and type(value) is int and 0 <= value <= 5000}
         sqlstate = getattr(error, 'sqlstate', None)
         if type(sqlstate) is str and re.fullmatch(r'[A-Z0-9]{5}', sqlstate):
             details['sqlstate'] = sqlstate
@@ -98,6 +102,15 @@ class PostgresAccessStore:
         connection = None
         task = None
         phase = 'credentials'
+        phase_started = time.monotonic()
+        elapsed = {}
+
+        def enter(next_phase):
+            nonlocal phase, phase_started
+            now = time.monotonic()
+            elapsed[phase] = int(min(self.timeout, max(0, now - phase_started)) * 1000)
+            phase, phase_started = next_phase, now
+
         try:
             async with asyncio.timeout(max(.001, deadline-time.monotonic()-1)):
                 credential = await self.credentials.sql()
@@ -105,14 +118,14 @@ class PostgresAccessStore:
                         or credential.get('dbname') != self.database
                         or set(credential) != {'host', 'port', 'dbname', 'user', 'password'}):
                     raise TokenStoreUnavailable('Access SQL identity invalid')
-                phase = 'connect'
+                enter('connect')
                 connection = await psycopg.AsyncConnection.connect(
                     **credential, sslmode='verify-full', sslrootcert=self.ca_file,
                     target_session_attrs='read-write',
                     connect_timeout=2, row_factory=dict_row,
                     options='-c statement_timeout=2000 -c lock_timeout=1000 -c idle_in_transaction_session_timeout=3000')
                 from .postgres_schema import CHECKSUM, VERSION
-                phase = 'schema'
+                enter('schema')
                 async with connection.cursor() as check:
                     await check.execute('SELECT * FROM tools_access.schema_contract()', ())
                     if await check.fetchall() != [{'version': VERSION, 'checksum': CHECKSUM}]:
@@ -123,7 +136,7 @@ class PostgresAccessStore:
                         if await check.fetchall() != [{'version': holds846.VERSION, 'checksum': holds846.CHECKSUM,
                                                        'coordination_required': True}]:
                             raise TokenStoreUnavailable('Access retention contract incompatible')
-                    phase = 'authority'
+                    enter('authority')
                     await check.execute("SELECT current_user AS role,current_database() AS db,pg_is_in_recovery() AS recovery,"
                         "(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) AS privileged "
                         "FROM pg_roles WHERE rolname=current_user", ())
@@ -132,12 +145,11 @@ class PostgresAccessStore:
                         raise TokenStoreUnavailable('Access SQL authority invalid')
 
             async def operation():
-                nonlocal phase
-                phase = 'operation'
+                enter('operation')
                 async with connection.cursor() as cursor:
                     await cursor.execute(query, parameters)
                     rows = await cursor.fetchall()
-                phase = 'commit'
+                enter('commit')
                 await connection.commit()
                 return rows
 
@@ -161,7 +173,8 @@ class PostgresAccessStore:
                     and error.diag.message_primary == 'current hub file access refused'
                     and re.fullmatch(_HUB_FILES_ORIGIN, error.diag.context or ''))):
                 raise ValueError('Current local hub access refused') from None
-            _record_access_failure(phase, error)
+            enter(phase)
+            _record_access_failure(phase, error, elapsed)
             # Aucun détail libpq/HTTP/conninfo ou résultat d'écriture sans ACK.
             raise TokenStoreUnavailable('Access operation unavailable or uncertain') from None
         finally:
