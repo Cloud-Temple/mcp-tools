@@ -24,8 +24,21 @@ reste candidat #45, sans nouvelle qualification moteur revendiquée.
 (initialisation MCP, lecture du secret et fermeture), avec un défaut de 2 s.
 Une valeur de 3 s peut absorber une lecture ponctuellement plus lente. Elle ne
 prolonge pas `ACCESS_OPERATION_TIMEOUT` (5 s par défaut) : la deadline restante
-et sa réserve de nettoyage restent prioritaires. Aucun retry, cache de credential
-ou relâchement des contrôles d'accès n'est ajouté.
+et sa réserve de nettoyage restent prioritaires.
+
+Le login PostgreSQL n'est plus lu dans Vault à chaque requête. Une tâche de fond
+le relit toutes les 30 s (`ACCESS_VAULT_REFRESH_SECONDS`, `FILES_VAULT_REFRESH_SECONDS`)
+et les requêtes le prennent en mémoire. Il sert au plus 60 s après la dernière
+lecture réussie (`*_VAULT_VALIDITY_SECONDS`), puis l'accès est refusé. Pendant une
+panne Vault, un nouvel essai a lieu toutes les 5 s. Un refus explicite de Vault
+(401, 403, refus d'outil) oublie le login tout de suite. Un refus PostgreSQL ou une
+identité SQL inattendue déclenche une relecture immédiate, unique pour toutes les
+connexions concernées. Les jetons et droits restent vérifiés en base à chaque
+requête : une révocation prend effet sans délai. Avant la première lecture réussie,
+une requête attend dans le sous-budget Vault puis échoue. Si la tâche de fond
+s'arrête sur une erreur imprévue, l'événement `credential.refresh_stopped` est
+journalisé avec le seul type d'erreur, et le login expire normalement. Un
+intervalle à 0 rétablit une lecture Vault par connexion.
 Si le budget global est réglé à 2 s, le sous-budget effectif est limité à 1 s,
 y compris pour les commandes opérateur qui lisent directement ce credential.
 Le défaut de 2 s reste la valeur configurée ; il s'applique avec le budget

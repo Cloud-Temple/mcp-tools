@@ -49,6 +49,7 @@ chevauchement avec tokens/voisins ; `FILES_S3_DATA_SIGNATURE=s3` Dell ECS,
 | FILES_QUORUM / REPLICATION_ROSTER | k=1 / JSON fini pour remote_apply |
 | FILES_VAULT_URL / ID / PATH | fournisseur MCP Vault HTTPS, coffre Tools propre, secret SQL du job |
 | FILES_VAULT_TOKEN_FILE / CA_FILE | Bearer privé 0600, CA fournisseur exacte |
+| FILES_VAULT_REFRESH_SECONDS / VALIDITY_SECONDS | 30 / 60 : relecture de fond, durée de service maximale du login ; 0 = lecture par connexion |
 
 Direct : service/passfile app privés 0600, CA en lecture seule. Secrets hors
 .env suivi/argv/image. Service peut définir plusieurs hosts/ports libpq ;
