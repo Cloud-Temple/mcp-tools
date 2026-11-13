@@ -33,6 +33,9 @@ _REFUSAL_TYPES = frozenset({
 
 
 _LIVE = weakref.WeakSet()  # instances dont une tâche de relecture a démarré
+# Posé par le shutdown du lifespan, retiré par son démarrage : entre les deux, aucune
+# instance ne sert de login ni ne relance de tâche. Un processus CLI ne le pose jamais.
+_STOPPED = False
 
 
 def _record_refresh_stopped(error):
@@ -49,8 +52,16 @@ def _record_refresh_stopped(error):
         pass
 
 
+def start_refreshers():
+    """Démarrage du lifespan : les instances peuvent de nouveau lire Vault."""
+    global _STOPPED
+    _STOPPED = False
+
+
 async def stop_refreshers():
-    """Arrêt propre des tâches de relecture, appelé au shutdown de l'application."""
+    """Shutdown du lifespan : plus aucun démarrage, puis arrêt de chaque tâche."""
+    global _STOPPED
+    _STOPPED = True
     for credentials in list(_LIVE):
         await credentials.aclose()
 
@@ -116,7 +127,8 @@ class Credentials:
         self._wake = None
         self._changed = None
         self._generation = 0  # change à chaque oubli : une lecture engagée avant est caduque
-        self._closing = False  # pendant aclose() : aucune relecture ni aucun login
+        self._closing = 0  # nombre d'aclose() en cours : aucune relecture ni aucun login
+        self._stopping = None  # tâche en cours d'arrêt, attendue par chaque aclose()
 
     def invalidate(self, descriptor):
         """Oublie ce login s'il est encore en mémoire et demande une relecture.
@@ -164,19 +176,27 @@ class Credentials:
         Pendant l'arrêt, une requête concurrente échoue fermée au lieu de relancer une
         tâche. Ensuite l'instance repart à son prochain usage : les fabriques lru_cache
         la rendent telle quelle au lifespan suivant du même processus."""
-        task = self._task
-        self.reset()
-        self._closing = True
+        task = self._task or self._stopping
+        self._detach()
+        self._closing += 1
+        self._stopping = task
         try:
             if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
                 task.cancel()
                 await asyncio.wait({task}, timeout=STOP_SECONDS)
         finally:
-            self._closing = False
+            # Seul le dernier aclose() en cours rouvre l'instance.
+            self._closing = max(0, self._closing - 1)
+            if not self._closing:
+                self._stopping = None
 
     def reset(self):
-        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée)."""
-        self._closing = False
+        """Oublie tâche, boucle, login et arrêts en cours, sans attendre (boucle d'un
+        test déjà fermée)."""
+        self._closing, self._stopping = 0, None
+        self._detach()
+
+    def _detach(self):
         self._task = self._loop = self._wake = self._changed = None
         self._forget()
         _LIVE.discard(self)
@@ -244,7 +264,7 @@ class Credentials:
             raise StorageUnavailable("Override service interdit en mode Vault")
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
-        if self._closing:
+        if self._closing or _STOPPED:
             raise StorageUnavailable("Vault non autorisé ou indisponible")
         if s.files_vault_refresh_seconds <= 0:
             return await self._attempt()

@@ -651,6 +651,83 @@ def test_aclose_refuses_concurrent_requests_then_a_new_lifespan_restarts(monkeyp
     assert login == LOGIN_A and reads == 2
 
 
+def test_concurrent_acloses_never_reopen_during_the_stop():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault)
+        await credentials.sql()
+        old = credentials._task
+        first = asyncio.create_task(credentials.aclose())
+        second = asyncio.create_task(credentials.aclose())
+        request = asyncio.create_task(credentials.sql())
+        results = await asyncio.gather(first, second, request, return_exceptions=True)
+        stopped = (type(results[2]), vault.reads, credentials._task, old.done())
+        # Arrêt d'instance terminé, lifespan toujours actif : l'instance repart.
+        return stopped, await credentials.sql(), vault.reads
+    stopped, login, reads = asyncio.run(scenario())
+    assert stopped == (StorageUnavailable, 1, None, True)
+    assert login == LOGIN_A and reads == 2
+
+
+def test_first_aclose_timing_out_does_not_reopen_while_another_still_waits(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = wired(Vault())
+        await credentials.sql()
+        credentials._attempt = resisting
+        credentials.invalidate(LOGIN_A)  # la tâche entre dans une lecture qui résiste
+        await asyncio.sleep(0.02)
+        try:
+            async with asyncio.timeout(2):
+                first = asyncio.create_task(credentials.aclose())
+                await asyncio.sleep(0.1)
+                second = asyncio.create_task(credentials.aclose())
+                await first  # borne atteinte, la tâche résiste encore
+                assert not second.done()
+                with pytest.raises(StorageUnavailable):
+                    await credentials.sql()  # le second arrêt est toujours en cours
+                await second
+        finally:
+            released.append(1)
+        return credentials._closing
+    assert asyncio.run(scenario()) == 0
+
+
+def test_stop_refreshers_keeps_every_instance_stopped_until_the_next_startup():
+    async def scenario():
+        vaults = [Vault(), Vault()]
+        instances = [wired(vault) for vault in vaults]
+        await asyncio.gather(*(c.sql() for c in instances))
+        first = list(fc._LIVE)[0]
+        stopper = asyncio.create_task(fc.stop_refreshers())
+
+        async def late():
+            # Retardataire : arrive quand la première instance est déjà arrêtée.
+            while first._task is not None or first._closing:
+                await asyncio.sleep(0)
+            return await first.sql()
+        late_result = (await asyncio.gather(late(), return_exceptions=True))[0]
+        await stopper
+        after_stop = (type(late_result), len(list(fc._LIVE)), first._task)
+        with pytest.raises(StorageUnavailable):
+            await first.sql()  # toujours refusé tant que le lifespan suivant n'a pas démarré
+        fc.start_refreshers()
+        return after_stop, await first.sql(), sum(v.reads for v in vaults)
+    after_stop, login, reads = asyncio.run(scenario())
+    assert after_stop == (StorageUnavailable, 0, None)
+    assert login == LOGIN_A and reads == 3
+
+
 def test_two_lifespans_in_one_process_both_read_vault_and_serve():
     """Les fabriques lru_cache rendent les mêmes instances au second lifespan : l'arrêt
     du premier ne doit pas les laisser inutilisables."""

@@ -46,6 +46,9 @@ class StorageLifecycleMiddleware:
             message = await receive()
             if message["type"] == "lifespan.startup":
                 lifecycle.stopped = False
+                # Avant la readiness, qui lit le login : rouvre les instances du lifespan précédent.
+                from .files_credentials import start_refreshers
+                start_refreshers()
                 await lifecycle.probe(self.settings, force=True)
             elif message["type"] == "lifespan.shutdown":
                 lifecycle.stopped = True
