@@ -11,5 +11,5 @@ def _reset_credential_refreshers():
     # boucle du test terminé, pour que le suivant reparte d'une lecture neuve.
     for credentials in list(files_credentials._LIVE):
         credentials.reset()
-    # Un test qui fait tourner un lifespan laisse l'état « arrêté » posé par son shutdown.
-    files_credentials.start_refreshers()
+    # Un test interrompu peut laisser un lifespan compté ou un arrêt en cours.
+    files_credentials._ACTIVE = files_credentials._STOPPING = 0

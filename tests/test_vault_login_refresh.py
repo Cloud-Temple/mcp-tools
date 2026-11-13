@@ -703,7 +703,7 @@ def test_first_aclose_timing_out_does_not_reopen_while_another_still_waits(monke
     assert asyncio.run(scenario()) == 0
 
 
-def test_stop_refreshers_keeps_every_instance_stopped_until_the_next_startup():
+def test_requests_during_the_last_stop_are_refused_and_no_task_survives_it():
     async def scenario():
         vaults = [Vault(), Vault()]
         instances = [wired(vault) for vault in vaults]
@@ -719,13 +719,104 @@ def test_stop_refreshers_keeps_every_instance_stopped_until_the_next_startup():
         late_result = (await asyncio.gather(late(), return_exceptions=True))[0]
         await stopper
         after_stop = (type(late_result), len(list(fc._LIVE)), first._task)
-        with pytest.raises(StorageUnavailable):
-            await first.sql()  # toujours refusé tant que le lifespan suivant n'a pas démarré
-        fc.start_refreshers()
+        # Arrêt terminé : un chemin opérateur du même processus lit Vault normalement.
         return after_stop, await first.sql(), sum(v.reads for v in vaults)
     after_stop, login, reads = asyncio.run(scenario())
     assert after_stop == (StorageUnavailable, 0, None)
     assert login == LOGIN_A and reads == 3
+
+
+async def run_lifespan(app, stop, *, fail_startup=None):
+    """Fait tourner un lifespan ASGI à travers StorageLifecycleMiddleware."""
+    from src.mcp_tools.storage.files_lifecycle import StorageLifecycleMiddleware
+
+    async def inner(scope, receive, send):
+        if fail_startup == "before_startup":
+            raise RuntimeError("application cassée avant le démarrage")
+        await receive()
+        if fail_startup == "after_startup":
+            raise RuntimeError("démarrage avorté")
+        await send({"type": "lifespan.startup.complete"})
+        await receive()
+        await send({"type": "lifespan.shutdown.complete"})
+
+    queue = asyncio.Queue()
+    await queue.put({"type": "lifespan.startup"})
+
+    async def receive():
+        message = await queue.get()
+        return message
+
+    async def send(message):
+        if message["type"] == "lifespan.startup.complete":
+            await stop.wait()
+            await queue.put({"type": "lifespan.shutdown"})
+    middleware = StorageLifecycleMiddleware(inner, SimpleNamespace(files_metadata_backend="s3"))
+    await middleware({"type": "lifespan"}, receive, send)
+
+
+@pytest.mark.parametrize("second_fails", [None, "after_startup", "before_startup"])
+def test_ending_one_lifespan_keeps_shared_instances_alive_for_the_other(second_fails):
+    async def scenario():
+        credentials = wired(Vault())
+        stop_a, stop_b = asyncio.Event(), asyncio.Event()
+        a = asyncio.create_task(run_lifespan(None, stop_a))
+        await asyncio.sleep(0.01)
+        assert await credentials.sql() == LOGIN_A  # instance partagée, utilisée par A
+        task = credentials._task
+        b = asyncio.create_task(run_lifespan(None, stop_b, fail_startup=second_fails))
+        await asyncio.sleep(0.01)
+        stop_b.set()
+        await asyncio.gather(b, return_exceptions=True)
+        alive = (not task.done(), await credentials.sql())
+        stop_a.set()
+        await a
+        return alive, task.done(), list(fc._LIVE)
+    alive, stopped, live = asyncio.run(scenario())
+    assert alive == (True, LOGIN_A)
+    assert stopped and live == []
+
+
+@pytest.mark.parametrize("refresh", [30, 0])
+def test_operator_credentials_work_after_a_lifespan_has_ended(refresh):
+    async def scenario():
+        service = wired(Vault())
+        stop = asyncio.Event()
+        lifespan = asyncio.create_task(run_lifespan(None, stop))
+        await asyncio.sleep(0.01)
+        await service.sql()
+        stop.set()
+        await lifespan
+        operator = wired(Vault(), files_vault_refresh_seconds=refresh,
+                         files_vault_validity_seconds=60 if refresh else 0)
+        return await operator.sql()
+    assert asyncio.run(scenario()) == LOGIN_A
+
+
+def test_postgres_preparer_reads_its_job_credential_through_the_real_provider(tmp_path, monkeypatch):
+    """Le préparateur construit sa configuration à la main : il doit lire Vault une fois,
+    sans tâche de fond, par le vrai Credentials.sql()."""
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("prepare_tools", root / "scripts/prepare_postgres.py")
+    prep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prep)
+    for name in [n for n in list(__import__("os").environ) if n.startswith("PG")]:
+        monkeypatch.delenv(name)
+    login = {"host": "pg1,pg2", "port": 5432, "dbname": "tools", "user": "tools_owner",
+             "password": "S" * 40}
+    payload = {"status": "ok", "vault_id": "jobs", "path": "owner", "data": login}
+    job = {"database": "tools", "user": "tools_owner", "hosts": "pg2,pg1",
+           "vault_url": "https://vault.invalid", "vault_id": "jobs", "vault_path": "owner",
+           "vault_token_file": private_token(tmp_path), "vault_ca_file": None}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(vault_server(tool_text(payload))), **kwargs)
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        value = asyncio.run(prep.credential(job))
+    assert value == login and not list(fc._LIVE)
 
 
 def test_two_lifespans_in_one_process_both_read_vault_and_serve():

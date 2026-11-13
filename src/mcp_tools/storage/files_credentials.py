@@ -33,9 +33,12 @@ _REFUSAL_TYPES = frozenset({
 
 
 _LIVE = weakref.WeakSet()  # instances dont une tâche de relecture a démarré
-# Posé par le shutdown du lifespan, retiré par son démarrage : entre les deux, aucune
-# instance ne sert de login ni ne relance de tâche. Un processus CLI ne le pose jamais.
-_STOPPED = False
+# Les instances des services (singletons lru_cache) sont partagées par toutes les
+# applications du processus. _ACTIVE compte les lifespans en cours : seul l'arrêt du
+# dernier ferme les instances. Pendant cet arrêt (_STOPPING), aucune instance ne sert de
+# login ni ne relance de tâche ; ensuite, un chemin opérateur ou CLI fonctionne normalement.
+_ACTIVE = 0
+_STOPPING = 0
 
 
 def _record_refresh_stopped(error):
@@ -53,17 +56,24 @@ def _record_refresh_stopped(error):
 
 
 def start_refreshers():
-    """Démarrage du lifespan : les instances peuvent de nouveau lire Vault."""
-    global _STOPPED
-    _STOPPED = False
+    """Démarrage d'un lifespan."""
+    global _ACTIVE
+    _ACTIVE += 1
 
 
 async def stop_refreshers():
-    """Shutdown du lifespan : plus aucun démarrage, puis arrêt de chaque tâche."""
-    global _STOPPED
-    _STOPPED = True
-    for credentials in list(_LIVE):
-        await credentials.aclose()
+    """Fin d'un lifespan : si c'était le dernier actif, arrêt de chaque tâche, sans
+    qu'aucune requête concurrente ne puisse en relancer une."""
+    global _ACTIVE, _STOPPING
+    _ACTIVE = max(0, _ACTIVE - 1)
+    if _ACTIVE:
+        return
+    _STOPPING += 1
+    try:
+        for credentials in list(_LIVE):
+            await credentials.aclose()
+    finally:
+        _STOPPING -= 1
 
 
 def _consume(task):
@@ -264,9 +274,10 @@ class Credentials:
             raise StorageUnavailable("Override service interdit en mode Vault")
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
-        if self._closing or _STOPPED:
+        if self._closing or _STOPPING:
             raise StorageUnavailable("Vault non autorisé ou indisponible")
-        if s.files_vault_refresh_seconds <= 0:
+        # Sans réglage (job opérateur construit à la main), une lecture par appel.
+        if getattr(s, "files_vault_refresh_seconds", 0) <= 0:
             return await self._attempt()
         self._ensure_refresher()
         current = self._valid()

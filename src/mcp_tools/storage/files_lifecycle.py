@@ -42,13 +42,15 @@ class StorageLifecycleMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "lifespan":
             return await self.app(scope, receive, send)
+        from .files_credentials import start_refreshers, stop_refreshers
+        started = []
         async def storage_receive():
             message = await receive()
             if message["type"] == "lifespan.startup":
                 lifecycle.stopped = False
-                # Avant la readiness, qui lit le login : rouvre les instances du lifespan précédent.
-                from .files_credentials import start_refreshers
-                start_refreshers()
+                if not started:
+                    start_refreshers()
+                    started.append(True)
                 await lifecycle.probe(self.settings, force=True)
             elif message["type"] == "lifespan.shutdown":
                 lifecycle.stopped = True
@@ -57,6 +59,7 @@ class StorageLifecycleMiddleware:
         try:
             await self.app(scope, storage_receive, send)
         finally:
-            # Aucune tâche de relecture du login ne survit au shutdown.
-            from .files_credentials import stop_refreshers
-            await stop_refreshers()
+            # Seul un lifespan compté se décompte : un démarrage avorté ne ferme pas les
+            # instances d'un autre lifespan encore actif. Après le dernier, aucune tâche.
+            if started:
+                await stop_refreshers()
