@@ -355,10 +355,13 @@ def test_a_new_event_loop_starts_a_fresh_task_and_read():
     vault = Vault()
     credentials = wired(vault)
 
-    async def once():
-        return await credentials.sql(), credentials._task
-    first, task_one = asyncio.run(once())
-    second, task_two = asyncio.run(once())
+    async def once(expected):
+        login, task = await credentials.sql(), credentials._task
+        # La nouvelle tâche relit Vault, même si un login d'une boucle précédente est valide.
+        await until(lambda: vault.reads >= expected)
+        return login, task
+    first, task_one = asyncio.run(once(1))
+    second, task_two = asyncio.run(once(2))
     assert first == second == LOGIN_A
     assert task_one is not task_two and vault.reads == 2
 
@@ -467,10 +470,16 @@ def error_reply(error_type):
     (vault_server(tool_text("ok")), VaultRefused),
     (vault_server(tool_text("pas du JSON")), VaultRefused),
     (vault_server({"content": [], "isError": False}), VaultRefused),
+    (vault_server(tool_text({})), VaultRefused),
+    (vault_server(tool_text({"status": None, "vault_id": "scoped", "path": "connection",
+                             "data": LOGIN_A})), VaultRefused),
+    (vault_server(tool_text({"status": "okay", "vault_id": "scoped", "path": "connection",
+                             "data": LOGIN_A})), VaultRefused),
     # Pannes : le login en mémoire reste servi jusqu'à sa validité.
     (vault_server(status=500), StorageUnavailable),
     (vault_server(status=503), StorageUnavailable),
     (vault_server(error_reply("backend_unavailable")), StorageUnavailable),
+    (vault_server(tool_text({"status": "error", "message": "x"})), StorageUnavailable),
 ])
 def test_vault_answers_are_classified_as_refusal_or_outage(tmp_path, server, expected):
     token = tmp_path / "token"
@@ -530,6 +539,168 @@ def test_http_refusal_in_any_phase_forgets_a_warm_login(tmp_path, clock, phase, 
             await credentials.sql()
     with patch.object(httpx2, "AsyncClient", side_effect=factory):
         asyncio.run(scenario())
+
+
+def private_token(tmp_path):
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    return str(token)
+
+
+def gated_server(refuse, gate, seen):
+    """Comme vault_server, mais secret_read attend `gate` : la lecture reste en cours."""
+    inner = vault_server(refuse=refuse, refuse_status=403, seen=seen)
+
+    async def handle(request):
+        if request.method == "POST" and json.loads(request.content).get("method") == "tools/call":
+            seen.append("held")
+            await gate.wait()
+        return inner(request)
+    return handle
+
+
+def test_http_refusal_hides_the_login_before_the_read_ends(tmp_path, clock):
+    seen, state = [], {}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        gate = asyncio.Event()
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=private_token(tmp_path),
+                                      files_connect_timeout=2, files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = gated_server("get", gate, seen)
+        # Le GET est refusé pendant que secret_read est retenu : la lecture n'est pas finie.
+        await until(lambda: "get" in seen and "held" in seen)
+        await asyncio.sleep(0.05)  # le hook a traité le 403 ; secret_read reste retenu
+        assert not gate.is_set() and "call" not in seen
+        held = credentials._valid()
+        gate.set()
+        await until(lambda: seen.count("initialize") >= 2 or credentials._cache is None)
+        return held
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) is None
+
+
+def test_read_started_before_an_invalidation_cannot_resurrect_the_login(clock):
+    async def scenario():
+        gate = asyncio.Event()
+        vault = Vault(LOGIN_A, LOGIN_A, default=StorageUnavailable("panne"))
+        credentials = wired(vault, files_vault_refresh_seconds=0.03, files_connect_timeout=0.1)
+        assert await credentials.sql() == LOGIN_A
+        vault.gate = gate
+        await until(lambda: vault.reads == 2)  # relecture périodique engagée avec A
+        credentials.invalidate(LOGIN_A)  # PostgreSQL refuse A pendant ce temps
+        gate.set()  # la relecture rend A, devenu caduc
+        await until(lambda: vault.reads >= 3)  # la suivante échoue
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("phase", [None, "initialized", "get", "delete", "call"])
+def test_cancellation_always_stops_the_task_during_the_real_protocol(tmp_path, phase):
+    """Le client MCP peut avaler une annulation quand Vault refuse en cours de protocole.
+    Annulée à des instants échelonnés, la tâche doit toujours s'arrêter."""
+    token = private_token(tmp_path)
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        server = vault_server(refuse=phase, refuse_status=401)
+        return original(transport=httpx2.MockTransport(server), **kwargs)
+
+    async def scenario():
+        stuck = []
+        for step in range(60):
+            credentials = Credentials(cfg(files_vault_token_file=token, files_connect_timeout=1,
+                                          files_vault_refresh_seconds=1))
+            credentials._ensure_refresher()
+            task = credentials._task
+            await asyncio.sleep(step * 0.0005)
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=2)
+            if not done:
+                stuck.append(step)
+                credentials.reset()
+        return stuck
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) == []
+
+
+def test_aclose_stops_the_task_even_when_the_read_swallows_cancellation():
+    reads = []
+
+    async def swallowing_read():
+        # Comme le client MCP sur un refus : l'annulation est avalée, la lecture se termine.
+        reads.append(1)
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.01)
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = Credentials(cfg())
+        credentials._read = swallowing_read
+        credentials._ensure_refresher()
+        task = credentials._task
+        await until(lambda: reads == [1])
+        started = time.monotonic()
+        await credentials.aclose()
+        return task.done(), time.monotonic() - started, credentials._cache
+    done, elapsed, cache = asyncio.run(scenario())
+    assert done and elapsed < 1.0 and cache is None
+
+
+def test_reset_without_cancellation_stops_the_old_task_and_it_never_publishes():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault, files_vault_refresh_seconds=0.02)
+        await credentials.sql()
+        task = credentials._task
+        credentials.reset()  # comme l'isolation des tests : aucune annulation
+        await until(task.done, limit=1.0)
+        return credentials._cache, vault.reads
+    cache, reads = asyncio.run(scenario())
+    # reset() arrive pendant l'attente : la tâche sort sans relire Vault.
+    assert cache is None and reads == 1
+
+
+def test_aclose_stays_bounded_even_if_the_task_resists_cancellation(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        # Défaut hypothétique : l'annulation ne parvient plus à la boucle.
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = Credentials(cfg())
+        credentials._attempt = resisting
+        credentials._ensure_refresher()
+        task = credentials._task
+        await asyncio.sleep(0.02)
+        started = time.monotonic()
+        try:
+            # Une régression doit échouer ici, pas figer la suite.
+            async with asyncio.timeout(1.5):
+                await credentials.aclose()
+        finally:
+            released.append(1)  # le défaut cède : la tâche orpheline sort sans publier
+        elapsed = time.monotonic() - started
+        await until(task.done, limit=1.0)
+        return elapsed, credentials._cache
+    elapsed, cache = asyncio.run(scenario())
+    assert 0.15 <= elapsed < 1.0 and cache is None
 
 
 def test_http_401_from_vault_closes_access_before_validity(tmp_path, clock):

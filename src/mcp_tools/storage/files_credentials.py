@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 _now = time.monotonic  # horloge de validité, remplaçable par les tests
 RETRY_SECONDS = 5.0  # attente après une lecture Vault en échec
 MIN_SPACING_SECONDS = 1.0  # entre deux lectures, même réveillées par un refus PostgreSQL
+STOP_SECONDS = 2.0  # attente maximale de la tâche à l'arrêt
 
 # Réponses de Vault qui disent « tu n'as pas le droit » ou « ta demande est fausse ».
 # Toute autre réponse en échec est une panne : le login reste servi jusqu'à sa validité.
@@ -52,6 +53,12 @@ async def stop_refreshers():
     """Arrêt propre des tâches de relecture, appelé au shutdown de l'application."""
     for credentials in list(_LIVE):
         await credentials.aclose()
+
+
+def _consume(task):
+    # Résultat d'une lecture abandonnée : récupéré pour ne laisser aucun avertissement.
+    if not task.cancelled():
+        task.exception()
 
 
 class StorageUnavailable(RuntimeError):
@@ -108,6 +115,7 @@ class Credentials:
         self._task = None
         self._wake = None
         self._changed = None
+        self._generation = 0  # change à chaque oubli : une lecture engagée avant est caduque
 
     def invalidate(self, descriptor):
         """Oublie ce login s'il est encore en mémoire et demande une relecture.
@@ -116,9 +124,14 @@ class Credentials:
         pas (rotation, cible déplacée). Un login plus récent n'est jamais effacé.
         """
         if self._cache is not None and self._cache[1] == descriptor:
-            self._cache = None
+            self._forget()
             if self._wake is not None:
                 self._wake.set()
+
+    def _forget(self):
+        """Retire le login et rend caduque toute lecture déjà engagée."""
+        self._cache = None
+        self._generation += 1
 
     def _valid(self):
         if (self._cache is not None
@@ -135,7 +148,7 @@ class Credentials:
         self._loop = loop
         self._wake = asyncio.Event()
         self._changed = asyncio.Condition()
-        self._task = loop.create_task(self._refresh_forever())
+        self._task = loop.create_task(self._refresh_forever(self._wake, self._changed))
         self._task.add_done_callback(self._stopped)
         _LIVE.add(self)
 
@@ -145,49 +158,68 @@ class Credentials:
             _record_refresh_stopped(task.exception())
 
     async def aclose(self):
-        """Arrête la tâche de cette boucle et oublie le login."""
+        """Arrête la tâche de cette boucle et oublie le login, en temps borné."""
         task = self._task
         self.reset()
         if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.wait({task}, timeout=STOP_SECONDS)
 
     def reset(self):
         """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée)."""
         self._task = self._loop = self._wake = self._changed = None
-        self._cache = None
+        self._forget()
         _LIVE.discard(self)
 
-    async def _refresh_forever(self):
+    async def _attempt(self):
+        """Une lecture Vault dans sa propre tâche.
+
+        Quand Vault refuse en cours de protocole, le client MCP peut avaler une annulation.
+        L'appelant attend derrière shield : il reçoit toujours la sienne.
+        """
+        reader = asyncio.ensure_future(self._read())
+        reader.add_done_callback(_consume)
+        try:
+            return await asyncio.shield(reader)
+        except asyncio.CancelledError:
+            reader.cancel()
+            raise
+
+    async def _refresh_forever(self, wake, changed):
+        me = asyncio.current_task()
         last_attempt, failed = None, False
-        while True:
+        # Après reset ou aclose, l'instance ne désigne plus cette tâche : elle s'arrête.
+        while self._task is me:
             if last_attempt is not None:
                 spacing = RETRY_SECONDS if failed else MIN_SPACING_SECONDS
                 await asyncio.sleep(max(0.0, last_attempt + spacing - _now()))
-            self._wake.clear()
+            wake.clear()
             last_attempt = _now()
+            generation = self._generation
             try:
-                data = await self._read()
+                data = await self._attempt()
             except VaultRefused:
-                self._cache = None
+                if self._task is me:
+                    self._forget()
                 failed = True
             except Exception:
                 # _read ne laisse sortir aucun détail ; une panne garde le login valide.
                 failed = True
             else:
                 failed = False
-                async with self._changed:
-                    self._cache = (_now(), dict(data))
-                    self._changed.notify_all()
+                async with changed:
+                    # Oubli pendant la lecture (refus PostgreSQL, refus Vault) : résultat caduc.
+                    if self._task is me and self._generation == generation:
+                        self._cache = (_now(), dict(data))
+                        changed.notify_all()
+            if self._task is not me:
+                return
             delay = RETRY_SECONDS if failed else self.s.files_vault_refresh_seconds
             # Pas d'asyncio.wait_for : en 3.11 il avale une annulation qui arrive en même
             # temps que le réveil (gh-86296), et la tâche ne s'arrête plus au shutdown.
             try:
                 async with asyncio.timeout(delay):
-                    await self._wake.wait()
+                    await wake.wait()
             except TimeoutError:
                 pass
 
@@ -203,7 +235,7 @@ class Credentials:
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
         if s.files_vault_refresh_seconds <= 0:
-            return await self._read()
+            return await self._attempt()
         self._ensure_refresher()
         current = self._valid()
         if current is not None:
@@ -235,6 +267,7 @@ class Credentials:
                     raise httpx2.HTTPStatusError("MCP_REDIRECT_REFUSED", request=response.request, response=response)
                 if response.status_code in (401, 403):
                     refused.append(response.status_code)
+                    self._forget()  # sans attendre la fin de la session
                     raise _HttpRefusal()
             async with asyncio.timeout(s.files_connect_timeout):
                 async with httpx2.AsyncClient(verify=tls, follow_redirects=False,
@@ -277,10 +310,13 @@ class Credentials:
             raise VaultRefused("Contrat credential Vault invalide") from None
         if not isinstance(payload, dict):
             raise VaultRefused("Contrat credential Vault invalide")
-        if payload.get("status") != "ok":
+        status = payload.get("status")
+        if status == "error":
             if _error_type(blocks):
                 raise VaultRefused("Vault non autorisé ou indisponible")
             raise StorageUnavailable("Vault non autorisé ou indisponible")
+        if status != "ok":
+            raise VaultRefused("Contrat credential Vault invalide")
         if payload.get("vault_id") != s.files_vault_id or payload.get("path") != s.files_vault_path:
             raise VaultRefused("Vault non autorisé ou indisponible")
         data = payload.get("data")
