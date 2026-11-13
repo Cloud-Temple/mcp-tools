@@ -560,6 +560,101 @@ def gated_server(refuse, gate, seen):
     return handle
 
 
+def delete_held_server(reply, gate, seen):
+    """secret_read répond `reply` ; le DELETE de fin de session attend `gate`."""
+    inner = vault_server(reply, seen=seen)
+
+    async def handle(request):
+        if request.method == "DELETE":
+            seen.append("delete-held")
+            await gate.wait()
+        return inner(request)
+    return handle
+
+
+REFUSED_REPLIES = [
+    error_reply("permission_denied"),
+    tool_text({}),
+    tool_text({"status": None, "vault_id": "scoped", "path": "connection", "data": LOGIN_A}),
+    tool_text({"status": "okay", "vault_id": "scoped", "path": "connection", "data": LOGIN_A}),
+]
+
+
+@pytest.mark.parametrize("release", [True, False], ids=["delete_slow", "delete_past_budget"])
+@pytest.mark.parametrize("reply", REFUSED_REPLIES, ids=["denied", "empty", "status_null", "status_unknown"])
+def test_refusal_received_is_kept_while_the_session_closes(tmp_path, clock, reply, release):
+    """Le refus est dans la réponse de secret_read : ni un DELETE lent ni un DELETE qui
+    dépasse le budget ne doivent le transformer en panne qui garde le login."""
+    seen, state = [], {}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        gate = asyncio.Event()
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=private_token(tmp_path),
+                                      files_connect_timeout=0.5, files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = delete_held_server(reply, gate, seen)
+        await until(lambda: "delete-held" in seen)
+        await asyncio.sleep(0.02)
+        during_close = credentials._valid()
+        if release:
+            gate.set()
+        # La lecture se termine (DELETE libéré ou budget dépassé) : le login reste oublié.
+        await until(lambda: seen.count("call") >= 2 or credentials._task.done(), limit=3)
+        gate.set()
+        after = credentials._valid()
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        return during_close, after
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) == (None, None)
+
+
+def test_aclose_closes_for_good_until_reset(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault)
+        assert await credentials.sql() == LOGIN_A
+        credentials._attempt = resisting
+        credentials.invalidate(LOGIN_A)  # la tâche entre dans une lecture qui résiste
+        await asyncio.sleep(0.02)
+        closing = asyncio.create_task(credentials.aclose())
+        await asyncio.sleep(0.05)
+        # Pendant l'arrêt, une requête concurrente ne relance rien et échoue fermée.
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        try:
+            async with asyncio.timeout(1.5):  # une régression échoue, sans figer la suite
+                await closing
+        finally:
+            released.append(1)
+        restarted = credentials._task
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        # reset() rouvre l'instance (isolation des tests) : nouvelle lecture.
+        credentials.reset()
+        del credentials._attempt
+        reopened = await credentials.sql()
+        return restarted, reopened
+    restarted, reopened = asyncio.run(scenario())
+    assert restarted is None and reopened == LOGIN_A
+
+
 def test_http_refusal_hides_the_login_before_the_read_ends(tmp_path, clock):
     seen, state = [], {}
     original = httpx2.AsyncClient

@@ -116,6 +116,7 @@ class Credentials:
         self._wake = None
         self._changed = None
         self._generation = 0  # change à chaque oubli : une lecture engagée avant est caduque
+        self._closed = False  # aclose() : plus de relecture ni de login jusqu'à reset()
 
     def invalidate(self, descriptor):
         """Oublie ce login s'il est encore en mémoire et demande une relecture.
@@ -158,15 +159,19 @@ class Credentials:
             _record_refresh_stopped(task.exception())
 
     async def aclose(self):
-        """Arrête la tâche de cette boucle et oublie le login, en temps borné."""
+        """Ferme l'instance : tâche arrêtée en temps borné, login oublié, aucun redémarrage."""
         task = self._task
         self.reset()
+        self._closed = True
         if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
             task.cancel()
             await asyncio.wait({task}, timeout=STOP_SECONDS)
 
     def reset(self):
-        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée)."""
+        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée).
+
+        Rouvre aussi une instance fermée : sert à l'isolation des tests."""
+        self._closed = False
         self._task = self._loop = self._wake = self._changed = None
         self._forget()
         _LIVE.discard(self)
@@ -234,6 +239,8 @@ class Credentials:
             raise StorageUnavailable("Override service interdit en mode Vault")
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
+        if self._closed:
+            raise StorageUnavailable("Vault non autorisé ou indisponible")
         if s.files_vault_refresh_seconds <= 0:
             return await self._attempt()
         self._ensure_refresher()
@@ -280,9 +287,17 @@ class Credentials:
                             await session.initialize()
                             result = await session.call_tool("secret_read", {
                                 "vault_id": s.files_vault_id, "path": s.files_vault_path})
+                            # Classée avant la fermeture de session : un DELETE lent ou hors
+                            # budget ne doit ni retarder ni effacer un refus déjà reçu.
+                            try:
+                                login = self._login(result)
+                            except VaultRefused:
+                                refused.append("secret_read")
+                                self._forget()
+                                raise
             if refused:
                 raise VaultRefused("Vault non autorisé ou indisponible")
-            return self._login(result)
+            return login
         except VaultRefused:
             raise
         except StorageUnavailable:
