@@ -221,6 +221,9 @@ class Credentials:
 
     async def _read(self):
         s = self.s
+        # Le SDK absorbe certaines réponses (notification initialized, flux GET, DELETE de
+        # fin de session) : le refus noté par le hook fait foi, que l'exception remonte ou non.
+        refused = []
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
@@ -231,6 +234,7 @@ class Credentials:
                 if response.is_redirect:
                     raise httpx2.HTTPStatusError("MCP_REDIRECT_REFUSED", request=response.request, response=response)
                 if response.status_code in (401, 403):
+                    refused.append(response.status_code)
                     raise _HttpRefusal()
             async with asyncio.timeout(s.files_connect_timeout):
                 async with httpx2.AsyncClient(verify=tls, follow_redirects=False,
@@ -243,28 +247,48 @@ class Credentials:
                             await session.initialize()
                             result = await session.call_tool("secret_read", {
                                 "vault_id": s.files_vault_id, "path": s.files_vault_path})
-                            if getattr(result, "is_error", False) or len(result.content) != 1:
-                                if _error_type(result.content):
-                                    raise VaultRefused("Vault non autorisé ou indisponible")
-                                raise StorageUnavailable("Vault non autorisé ou indisponible")
-                            payload = json.loads(result.content[0].text)
-            if payload.get("status") != "ok":
-                if _error_type([result.content[0]]):
-                    raise VaultRefused("Vault non autorisé ou indisponible")
-                raise StorageUnavailable("Vault non autorisé ou indisponible")
-            if payload.get("vault_id") != s.files_vault_id or payload.get("path") != s.files_vault_path:
+            if refused:
                 raise VaultRefused("Vault non autorisé ou indisponible")
-            data = payload.get("data", {})
-            # Secret Tools custom : aucun conninfo/options SQL arbitraire provenant du coffre.
-            required = ("host", "port", "dbname", "user", "password")
-            if any(not isinstance(data.get(k), (str, int)) or not str(data[k]) for k in required):
-                raise VaultRefused("Contrat credential Vault invalide")
-            if data["dbname"] != s.files_pg_database or data["user"] != s.files_pg_role:
-                raise VaultRefused("Cible credential Vault invalide")
-            return {k: data[k] for k in required}
+            return self._login(result)
+        except VaultRefused:
+            raise
         except StorageUnavailable:
+            if refused:
+                raise VaultRefused("Vault non autorisé ou indisponible") from None
             raise
         except Exception as error:
-            if _refusal(error):
+            if refused or _refusal(error):
                 raise VaultRefused("Vault non autorisé ou indisponible") from None
             raise StorageUnavailable("Vault non autorisé ou indisponible") from None
+
+    def _login(self, result):
+        """Toute réponse réussie hors contrat est un refus : le login gardé est oublié."""
+        s = self.s
+        blocks = getattr(result, "content", None) or []
+        if getattr(result, "is_error", False):
+            if _error_type(blocks):
+                raise VaultRefused("Vault non autorisé ou indisponible")
+            raise StorageUnavailable("Vault non autorisé ou indisponible")
+        if len(blocks) != 1:
+            raise VaultRefused("Contrat credential Vault invalide")
+        try:
+            payload = json.loads(getattr(blocks[0], "text", None))
+        except (TypeError, ValueError):
+            raise VaultRefused("Contrat credential Vault invalide") from None
+        if not isinstance(payload, dict):
+            raise VaultRefused("Contrat credential Vault invalide")
+        if payload.get("status") != "ok":
+            if _error_type(blocks):
+                raise VaultRefused("Vault non autorisé ou indisponible")
+            raise StorageUnavailable("Vault non autorisé ou indisponible")
+        if payload.get("vault_id") != s.files_vault_id or payload.get("path") != s.files_vault_path:
+            raise VaultRefused("Vault non autorisé ou indisponible")
+        data = payload.get("data")
+        # Secret Tools custom : aucun conninfo/options SQL arbitraire provenant du coffre.
+        required = ("host", "port", "dbname", "user", "password")
+        if (not isinstance(data, dict)
+                or any(not isinstance(data.get(k), (str, int)) or not str(data[k]) for k in required)):
+            raise VaultRefused("Contrat credential Vault invalide")
+        if data["dbname"] != s.files_pg_database or data["user"] != s.files_pg_role:
+            raise VaultRefused("Cible credential Vault invalide")
+        return {k: data[k] for k in required}

@@ -391,14 +391,33 @@ def test_refresh_must_be_zero_or_shorter_than_validity(prefix, refresh, validity
 
 # --- Classement des réponses Vault par le vrai client MCP ----------------------------
 
-def vault_server(tool_reply=None, status=200):
+def vault_server(tool_reply=None, status=200, refuse=None, refuse_status=403, seen=None):
+    """Serveur MCP minimal. `refuse` nomme la seule phase qui reçoit `refuse_status` :
+    initialize, initialized, call, get ou delete. Il émet un identifiant de session,
+    pour que le SDK ouvre son flux GET et ferme la session par DELETE."""
     payload = {"status": "ok", "vault_id": "scoped", "path": "connection", "data": LOGIN_A}
+    session = {"mcp-session-id": "synthetic-session"}
+
+    def phase(request):
+        if request.method != "POST":
+            return request.method.lower()
+        body = json.loads(request.content)
+        if "id" not in body:
+            return "initialized" if body.get("method") == "notifications/initialized" else "notification"
+        return "initialize" if body["method"] == "initialize" else "call"
 
     def handle(request):
         if status != 200:
             return httpx2.Response(status)
-        if request.method != "POST":
+        current = phase(request)
+        if seen is not None:
+            seen.append(current)
+        if current == refuse:
+            return httpx2.Response(refuse_status)
+        if current == "get":
             return httpx2.Response(405)
+        if current == "delete":
+            return httpx2.Response(200)
         body = json.loads(request.content)
         if "id" not in body:
             return httpx2.Response(202)
@@ -410,8 +429,14 @@ def vault_server(tool_reply=None, status=200):
         else:
             result = tool_reply or {"content": [{"type": "text", "text": json.dumps(payload)}],
                                     "isError": False}
-        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+        return httpx2.Response(200, headers=session,
+                               json={"jsonrpc": "2.0", "id": body["id"], "result": result})
     return handle
+
+
+def tool_text(value):
+    text = value if isinstance(value, str) else json.dumps(value)
+    return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
 def error_reply(error_type):
@@ -431,6 +456,17 @@ def error_reply(error_type):
     (vault_server({"content": [{"type": "text", "text": json.dumps(
         {"status": "ok", "vault_id": "scoped", "path": "connection",
          "data": {**LOGIN_A, "user": "superuser"}})}], "isError": False}), VaultRefused),
+    # Login hors contrat : aucune forme ne doit passer pour une panne.
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection",
+                             "data": None})), VaultRefused),
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection",
+                             "data": []})), VaultRefused),
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection"})),
+     VaultRefused),
+    (vault_server(tool_text([{"status": "ok"}])), VaultRefused),
+    (vault_server(tool_text("ok")), VaultRefused),
+    (vault_server(tool_text("pas du JSON")), VaultRefused),
+    (vault_server({"content": [], "isError": False}), VaultRefused),
     # Pannes : le login en mémoire reste servi jusqu'à sa validité.
     (vault_server(status=500), StorageUnavailable),
     (vault_server(status=503), StorageUnavailable),
@@ -455,6 +491,45 @@ def test_vault_answers_are_classified_as_refusal_or_outage(tmp_path, server, exp
     assert type(error.value) is expected
     assert str(error.value) in ("Vault non autorisé ou indisponible",
                                 "Contrat credential Vault invalide", "Cible credential Vault invalide")
+
+
+@pytest.mark.parametrize("refuse_status", [401, 403])
+@pytest.mark.parametrize("phase", ["initialize", "initialized", "call", "get", "delete"])
+def test_http_refusal_in_any_phase_forgets_a_warm_login(tmp_path, clock, phase, refuse_status):
+    """Le SDK absorbe certaines réponses (notification, flux GET, DELETE de fin de
+    session) : un refus vu dans n'importe quelle phase doit quand même oublier le login."""
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    seen = []
+    state = {"server": vault_server(seen=seen)}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        probe = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=1))
+        assert await probe._read() == LOGIN_A
+        # Le serveur simulé fait bien parcourir toutes les phases au vrai client.
+        assert {"initialize", "initialized", "call", "get", "delete"} <= set(seen)
+        seen.clear()
+        refusing = vault_server(refuse=phase, refuse_status=refuse_status, seen=seen)
+        state["server"] = refusing
+        with pytest.raises(VaultRefused):
+            await probe._read()
+        assert phase in seen  # la phase refusée a bien été atteinte
+        # Par la tâche de fond, horloge figée : seul le refus peut retirer le login chaud.
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=1,
+                                      files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = refusing
+        await until(lambda: credentials._cache is None)
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        asyncio.run(scenario())
 
 
 def test_http_401_from_vault_closes_access_before_validity(tmp_path, clock):
