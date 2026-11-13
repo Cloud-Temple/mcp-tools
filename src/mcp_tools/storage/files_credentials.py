@@ -116,7 +116,7 @@ class Credentials:
         self._wake = None
         self._changed = None
         self._generation = 0  # change à chaque oubli : une lecture engagée avant est caduque
-        self._closed = False  # aclose() : plus de relecture ni de login jusqu'à reset()
+        self._closing = False  # pendant aclose() : aucune relecture ni aucun login
 
     def invalidate(self, descriptor):
         """Oublie ce login s'il est encore en mémoire et demande une relecture.
@@ -159,19 +159,24 @@ class Credentials:
             _record_refresh_stopped(task.exception())
 
     async def aclose(self):
-        """Ferme l'instance : tâche arrêtée en temps borné, login oublié, aucun redémarrage."""
+        """Arrête la tâche en temps borné et oublie le login.
+
+        Pendant l'arrêt, une requête concurrente échoue fermée au lieu de relancer une
+        tâche. Ensuite l'instance repart à son prochain usage : les fabriques lru_cache
+        la rendent telle quelle au lifespan suivant du même processus."""
         task = self._task
         self.reset()
-        self._closed = True
-        if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
-            task.cancel()
-            await asyncio.wait({task}, timeout=STOP_SECONDS)
+        self._closing = True
+        try:
+            if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
+                task.cancel()
+                await asyncio.wait({task}, timeout=STOP_SECONDS)
+        finally:
+            self._closing = False
 
     def reset(self):
-        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée).
-
-        Rouvre aussi une instance fermée : sert à l'isolation des tests."""
-        self._closed = False
+        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée)."""
+        self._closing = False
         self._task = self._loop = self._wake = self._changed = None
         self._forget()
         _LIVE.discard(self)
@@ -239,7 +244,7 @@ class Credentials:
             raise StorageUnavailable("Override service interdit en mode Vault")
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
-        if self._closed:
+        if self._closing:
             raise StorageUnavailable("Vault non autorisé ou indisponible")
         if s.files_vault_refresh_seconds <= 0:
             return await self._attempt()

@@ -614,7 +614,7 @@ def test_refusal_received_is_kept_while_the_session_closes(tmp_path, clock, repl
         assert asyncio.run(scenario()) == (None, None)
 
 
-def test_aclose_closes_for_good_until_reset(monkeypatch):
+def test_aclose_refuses_concurrent_requests_then_a_new_lifespan_restarts(monkeypatch):
     monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
     released = []
 
@@ -638,21 +638,74 @@ def test_aclose_closes_for_good_until_reset(monkeypatch):
         # Pendant l'arrêt, une requête concurrente ne relance rien et échoue fermée.
         with pytest.raises(StorageUnavailable):
             await credentials.sql()
+        assert credentials._task is None
         try:
             async with asyncio.timeout(1.5):  # une régression échoue, sans figer la suite
                 await closing
         finally:
             released.append(1)
-        restarted = credentials._task
-        with pytest.raises(StorageUnavailable):
-            await credentials.sql()
-        # reset() rouvre l'instance (isolation des tests) : nouvelle lecture.
-        credentials.reset()
+        # Arrêt terminé : le lifespan suivant repart d'une lecture neuve.
         del credentials._attempt
-        reopened = await credentials.sql()
-        return restarted, reopened
-    restarted, reopened = asyncio.run(scenario())
-    assert restarted is None and reopened == LOGIN_A
+        return await credentials.sql(), vault.reads
+    login, reads = asyncio.run(scenario())
+    assert login == LOGIN_A and reads == 2
+
+
+def test_two_lifespans_in_one_process_both_read_vault_and_serve():
+    """Les fabriques lru_cache rendent les mêmes instances au second lifespan : l'arrêt
+    du premier ne doit pas les laisser inutilisables."""
+    from src.mcp_tools.config import Settings
+    from src.mcp_tools import server
+    from src.mcp_tools.auth import access_runtime as ar
+    from src.mcp_tools.storage import files_service as fs
+    from src.mcp_tools.storage.files_lifecycle import lifecycle
+
+    s = Settings(_env_file=None).model_copy(update=dict(
+        access_backend="postgres", access_pg_hosts="db", access_pg_database="tools",
+        access_pg_role="app", access_pg_ca_file="synthetic-ca", access_vault_url="https://vault.invalid",
+        files_metadata_backend="postgres", files_credentials_mode="vault", files_pg_database="tools",
+        files_pg_role="app", files_vault_url="https://vault.invalid", files_pg_schema="files",
+        files_pg_system_identifier="1", files_replication_roster="[]", files_s3_prefix="files/",
+        s3_endpoint_url="https://s3.invalid", s3_access_key_id="synthetic",
+        s3_secret_access_key="synthetic", s3_bucket_name="synthetic", technical_log_directory=""))
+    reads = []
+
+    async def read(self):
+        reads.append(self)
+        return dict(LOGIN_A)
+
+    async def ready(self):
+        await self.catalog.credentials.sql()
+
+    async def scenario():
+        states = []
+        for _ in range(2):
+            incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+            app = server.create_app()
+            await incoming.put({"type": "lifespan.startup"})
+            run = asyncio.create_task(app({"type": "lifespan"}, incoming.get, outgoing.put))
+            assert (await asyncio.wait_for(outgoing.get(), 3))["type"] == "lifespan.startup.complete"
+            access = ar.get_access_store().credentials
+            states.append((lifecycle.state, await access.sql(), len(reads)))
+            await incoming.put({"type": "lifespan.shutdown"})
+            assert (await asyncio.wait_for(outgoing.get(), 3))["type"] == "lifespan.shutdown.complete"
+            await asyncio.wait_for(run, 3)
+            assert not list(fc._LIVE)  # aucune tâche ne survit à l'arrêt
+        return states
+
+    ar.get_access_store.cache_clear()
+    fs.get_files_service.cache_clear()
+    try:
+        with patch.object(ar, "get_settings", lambda: s), patch.object(fs, "get_settings", lambda: s), \
+                patch.object(server, "settings", s), patch.object(fc.Credentials, "_read", read), \
+                patch.object(fs.FilesService, "ready", ready):
+            first, second = asyncio.run(scenario())
+    finally:
+        ar.get_access_store.cache_clear()
+        fs.get_files_service.cache_clear()
+    # Chaque lifespan : Files prêt, Access servi, et une lecture Vault neuve par domaine.
+    assert first[:2] == ("ready", LOGIN_A) and second[:2] == ("ready", LOGIN_A)
+    assert first[2] == 2 and second[2] == 4
 
 
 def test_http_refusal_hides_the_login_before_the_read_ends(tmp_path, clock):
