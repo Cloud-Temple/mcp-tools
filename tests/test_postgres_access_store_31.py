@@ -19,6 +19,10 @@ class Provider:
         self.calls += 1
         return dict(host='private', port=5432, dbname='access', user='app', password='PRIVATE-CANARY')
 
+    def invalidate(self, descriptor):
+        # Contrat du fournisseur : oublier ce login après un refus PG ou une identité inattendue.
+        self.invalidated = [*getattr(self, 'invalidated', []), descriptor]
+
 
 def contract_rows(query):
     from src.mcp_tools.auth.postgres_schema import VERSION, CHECKSUM

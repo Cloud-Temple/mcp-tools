@@ -30,6 +30,18 @@ class Settings(BaseSettings):
             raise ValueError("Mission file dependencies require the Access retention extension")
         return self
 
+    @model_validator(mode="after")
+    def validate_vault_refresh(self):
+        # 0 : une lecture Vault par connexion (comportement d'origine, retour arrière).
+        # Sinon la relecture de fond doit précéder l'expiration du login.
+        for prefix in ("access", "files"):
+            refresh = getattr(self, prefix + "_vault_refresh_seconds")
+            validity = getattr(self, prefix + "_vault_validity_seconds")
+            if refresh != 0 and not 1 <= refresh < validity:
+                raise ValueError(prefix.upper() + "_VAULT_REFRESH_SECONDS must be 0 or between 1 "
+                                 "and " + prefix.upper() + "_VAULT_VALIDITY_SECONDS")
+        return self
+
     # --- Serveur MCP ---
     mcp_server_name: str = "mcp-tools"
     mcp_server_host: str = "0.0.0.0"
@@ -49,6 +61,9 @@ class Settings(BaseSettings):
     access_pg_ca_file: str = ""
     access_operation_timeout: float = Field(default=5, ge=2, le=5)
     access_vault_timeout_seconds: float = Field(default=2, ge=1, le=5)
+    # Login PG relu en arrière-plan ; valable `validity` après la dernière lecture réussie.
+    access_vault_refresh_seconds: float = Field(default=30, ge=0, le=300)
+    access_vault_validity_seconds: float = Field(default=60, ge=0, le=600)
     access_cursor_ttl_seconds: int = Field(default=60, ge=1, le=300)
     access_cursor_capacity: int = Field(default=1024, ge=1, le=10000)
     access_vault_url: str = ""
@@ -127,6 +142,8 @@ class Settings(BaseSettings):
     files_vault_path: str = ""
     files_vault_token_file: str = ""
     files_vault_ca_file: str = ""
+    files_vault_refresh_seconds: float = Field(default=30, ge=0, le=300)
+    files_vault_validity_seconds: float = Field(default=60, ge=0, le=600)
 
     # --- Perplexity ---
     perplexity_api_key: str = ""

@@ -39,7 +39,8 @@ TLS verify-full et serveur read-write sont imposés.
 Pour conserver FILES en mode direct dans le même processus, seules les variables
 `PGSERVICEFILE` et `PGPASSFILE` peuvent sélectionner ses fichiers privés0600,
 montés en lecture seule en conteneur. ACCESS ne sélectionne aucun service et
-transmet toujours le mot de passe frais obtenu dans Vault ; il ne reprend ni
+transmet toujours le mot de passe obtenu dans Vault, relu en arrière-plan et
+jamais servi au-delà de `ACCESS_VAULT_VALIDITY_SECONDS` ; il ne reprend ni
 service ni passfile FILES. Toutes les autres variables `PG*` non vides sont
 refusées avant le provider/SQL, même inconnues. `PGSERVICE` doit être **absent** :
 même vide, il peut sélectionner une section `[]`. Cela vaut pour le runtime,

@@ -131,7 +131,9 @@ async def credential(job):
     settings = SimpleNamespace(files_credentials_mode='vault', files_pg_database=job['database'],
         files_pg_role=job['user'], files_vault_url=job['vault_url'], files_vault_id=job['vault_id'],
         files_vault_path=job['vault_path'], files_vault_token_file=job['vault_token_file'],
-        files_vault_ca_file=job['vault_ca_file'], files_connect_timeout=2)
+        files_vault_ca_file=job['vault_ca_file'], files_connect_timeout=2,
+        # Job ponctuel : une lecture Vault, aucune tâche de relecture de fond.
+        files_vault_refresh_seconds=0)
     value = await Credentials(settings).sql()
     if (set(value) != {'host', 'port', 'dbname', 'user', 'password'}
             or set(hosts(value['host'])) != set(hosts(job['hosts']))

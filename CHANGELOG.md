@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Accès et fichiers PostgreSQL : le login SQL n'est plus lu dans Vault à chaque
+  requête. Une tâche de fond le relit toutes les 30 s, les requêtes le prennent
+  en mémoire. Le login sert au plus 60 s après la dernière lecture réussie, puis
+  l'accès est refusé ; nouvel essai toutes les 5 s pendant une panne. Un refus
+  explicite de Vault (401, 403, refus d'outil) l'oublie aussitôt ; un refus
+  PostgreSQL ou une identité inattendue déclenche une seule relecture immédiate.
+  Jetons et droits restent vérifiés à chaque requête. Réglages
+  `ACCESS_VAULT_REFRESH_SECONDS`, `ACCESS_VAULT_VALIDITY_SECONDS`,
+  `FILES_VAULT_REFRESH_SECONDS`, `FILES_VAULT_VALIDITY_SECONDS` (30 et 60 par
+  défaut, transmis par le profil Compose) ; un intervalle à 0 rétablit l'ancien
+  comportement. Arrêt de la tâche au shutdown ; un arrêt imprévu est journalisé
+  (`credential.refresh_stopped`, type d'erreur seul).
+
 - Accès PostgreSQL : rendre réglable le sous-budget de lecture du credential
   Vault par `ACCESS_VAULT_TIMEOUT_SECONDS`, défaut 2 s conservé. La deadline
   globale et sa réserve de nettoyage restent prioritaires ; aucun retry ni

@@ -77,8 +77,12 @@ installation/grants/init, backup, restore, rollback. Provider exact MCP Vault
 `secret_read(vault_id,path)` ; HTTPS/CA exacts, Bearer en fichier privé, secret
 custom SQL dans **coffre Tools propre**, scopes app/install/backup/restore
 séparés. Ne pas utiliser le mount réservé aux propres credentials SQL du
-fournisseur Vault. Chaque connexion/job réautorise Vault, aucun credential
-périmé/direct caché de secours, aucun secret en argv/Git/image/journal.
+fournisseur Vault. Chaque job et chaque commande opérateur relit Vault. Le
+service garde le login en mémoire, relu en arrière-plan toutes les 30 s et servi
+au plus 60 s après la dernière lecture réussie ; au-delà, ou sur refus explicite
+de Vault, l'accès est refusé. Aucun credential périmé/direct de secours, rien
+sur disque, aucun secret en argv/Git/image/journal. Les jetons et droits
+d'accès restent vérifiés en base à chaque requête.
 
 Bootstrap sans cycle : opérateur rétablit fournisseur Vault/clefs/auth par sa
 chaîne publique autonome, accès de récupération détenus hors base Tools morte ;

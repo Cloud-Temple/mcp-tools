@@ -1,0 +1,1164 @@
+"""Login PostgreSQL relu en arrière-plan : contrat de validité, refus fermé, lecture unique.
+
+Les tests pilotent Vault par un double de `Credentials._read` et l'âge du login par
+l'horloge `_now`. La boucle asyncio reste réelle ; seuls les espacements sont réduits.
+Le classement des réponses Vault passe par le vrai client MCP sur un transport simulé.
+"""
+import asyncio
+import json
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import httpx2
+import pytest
+
+from src.mcp_tools.storage import files_credentials as fc
+from src.mcp_tools.storage.files_credentials import Credentials, StorageUnavailable, VaultRefused
+
+LOGIN_A = {"host": "db", "port": 5432, "dbname": "tools", "user": "app", "password": "A"}
+LOGIN_B = {**LOGIN_A, "password": "B"}
+
+
+def cfg(**overrides):
+    values = dict(files_credentials_mode="vault", files_pg_service="",
+                  files_vault_url="https://vault.invalid", files_vault_token_file="unused",
+                  files_vault_ca_file=None, files_connect_timeout=0.3, files_vault_id="scoped",
+                  files_vault_path="connection", files_pg_database="tools", files_pg_role="app",
+                  files_vault_refresh_seconds=30, files_vault_validity_seconds=60)
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+class Vault:
+    """Double de `_read` : rejoue un script, puis la valeur par défaut."""
+
+    def __init__(self, *script, default=LOGIN_A, gate=None):
+        self.script, self.default, self.gate = list(script), default, gate
+        self.reads, self.times = 0, []
+
+    async def __call__(self):
+        self.reads += 1
+        self.times.append(time.monotonic())
+        if self.gate is not None:
+            await self.gate.wait()
+        outcome = self.script.pop(0) if self.script else self.default
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return dict(outcome)
+
+
+def wired(vault, **overrides):
+    credentials = Credentials(cfg(**overrides))
+    credentials._read = vault
+    return credentials
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Âge du login piloté ; les espacements de la tâche restent en temps réel."""
+    now = [1000.0]
+    monkeypatch.setattr(fc, "_now", lambda: now[0])
+    return now
+
+
+@pytest.fixture(autouse=True)
+def short_spacing(monkeypatch):
+    monkeypatch.setattr(fc, "MIN_SPACING_SECONDS", 0.01)
+    monkeypatch.setattr(fc, "RETRY_SECONDS", 0.02)
+
+
+async def until(predicate, limit=2.0):
+    deadline = time.monotonic() + limit
+    while not predicate():
+        assert time.monotonic() < deadline, "condition jamais atteinte"
+        await asyncio.sleep(0.005)
+
+
+# --- Relecture de fond et service depuis la mémoire ---------------------------------
+
+def test_requests_are_served_from_memory_without_reading_vault():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault)
+        first = await credentials.sql()
+        logins = await asyncio.gather(*(credentials.sql() for _ in range(100)))
+        # La copie rendue ne modifie pas le login gardé.
+        first["password"] = "changed"
+        return vault.reads, logins, await credentials.sql()
+    reads, logins, again = asyncio.run(scenario())
+    assert reads == 1
+    assert all(login == LOGIN_A for login in logins) and again == LOGIN_A
+
+
+def test_background_task_rereads_vault_without_any_request():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault, files_vault_refresh_seconds=0.03)
+        await credentials.sql()
+        # Aucune requête ici : seule la tâche de fond peut relire.
+        await until(lambda: vault.reads >= 4)
+        gaps = [b - a for a, b in zip(vault.times, vault.times[1:])]
+        return gaps
+    gaps = asyncio.run(scenario())
+    # Les relectures suivent l'intervalle, pas une boucle serrée.
+    assert min(gaps) >= 0.025
+
+
+def test_rotated_login_is_picked_up_by_the_next_background_read():
+    async def scenario():
+        vault = Vault(LOGIN_A, default=LOGIN_B)
+        credentials = wired(vault, files_vault_refresh_seconds=0.03)
+        assert await credentials.sql() == LOGIN_A
+        await until(lambda: vault.reads >= 2)
+        return await credentials.sql()
+    assert asyncio.run(scenario()) == LOGIN_B
+
+
+# --- Démarrage : jamais d'accès sans login valide ------------------------------------
+
+def test_first_request_waits_for_the_first_read_within_the_budget():
+    async def scenario():
+        gate = asyncio.Event()
+        vault = Vault(gate=gate)
+        credentials = wired(vault, files_connect_timeout=1.0)
+        asyncio.get_running_loop().call_later(0.05, gate.set)
+        return await credentials.sql(), vault.reads
+    login, reads = asyncio.run(scenario())
+    assert login == LOGIN_A and reads == 1
+
+
+@pytest.mark.parametrize("failure", [None, StorageUnavailable("panne"), VaultRefused("refus")])
+def test_startup_without_a_successful_read_fails_closed_after_the_budget(failure):
+    async def scenario():
+        # None : Vault ne répond jamais ; sinon Vault échoue à chaque essai.
+        vault = Vault(gate=asyncio.Event()) if failure is None else Vault(default=failure)
+        credentials = wired(vault, files_connect_timeout=0.15)
+        started = time.monotonic()
+        with pytest.raises(StorageUnavailable, match="Vault non autorisé ou indisponible"):
+            await credentials.sql()
+        return time.monotonic() - started
+    elapsed = asyncio.run(scenario())
+    assert 0.14 <= elapsed < 1.0
+
+
+# --- Validité : 60 s après la dernière lecture réussie, puis refus fermé -------------
+
+def test_vault_outage_keeps_the_login_until_validity_then_fails_closed(clock):
+    async def scenario():
+        vault = Vault(LOGIN_A, default=StorageUnavailable("panne"))
+        credentials = wired(vault, files_vault_refresh_seconds=0.03, files_connect_timeout=0.1)
+        assert await credentials.sql() == LOGIN_A
+        await until(lambda: vault.reads >= 3)  # la panne est bien vue par la tâche
+        clock[0] = 1059.9
+        assert await credentials.sql() == LOGIN_A
+        clock[0] = 1060.0
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        # Vault revient : le login suivant est servi sans redémarrer le processus.
+        vault.default = LOGIN_B
+        clock[0] = 1061.0
+        await until(lambda: credentials._valid() is not None)
+        return await credentials.sql()
+    assert asyncio.run(scenario()) == LOGIN_B
+
+
+def test_explicit_vault_refusal_forgets_the_login_immediately(clock):
+    async def scenario():
+        vault = Vault(LOGIN_A, default=VaultRefused("refus"))
+        credentials = wired(vault, files_vault_refresh_seconds=0.03, files_connect_timeout=0.1)
+        assert await credentials.sql() == LOGIN_A
+        await until(lambda: vault.reads >= 2)
+        # L'horloge n'a pas bougé : seul le refus explicite peut fermer l'accès.
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    asyncio.run(scenario())
+
+
+# --- Tâche morte : journal à raison fermée, pas de relance, expiration ---------------
+
+class Boom(BaseException):
+    """Échappe au `except Exception` de la tâche, comme un défaut de programmation."""
+
+
+def test_dead_refresher_is_logged_with_a_closed_reason_and_login_expires(clock, monkeypatch):
+    events = []
+    from src.mcp_tools import observability
+    monkeypatch.setattr(observability, "record_activity",
+                        lambda event, **fields: events.append((event, fields)))
+
+    async def scenario():
+        vault = Vault(LOGIN_A, Boom("PRIVATE-CANARY password=secret"))
+        credentials = wired(vault, files_vault_refresh_seconds=0.03, files_connect_timeout=5)
+        assert await credentials.sql() == LOGIN_A
+        task = credentials._task
+        await until(task.done)
+        await asyncio.sleep(0.1)
+        clock[0] = 1059.0
+        assert await credentials.sql() == LOGIN_A
+        clock[0] = 1060.0
+        started = time.monotonic()
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        # Refus immédiat : rien n'attend une tâche qui ne répondra plus.
+        assert time.monotonic() - started < 0.5
+        assert credentials._task is task and vault.reads == 2
+    asyncio.run(scenario())
+    assert events == [("credential.refresh_stopped", {
+        "level": "error", "message": "Relecture du login PostgreSQL arrêtée",
+        "details": {"error_type": "Boom"}})]
+
+
+def test_cancelled_refresher_is_not_reported_as_dead(monkeypatch):
+    events = []
+    from src.mcp_tools import observability
+    monkeypatch.setattr(observability, "record_activity", lambda event, **fields: events.append(event))
+
+    async def scenario():
+        credentials = wired(Vault())
+        await credentials.sql()
+        await credentials.aclose()
+    asyncio.run(scenario())
+    assert events == []
+
+
+# --- Invalidation : refus PG ou identité inattendue ----------------------------------
+
+def test_invalidation_triggers_one_read_for_many_concurrent_failures():
+    async def scenario():
+        gate = asyncio.Event()
+        vault = Vault(LOGIN_A, default=LOGIN_B)
+        credentials = wired(vault, files_connect_timeout=1.0)
+        stale = await credentials.sql()
+        vault.gate = gate
+        # Cinquante connexions refusées en même temps avec le même login.
+        for _ in range(50):
+            credentials.invalidate(stale)
+        waiters = [asyncio.create_task(credentials.sql()) for _ in range(20)]
+        await until(lambda: vault.reads == 2)
+        for _ in range(50):
+            credentials.invalidate(stale)
+        gate.set()
+        logins = await asyncio.gather(*waiters)
+        await asyncio.sleep(0.05)
+        return vault.reads, logins
+    reads, logins = asyncio.run(scenario())
+    assert reads == 2
+    assert all(login == LOGIN_B for login in logins)
+
+
+def test_stale_invalidation_never_erases_a_newer_login():
+    async def scenario():
+        vault = Vault(LOGIN_A, default=LOGIN_B)
+        credentials = wired(vault)
+        old = await credentials.sql()
+        credentials.invalidate(old)
+        await until(lambda: credentials._valid() is not None)
+        assert await credentials.sql() == LOGIN_B
+        credentials.invalidate(old)  # un appelant en retard rapporte l'ancien login
+        await asyncio.sleep(0.05)
+        return vault.reads, await credentials.sql()
+    reads, login = asyncio.run(scenario())
+    assert reads == 2 and login == LOGIN_B
+
+
+def test_invalidated_login_is_never_served_while_vault_is_down(clock):
+    async def scenario():
+        vault = Vault(LOGIN_A, default=StorageUnavailable("panne"))
+        credentials = wired(vault, files_connect_timeout=0.1)
+        rejected = await credentials.sql()
+        credentials.invalidate(rejected)
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    asyncio.run(scenario())
+
+
+# --- Espacement des lectures ----------------------------------------------------------
+
+def test_reads_are_spaced_after_success_and_after_failure(monkeypatch):
+    monkeypatch.setattr(fc, "MIN_SPACING_SECONDS", 0.15)
+    monkeypatch.setattr(fc, "RETRY_SECONDS", 0.25)
+
+    async def scenario():
+        vault = Vault(LOGIN_A, LOGIN_B, StorageUnavailable("panne"), default=LOGIN_A)
+        credentials = wired(vault, files_connect_timeout=2.0)
+        await credentials.sql()
+        credentials.invalidate(LOGIN_A)  # réveil immédiat, freiné par l'espacement minimal
+        await until(lambda: vault.reads >= 2)
+        credentials.invalidate(LOGIN_B)  # troisième lecture : panne
+        await until(lambda: vault.reads >= 4)
+        return [b - a for a, b in zip(vault.times, vault.times[1:])]
+    after_success, after_wake, after_failure = asyncio.run(scenario())
+    assert after_success >= 0.14 and after_wake >= 0.14
+    # Après une panne : nouvel essai à RETRY_SECONDS, bien avant l'intervalle de 30 s.
+    assert 0.24 <= after_failure < 2.0
+
+
+# --- Retour arrière : 0 relit Vault à chaque connexion --------------------------------
+
+def test_zero_interval_reads_vault_on_every_connection_without_a_task():
+    async def scenario():
+        vault = Vault(LOGIN_A, StorageUnavailable("panne"), default=LOGIN_B)
+        credentials = wired(vault, files_vault_refresh_seconds=0, files_vault_validity_seconds=0)
+        first = await credentials.sql()
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        third = await credentials.sql()
+        return vault.reads, first, third, credentials._task
+    reads, first, third, task = asyncio.run(scenario())
+    assert (reads, first, third, task) == (3, LOGIN_A, LOGIN_B, None)
+    assert not list(fc._LIVE)
+
+
+# --- Arrêt propre ---------------------------------------------------------------------
+
+def test_stop_refreshers_cancels_every_task_and_forgets_logins():
+    async def scenario():
+        access, files = wired(Vault()), wired(Vault())
+        await access.sql()
+        await files.sql()
+        tasks = [access._task, files._task]
+        await fc.stop_refreshers()
+        return tasks, access, files
+    tasks, access, files = asyncio.run(scenario())
+    assert all(task.cancelled() for task in tasks)
+    assert access._cache is None and files._cache is None and not list(fc._LIVE)
+
+
+def test_lifespan_shutdown_stops_refreshers(monkeypatch):
+    from src.mcp_tools.storage.files_lifecycle import StorageLifecycleMiddleware
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "lifespan.startup.complete"})
+        await receive()
+        await send({"type": "lifespan.shutdown.complete"})
+
+    async def scenario():
+        credentials = wired(Vault())
+        await credentials.sql()
+        task = credentials._task
+        messages = iter([{"type": "lifespan.startup"}, {"type": "lifespan.shutdown"}])
+        async def receive():
+            return next(messages)
+        async def send(message):
+            pass
+        settings = SimpleNamespace(files_metadata_backend="s3")
+        await StorageLifecycleMiddleware(app, settings)({"type": "lifespan"}, receive, send)
+        # Vérifié dans la boucle : asyncio.run annulerait de toute façon la tâche en sortant.
+        return task.done(), task, list(fc._LIVE)
+    stopped, task, live = asyncio.run(scenario())
+    assert stopped and task.cancelled() and live == []
+
+
+def test_a_new_event_loop_starts_a_fresh_task_and_read():
+    vault = Vault()
+    credentials = wired(vault)
+
+    async def once(expected):
+        login, task = await credentials.sql(), credentials._task
+        # La nouvelle tâche relit Vault, même si un login d'une boucle précédente est valide.
+        await until(lambda: vault.reads >= expected)
+        return login, task
+    first, task_one = asyncio.run(once(1))
+    second, task_two = asyncio.run(once(2))
+    assert first == second == LOGIN_A
+    assert task_one is not task_two and vault.reads == 2
+
+
+# --- Configuration --------------------------------------------------------------------
+
+def test_defaults_are_thirty_and_sixty_seconds():
+    from src.mcp_tools.config import Settings
+    s = Settings(_env_file=None)
+    assert (s.access_vault_refresh_seconds, s.access_vault_validity_seconds) == (30, 60)
+    assert (s.files_vault_refresh_seconds, s.files_vault_validity_seconds) == (30, 60)
+
+
+@pytest.mark.parametrize("prefix", ["access", "files"])
+@pytest.mark.parametrize("refresh,validity,ok", [
+    (0, 0, True), (0, 60, True), (1, 2, True), (30, 60, True), (300, 600, True),
+    (60, 60, False), (61, 60, False), (30, 0, False), (0.5, 60, False),
+    (-1, 60, False), (301, 600, False), (30, 601, False),
+    (float("nan"), 60, False), (float("inf"), 60, False), (30, float("inf"), False),
+])
+def test_refresh_must_be_zero_or_shorter_than_validity(prefix, refresh, validity, ok):
+    from src.mcp_tools.config import Settings
+    values = {prefix + "_vault_refresh_seconds": refresh, prefix + "_vault_validity_seconds": validity}
+    if ok:
+        Settings(_env_file=None, **values)
+    else:
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, **values)
+
+
+# --- Classement des réponses Vault par le vrai client MCP ----------------------------
+
+def vault_server(tool_reply=None, status=200, refuse=None, refuse_status=403, seen=None):
+    """Serveur MCP minimal. `refuse` nomme la seule phase qui reçoit `refuse_status` :
+    initialize, initialized, call, get ou delete. Il émet un identifiant de session,
+    pour que le SDK ouvre son flux GET et ferme la session par DELETE."""
+    payload = {"status": "ok", "vault_id": "scoped", "path": "connection", "data": LOGIN_A}
+    session = {"mcp-session-id": "synthetic-session"}
+
+    def phase(request):
+        if request.method != "POST":
+            return request.method.lower()
+        body = json.loads(request.content)
+        if "id" not in body:
+            return "initialized" if body.get("method") == "notifications/initialized" else "notification"
+        return "initialize" if body["method"] == "initialize" else "call"
+
+    def handle(request):
+        if status != 200:
+            return httpx2.Response(status)
+        current = phase(request)
+        if seen is not None:
+            seen.append(current)
+        if current == refuse:
+            return httpx2.Response(refuse_status)
+        if current == "get":
+            return httpx2.Response(405)
+        if current == "delete":
+            return httpx2.Response(200)
+        body = json.loads(request.content)
+        if "id" not in body:
+            return httpx2.Response(202)
+        if body["method"] == "initialize":
+            result = {"protocolVersion": body["params"]["protocolVersion"], "capabilities": {},
+                      "serverInfo": {"name": "local-contract", "version": "1"}}
+        elif body["method"] == "tools/list":
+            result = {"tools": [{"name": "secret_read", "inputSchema": {"type": "object"}}]}
+        else:
+            result = tool_reply or {"content": [{"type": "text", "text": json.dumps(payload)}],
+                                    "isError": False}
+        return httpx2.Response(200, headers=session,
+                               json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+    return handle
+
+
+def tool_text(value):
+    text = value if isinstance(value, str) else json.dumps(value)
+    return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def error_reply(error_type):
+    text = json.dumps({"status": "error", "error_type": error_type, "message": "x"})
+    return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+@pytest.mark.parametrize("server,expected", [
+    (vault_server(), None),
+    (vault_server(status=401), VaultRefused),
+    (vault_server(status=403), VaultRefused),
+    (vault_server(error_reply("permission_denied")), VaultRefused),
+    (vault_server(error_reply("not_found")), VaultRefused),
+    (vault_server({"content": [{"type": "text", "text": json.dumps(
+        {"status": "ok", "vault_id": "other", "path": "connection", "data": LOGIN_A})}],
+        "isError": False}), VaultRefused),
+    (vault_server({"content": [{"type": "text", "text": json.dumps(
+        {"status": "ok", "vault_id": "scoped", "path": "connection",
+         "data": {**LOGIN_A, "user": "superuser"}})}], "isError": False}), VaultRefused),
+    # Login hors contrat : aucune forme ne doit passer pour une panne.
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection",
+                             "data": None})), VaultRefused),
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection",
+                             "data": []})), VaultRefused),
+    (vault_server(tool_text({"status": "ok", "vault_id": "scoped", "path": "connection"})),
+     VaultRefused),
+    (vault_server(tool_text([{"status": "ok"}])), VaultRefused),
+    (vault_server(tool_text("ok")), VaultRefused),
+    (vault_server(tool_text("pas du JSON")), VaultRefused),
+    (vault_server({"content": [], "isError": False}), VaultRefused),
+    (vault_server(tool_text({})), VaultRefused),
+    (vault_server(tool_text({"status": None, "vault_id": "scoped", "path": "connection",
+                             "data": LOGIN_A})), VaultRefused),
+    (vault_server(tool_text({"status": "okay", "vault_id": "scoped", "path": "connection",
+                             "data": LOGIN_A})), VaultRefused),
+    # Pannes : le login en mémoire reste servi jusqu'à sa validité.
+    (vault_server(status=500), StorageUnavailable),
+    (vault_server(status=503), StorageUnavailable),
+    (vault_server(error_reply("backend_unavailable")), StorageUnavailable),
+    (vault_server(tool_text({"status": "error", "message": "x"})), StorageUnavailable),
+])
+def test_vault_answers_are_classified_as_refusal_or_outage(tmp_path, server, expected):
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    credentials = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=2))
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(server), **kwargs)
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        if expected is None:
+            assert asyncio.run(credentials._read()) == LOGIN_A
+            return
+        with pytest.raises(StorageUnavailable) as error:
+            asyncio.run(credentials._read())
+    # VaultRefused hérite de StorageUnavailable : le type exact compte.
+    assert type(error.value) is expected
+    assert str(error.value) in ("Vault non autorisé ou indisponible",
+                                "Contrat credential Vault invalide", "Cible credential Vault invalide")
+
+
+@pytest.mark.parametrize("refuse_status", [401, 403])
+@pytest.mark.parametrize("phase", ["initialize", "initialized", "call", "get", "delete"])
+def test_http_refusal_in_any_phase_forgets_a_warm_login(tmp_path, clock, phase, refuse_status):
+    """Le SDK absorbe certaines réponses (notification, flux GET, DELETE de fin de
+    session) : un refus vu dans n'importe quelle phase doit quand même oublier le login."""
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    seen = []
+    state = {"server": vault_server(seen=seen)}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        probe = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=1))
+        assert await probe._read() == LOGIN_A
+        # Le serveur simulé fait bien parcourir toutes les phases au vrai client.
+        assert {"initialize", "initialized", "call", "get", "delete"} <= set(seen)
+        seen.clear()
+        refusing = vault_server(refuse=phase, refuse_status=refuse_status, seen=seen)
+        state["server"] = refusing
+        with pytest.raises(VaultRefused):
+            await probe._read()
+        assert phase in seen  # la phase refusée a bien été atteinte
+        # Par la tâche de fond, horloge figée : seul le refus peut retirer le login chaud.
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=1,
+                                      files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = refusing
+        await until(lambda: credentials._cache is None)
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        asyncio.run(scenario())
+
+
+def private_token(tmp_path):
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    return str(token)
+
+
+def gated_server(refuse, gate, seen):
+    """Comme vault_server, mais secret_read attend `gate` : la lecture reste en cours."""
+    inner = vault_server(refuse=refuse, refuse_status=403, seen=seen)
+
+    async def handle(request):
+        if request.method == "POST" and json.loads(request.content).get("method") == "tools/call":
+            seen.append("held")
+            await gate.wait()
+        return inner(request)
+    return handle
+
+
+def delete_held_server(reply, gate, seen):
+    """secret_read répond `reply` ; le DELETE de fin de session attend `gate`."""
+    inner = vault_server(reply, seen=seen)
+
+    async def handle(request):
+        if request.method == "DELETE":
+            seen.append("delete-held")
+            await gate.wait()
+        return inner(request)
+    return handle
+
+
+REFUSED_REPLIES = [
+    error_reply("permission_denied"),
+    tool_text({}),
+    tool_text({"status": None, "vault_id": "scoped", "path": "connection", "data": LOGIN_A}),
+    tool_text({"status": "okay", "vault_id": "scoped", "path": "connection", "data": LOGIN_A}),
+]
+
+
+@pytest.mark.parametrize("release", [True, False], ids=["delete_slow", "delete_past_budget"])
+@pytest.mark.parametrize("reply", REFUSED_REPLIES, ids=["denied", "empty", "status_null", "status_unknown"])
+def test_refusal_received_is_kept_while_the_session_closes(tmp_path, clock, reply, release):
+    """Le refus est dans la réponse de secret_read : ni un DELETE lent ni un DELETE qui
+    dépasse le budget ne doivent le transformer en panne qui garde le login."""
+    seen, state = [], {}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        gate = asyncio.Event()
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=private_token(tmp_path),
+                                      files_connect_timeout=0.5, files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = delete_held_server(reply, gate, seen)
+        await until(lambda: "delete-held" in seen)
+        await asyncio.sleep(0.02)
+        during_close = credentials._valid()
+        if release:
+            gate.set()
+        # La lecture se termine (DELETE libéré ou budget dépassé) : le login reste oublié.
+        await until(lambda: seen.count("call") >= 2 or credentials._task.done(), limit=3)
+        gate.set()
+        after = credentials._valid()
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        return during_close, after
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) == (None, None)
+
+
+def test_aclose_refuses_concurrent_requests_then_a_new_lifespan_restarts(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault)
+        assert await credentials.sql() == LOGIN_A
+        credentials._attempt = resisting
+        credentials.invalidate(LOGIN_A)  # la tâche entre dans une lecture qui résiste
+        await asyncio.sleep(0.02)
+        closing = asyncio.create_task(credentials.aclose())
+        await asyncio.sleep(0.05)
+        # Pendant l'arrêt, une requête concurrente ne relance rien et échoue fermée.
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+        assert credentials._task is None
+        try:
+            async with asyncio.timeout(1.5):  # une régression échoue, sans figer la suite
+                await closing
+        finally:
+            released.append(1)
+        # Arrêt terminé : le lifespan suivant repart d'une lecture neuve.
+        del credentials._attempt
+        return await credentials.sql(), vault.reads
+    login, reads = asyncio.run(scenario())
+    assert login == LOGIN_A and reads == 2
+
+
+def test_concurrent_acloses_never_reopen_during_the_stop():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault)
+        await credentials.sql()
+        old = credentials._task
+        first = asyncio.create_task(credentials.aclose())
+        second = asyncio.create_task(credentials.aclose())
+        request = asyncio.create_task(credentials.sql())
+        results = await asyncio.gather(first, second, request, return_exceptions=True)
+        stopped = (type(results[2]), vault.reads, credentials._task, old.done())
+        # Arrêt d'instance terminé, lifespan toujours actif : l'instance repart.
+        return stopped, await credentials.sql(), vault.reads
+    stopped, login, reads = asyncio.run(scenario())
+    assert stopped == (StorageUnavailable, 1, None, True)
+    assert login == LOGIN_A and reads == 2
+
+
+def test_first_aclose_timing_out_does_not_reopen_while_another_still_waits(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = wired(Vault())
+        await credentials.sql()
+        credentials._attempt = resisting
+        credentials.invalidate(LOGIN_A)  # la tâche entre dans une lecture qui résiste
+        await asyncio.sleep(0.02)
+        try:
+            async with asyncio.timeout(2):
+                first = asyncio.create_task(credentials.aclose())
+                await asyncio.sleep(0.1)
+                second = asyncio.create_task(credentials.aclose())
+                await first  # borne atteinte, la tâche résiste encore
+                assert not second.done()
+                with pytest.raises(StorageUnavailable):
+                    await credentials.sql()  # le second arrêt est toujours en cours
+                await second
+        finally:
+            released.append(1)
+        return credentials._closing
+    assert asyncio.run(scenario()) == 0
+
+
+def test_requests_during_the_last_stop_are_refused_and_no_task_survives_it():
+    async def scenario():
+        vaults = [Vault(), Vault()]
+        instances = [wired(vault) for vault in vaults]
+        await asyncio.gather(*(c.sql() for c in instances))
+        first = list(fc._LIVE)[0]
+        stopper = asyncio.create_task(fc.stop_refreshers())
+
+        async def late():
+            # Retardataire : arrive quand la première instance est déjà arrêtée.
+            while first._task is not None or first._closing:
+                await asyncio.sleep(0)
+            return await first.sql()
+        late_result = (await asyncio.gather(late(), return_exceptions=True))[0]
+        await stopper
+        after_stop = (type(late_result), len(list(fc._LIVE)), first._task)
+        # Arrêt terminé : un chemin opérateur du même processus lit Vault normalement.
+        return after_stop, await first.sql(), sum(v.reads for v in vaults)
+    after_stop, login, reads = asyncio.run(scenario())
+    assert after_stop == (StorageUnavailable, 0, None)
+    assert login == LOGIN_A and reads == 3
+
+
+async def run_lifespan(app, stop, *, fail_startup=None):
+    """Fait tourner un lifespan ASGI à travers StorageLifecycleMiddleware."""
+    from src.mcp_tools.storage.files_lifecycle import StorageLifecycleMiddleware
+
+    async def inner(scope, receive, send):
+        if fail_startup == "before_startup":
+            raise RuntimeError("application cassée avant le démarrage")
+        await receive()
+        if fail_startup == "after_startup":
+            raise RuntimeError("démarrage avorté")
+        await send({"type": "lifespan.startup.complete"})
+        await receive()
+        await send({"type": "lifespan.shutdown.complete"})
+
+    queue = asyncio.Queue()
+    await queue.put({"type": "lifespan.startup"})
+
+    async def receive():
+        message = await queue.get()
+        return message
+
+    async def send(message):
+        if message["type"] == "lifespan.startup.complete":
+            await stop.wait()
+            await queue.put({"type": "lifespan.shutdown"})
+    middleware = StorageLifecycleMiddleware(inner, SimpleNamespace(files_metadata_backend="s3"))
+    await middleware({"type": "lifespan"}, receive, send)
+
+
+@pytest.mark.parametrize("second_fails", [None, "after_startup", "before_startup"])
+def test_ending_one_lifespan_keeps_shared_instances_alive_for_the_other(second_fails):
+    async def scenario():
+        credentials = wired(Vault())
+        stop_a, stop_b = asyncio.Event(), asyncio.Event()
+        a = asyncio.create_task(run_lifespan(None, stop_a))
+        await asyncio.sleep(0.01)
+        assert await credentials.sql() == LOGIN_A  # instance partagée, utilisée par A
+        task = credentials._task
+        b = asyncio.create_task(run_lifespan(None, stop_b, fail_startup=second_fails))
+        await asyncio.sleep(0.01)
+        stop_b.set()
+        await asyncio.gather(b, return_exceptions=True)
+        alive = (not task.done(), await credentials.sql())
+        stop_a.set()
+        await a
+        return alive, task.done(), list(fc._LIVE)
+    alive, stopped, live = asyncio.run(scenario())
+    assert alive == (True, LOGIN_A)
+    assert stopped and live == []
+
+
+@pytest.mark.parametrize("refresh", [30, 0])
+def test_operator_credentials_work_after_a_lifespan_has_ended(refresh):
+    async def scenario():
+        service = wired(Vault())
+        stop = asyncio.Event()
+        lifespan = asyncio.create_task(run_lifespan(None, stop))
+        await asyncio.sleep(0.01)
+        await service.sql()
+        stop.set()
+        await lifespan
+        operator = wired(Vault(), files_vault_refresh_seconds=refresh,
+                         files_vault_validity_seconds=60 if refresh else 0)
+        return await operator.sql()
+    assert asyncio.run(scenario()) == LOGIN_A
+
+
+def test_postgres_preparer_reads_its_job_credential_through_the_real_provider(tmp_path, monkeypatch):
+    """Le préparateur construit sa configuration à la main : il doit lire Vault une fois,
+    sans tâche de fond, par le vrai Credentials.sql()."""
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("prepare_tools", root / "scripts/prepare_postgres.py")
+    prep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prep)
+    for name in [n for n in list(__import__("os").environ) if n.startswith("PG")]:
+        monkeypatch.delenv(name)
+    login = {"host": "pg1,pg2", "port": 5432, "dbname": "tools", "user": "tools_owner",
+             "password": "S" * 40}
+    payload = {"status": "ok", "vault_id": "jobs", "path": "owner", "data": login}
+    job = {"database": "tools", "user": "tools_owner", "hosts": "pg2,pg1",
+           "vault_url": "https://vault.invalid", "vault_id": "jobs", "vault_path": "owner",
+           "vault_token_file": private_token(tmp_path), "vault_ca_file": None}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(vault_server(tool_text(payload))), **kwargs)
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        value = asyncio.run(prep.credential(job))
+    assert value == login and not list(fc._LIVE)
+
+
+def test_two_lifespans_in_one_process_both_read_vault_and_serve():
+    """Les fabriques lru_cache rendent les mêmes instances au second lifespan : l'arrêt
+    du premier ne doit pas les laisser inutilisables."""
+    from src.mcp_tools.config import Settings
+    from src.mcp_tools import server
+    from src.mcp_tools.auth import access_runtime as ar
+    from src.mcp_tools.storage import files_service as fs
+    from src.mcp_tools.storage.files_lifecycle import lifecycle
+
+    s = Settings(_env_file=None).model_copy(update=dict(
+        access_backend="postgres", access_pg_hosts="db", access_pg_database="tools",
+        access_pg_role="app", access_pg_ca_file="synthetic-ca", access_vault_url="https://vault.invalid",
+        files_metadata_backend="postgres", files_credentials_mode="vault", files_pg_database="tools",
+        files_pg_role="app", files_vault_url="https://vault.invalid", files_pg_schema="files",
+        files_pg_system_identifier="1", files_replication_roster="[]", files_s3_prefix="files/",
+        s3_endpoint_url="https://s3.invalid", s3_access_key_id="synthetic",
+        s3_secret_access_key="synthetic", s3_bucket_name="synthetic", technical_log_directory=""))
+    reads = []
+
+    async def read(self):
+        reads.append(self)
+        return dict(LOGIN_A)
+
+    async def ready(self):
+        await self.catalog.credentials.sql()
+
+    async def scenario():
+        states = []
+        for _ in range(2):
+            incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+            app = server.create_app()
+            await incoming.put({"type": "lifespan.startup"})
+            run = asyncio.create_task(app({"type": "lifespan"}, incoming.get, outgoing.put))
+            assert (await asyncio.wait_for(outgoing.get(), 3))["type"] == "lifespan.startup.complete"
+            access = ar.get_access_store().credentials
+            states.append((lifecycle.state, await access.sql(), len(reads)))
+            await incoming.put({"type": "lifespan.shutdown"})
+            assert (await asyncio.wait_for(outgoing.get(), 3))["type"] == "lifespan.shutdown.complete"
+            await asyncio.wait_for(run, 3)
+            assert not list(fc._LIVE)  # aucune tâche ne survit à l'arrêt
+        return states
+
+    ar.get_access_store.cache_clear()
+    fs.get_files_service.cache_clear()
+    try:
+        with patch.object(ar, "get_settings", lambda: s), patch.object(fs, "get_settings", lambda: s), \
+                patch.object(server, "settings", s), patch.object(fc.Credentials, "_read", read), \
+                patch.object(fs.FilesService, "ready", ready):
+            first, second = asyncio.run(scenario())
+    finally:
+        ar.get_access_store.cache_clear()
+        fs.get_files_service.cache_clear()
+    # Chaque lifespan : Files prêt, Access servi, et une lecture Vault neuve par domaine.
+    assert first[:2] == ("ready", LOGIN_A) and second[:2] == ("ready", LOGIN_A)
+    assert first[2] == 2 and second[2] == 4
+
+
+def test_http_refusal_hides_the_login_before_the_read_ends(tmp_path, clock):
+    seen, state = [], {}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        gate = asyncio.Event()
+        state["server"] = vault_server()
+        credentials = Credentials(cfg(files_vault_token_file=private_token(tmp_path),
+                                      files_connect_timeout=2, files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = gated_server("get", gate, seen)
+        # Le GET est refusé pendant que secret_read est retenu : la lecture n'est pas finie.
+        await until(lambda: "get" in seen and "held" in seen)
+        await asyncio.sleep(0.05)  # le hook a traité le 403 ; secret_read reste retenu
+        assert not gate.is_set() and "call" not in seen
+        held = credentials._valid()
+        gate.set()
+        await until(lambda: seen.count("initialize") >= 2 or credentials._cache is None)
+        return held
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) is None
+
+
+def test_read_started_before_an_invalidation_cannot_resurrect_the_login(clock):
+    async def scenario():
+        gate = asyncio.Event()
+        vault = Vault(LOGIN_A, LOGIN_A, default=StorageUnavailable("panne"))
+        credentials = wired(vault, files_vault_refresh_seconds=0.03, files_connect_timeout=0.1)
+        assert await credentials.sql() == LOGIN_A
+        vault.gate = gate
+        await until(lambda: vault.reads == 2)  # relecture périodique engagée avec A
+        credentials.invalidate(LOGIN_A)  # PostgreSQL refuse A pendant ce temps
+        gate.set()  # la relecture rend A, devenu caduc
+        await until(lambda: vault.reads >= 3)  # la suivante échoue
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("phase", [None, "initialized", "get", "delete", "call"])
+def test_cancellation_always_stops_the_task_during_the_real_protocol(tmp_path, phase):
+    """Le client MCP peut avaler une annulation quand Vault refuse en cours de protocole.
+    Annulée à des instants échelonnés, la tâche doit toujours s'arrêter."""
+    token = private_token(tmp_path)
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        server = vault_server(refuse=phase, refuse_status=401)
+        return original(transport=httpx2.MockTransport(server), **kwargs)
+
+    async def scenario():
+        stuck = []
+        for step in range(60):
+            credentials = Credentials(cfg(files_vault_token_file=token, files_connect_timeout=1,
+                                          files_vault_refresh_seconds=1))
+            credentials._ensure_refresher()
+            task = credentials._task
+            await asyncio.sleep(step * 0.0005)
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=2)
+            if not done:
+                stuck.append(step)
+                credentials.reset()
+        return stuck
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        assert asyncio.run(scenario()) == []
+
+
+def test_aclose_stops_the_task_even_when_the_read_swallows_cancellation():
+    reads = []
+
+    async def swallowing_read():
+        # Comme le client MCP sur un refus : l'annulation est avalée, la lecture se termine.
+        reads.append(1)
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.01)
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = Credentials(cfg())
+        credentials._read = swallowing_read
+        credentials._ensure_refresher()
+        task = credentials._task
+        await until(lambda: reads == [1])
+        started = time.monotonic()
+        await credentials.aclose()
+        return task.done(), time.monotonic() - started, credentials._cache
+    done, elapsed, cache = asyncio.run(scenario())
+    assert done and elapsed < 1.0 and cache is None
+
+
+def test_reset_without_cancellation_stops_the_old_task_and_it_never_publishes():
+    async def scenario():
+        vault = Vault()
+        credentials = wired(vault, files_vault_refresh_seconds=0.02)
+        await credentials.sql()
+        task = credentials._task
+        credentials.reset()  # comme l'isolation des tests : aucune annulation
+        await until(task.done, limit=1.0)
+        return credentials._cache, vault.reads
+    cache, reads = asyncio.run(scenario())
+    # reset() arrive pendant l'attente : la tâche sort sans relire Vault.
+    assert cache is None and reads == 1
+
+
+def test_aclose_stays_bounded_even_if_the_task_resists_cancellation(monkeypatch):
+    monkeypatch.setattr(fc, "STOP_SECONDS", 0.2)
+    released = []
+
+    async def resisting():
+        # Défaut hypothétique : l'annulation ne parvient plus à la boucle.
+        while not released:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                pass
+        return dict(LOGIN_A)
+
+    async def scenario():
+        credentials = Credentials(cfg())
+        credentials._attempt = resisting
+        credentials._ensure_refresher()
+        task = credentials._task
+        await asyncio.sleep(0.02)
+        started = time.monotonic()
+        try:
+            # Une régression doit échouer ici, pas figer la suite.
+            async with asyncio.timeout(1.5):
+                await credentials.aclose()
+        finally:
+            released.append(1)  # le défaut cède : la tâche orpheline sort sans publier
+        elapsed = time.monotonic() - started
+        await until(task.done, limit=1.0)
+        return elapsed, credentials._cache
+    elapsed, cache = asyncio.run(scenario())
+    assert 0.15 <= elapsed < 1.0 and cache is None
+
+
+def test_http_401_from_vault_closes_access_before_validity(tmp_path, clock):
+    token = tmp_path / "token"
+    token.write_text("synthetic")
+    token.chmod(0o600)
+    state = {"server": vault_server()}
+    original = httpx2.AsyncClient
+
+    def factory(**kwargs):
+        return original(transport=httpx2.MockTransport(lambda r: state["server"](r)), **kwargs)
+
+    async def scenario():
+        credentials = Credentials(cfg(files_vault_token_file=str(token), files_connect_timeout=1,
+                                      files_vault_refresh_seconds=0.05))
+        assert await credentials.sql() == LOGIN_A
+        state["server"] = vault_server(status=401)  # jeton Vault révoqué
+        await until(lambda: credentials._cache is None)
+        with pytest.raises(StorageUnavailable):
+            await credentials.sql()
+    with patch.object(httpx2, "AsyncClient", side_effect=factory):
+        asyncio.run(scenario())
+
+
+# --- Les chemins Access et Files invalident au bon moment ----------------------------
+
+def test_access_store_rechecks_tokens_on_every_request_with_a_warm_login(monkeypatch):
+    """Le cache ne porte que le login : une révocation de jeton se voit tout de suite."""
+    import psycopg
+    from src.mcp_tools.auth import postgres_store
+    from src.mcp_tools.auth.postgres_store import PostgresAccessStore
+    from src.mcp_tools.auth.postgres_schema import CHECKSUM, VERSION
+
+    table = {"rows": [{"credential": "active"}]}
+    lookups = []
+
+    class Cursor:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def execute(self, query, *args):
+            self.query = query
+            if "credential_get" in query:
+                lookups.append(query)
+        async def fetchall(self):
+            if "schema_contract" in self.query:
+                return [{"version": VERSION, "checksum": CHECKSUM}]
+            if "pg_roles" in self.query:
+                return [{"role": "app", "db": "tools", "recovery": False, "privileged": False}]
+            return list(table["rows"])
+
+    class Connection:
+        pgconn = SimpleNamespace(finish=lambda: None)
+        def cursor(self): return Cursor()
+        async def commit(self): pass
+
+    async def connect(**kwargs):
+        return Connection()
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", connect)
+    monkeypatch.setattr(psycopg.capabilities, "has_cancel_safe", lambda: True)
+    monkeypatch.setattr(postgres_store, "authenticate_row", lambda row, binding, now: row)
+
+    vault = Vault()
+    store = PostgresAccessStore(wired(vault), ca_file="ca", role="app", database="tools")
+
+    async def scenario():
+        before = await store.authenticate("opaque")
+        table["rows"] = []  # jeton révoqué en base
+        after = await store.authenticate("opaque")
+        return before, after
+    before, after = asyncio.run(scenario())
+    assert before == {"credential": "active"} and after is None
+    assert len(lookups) == 2 and vault.reads == 1
+
+
+def files_settings():
+    return cfg(files_pg_schema="files", files_durability="local", files_pg_system_identifier="1",
+               files_replication_roster="[]", files_quorum=0, files_pg_timeline=1,
+               files_pg_ca_file="ca", files_recovery_enabled=False)
+
+
+class Recorder:
+    def __init__(self):
+        self.invalidated = []
+
+    async def sql(self, service=None):
+        return dict(LOGIN_A)
+
+    def invalidate(self, descriptor):
+        self.invalidated.append(descriptor)
+
+
+class FakeConnection:
+    def __init__(self, identity):
+        self.identity, self.closed = identity, False
+
+    def add_notice_handler(self, handler):
+        pass
+
+    async def execute(self, query, args=()):
+        identity = self.identity
+        class Result:
+            async def fetchone(self):
+                return identity
+        return Result()
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("case,invalidated", [
+    ("connect_refused", 1), ("identity_mismatch", 1), ("caller_error_after_open", 0), ("ok", 0),
+])
+def test_files_catalog_invalidates_only_before_the_connection_is_handed_out(monkeypatch, case, invalidated):
+    import psycopg
+    from src.mcp_tools.storage.files_postgres import Catalog
+
+    identity = {"db": "tools", "role": "app", "recovery": False}
+    if case == "identity_mismatch":
+        identity = {**identity, "role": "intruder"}
+
+    async def connect(**kwargs):
+        if case == "connect_refused":
+            raise psycopg.OperationalError("password authentication failed PRIVATE-CANARY")
+        return FakeConnection(identity)
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", connect)
+
+    catalog = Catalog(files_settings())
+    catalog.credentials = Recorder()
+
+    async def ok(*args, **kwargs):
+        return None
+    monkeypatch.setattr(catalog, "check_schema", ok)
+    monkeypatch.setattr(catalog, "infrastructure", ok)
+
+    async def scenario():
+        async with catalog.connection():
+            if case == "caller_error_after_open":
+                raise RuntimeError("erreur métier après ouverture")
+    if case == "ok":
+        asyncio.run(scenario())
+    else:
+        with pytest.raises(StorageUnavailable) as error:
+            asyncio.run(scenario())
+        assert "PRIVATE" not in str(error.value)
+    assert catalog.credentials.invalidated == [LOGIN_A] * invalidated

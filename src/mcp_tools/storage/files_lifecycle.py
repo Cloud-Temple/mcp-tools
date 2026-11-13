@@ -42,13 +42,24 @@ class StorageLifecycleMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "lifespan":
             return await self.app(scope, receive, send)
+        from .files_credentials import start_refreshers, stop_refreshers
+        started = []
         async def storage_receive():
             message = await receive()
             if message["type"] == "lifespan.startup":
                 lifecycle.stopped = False
+                if not started:
+                    start_refreshers()
+                    started.append(True)
                 await lifecycle.probe(self.settings, force=True)
             elif message["type"] == "lifespan.shutdown":
                 lifecycle.stopped = True
                 lifecycle.state = "stopping"
             return message
-        await self.app(scope, storage_receive, send)
+        try:
+            await self.app(scope, storage_receive, send)
+        finally:
+            # Seul un lifespan compté se décompte : un démarrage avorté ne ferme pas les
+            # instances d'un autre lifespan encore actif. Après le dernier, aucune tâche.
+            if started:
+                await stop_refreshers()
