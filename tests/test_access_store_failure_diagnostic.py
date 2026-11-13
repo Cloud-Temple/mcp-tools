@@ -128,6 +128,9 @@ def test_run_records_exact_failure_phase_without_leaking_or_retrying(monkeypatch
     assert flags["commits"] == (1 if phase == "commit" else 0)
     assert flags["closed"] == (0 if phase in {"credentials", "connect"} else 1)
     assert not postgres_store._ACTIVE
+    # Seul un échec avant la requête métier fait relire le login ; jamais après envoi du SQL.
+    forgotten = getattr(store.credentials, "invalidated", [])
+    assert len(forgotten) == (1 if phase in {"connect", "schema", "authority"} else 0)
 
 
 @pytest.mark.parametrize("phase", PHASES)

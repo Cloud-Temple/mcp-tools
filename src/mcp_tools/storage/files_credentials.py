@@ -1,15 +1,86 @@
-"""Credentials par connexion ; aucun fallback/cache Vault et aucune valeur journalisée."""
+"""Login PostgreSQL lu dans Vault, gardé en mémoire et relu en arrière-plan.
+
+Une tâche relit Vault toutes les `files_vault_refresh_seconds` ; les requêtes lisent la
+mémoire. Le login sert au plus `files_vault_validity_seconds` après la dernière lecture
+réussie, puis le refus est fermé. Un refus explicite de Vault l'oublie tout de suite.
+Avec un intervalle à 0, chaque connexion relit Vault (comportement d'origine).
+Aucune valeur journalisée, rien sur disque.
+"""
 import asyncio
 import json
 import os
+import re
 import ssl
 import stat
+import time
+import weakref
 from pathlib import Path
 from urllib.parse import urlparse
+
+_now = time.monotonic  # horloge de validité, remplaçable par les tests
+RETRY_SECONDS = 5.0  # attente après une lecture Vault en échec
+MIN_SPACING_SECONDS = 1.0  # entre deux lectures, même réveillées par un refus PostgreSQL
+
+# Réponses de Vault qui disent « tu n'as pas le droit » ou « ta demande est fausse ».
+# Toute autre réponse en échec est une panne : le login reste servi jusqu'à sa validité.
+_REFUSAL_TYPES = frozenset({
+    "permission_denied", "unauthenticated", "invalid_token", "access_denied", "jwt_invalid",
+    "binding_mismatch", "binding_incomplete", "not_found", "mission_inactive",
+    "reserved_for_operator_jit", "invalid_input", "invalid_request", "misconfigured",
+    "configuration_error",
+})
+
+
+_LIVE = weakref.WeakSet()  # instances dont une tâche de relecture a démarré
+
+
+def _record_refresh_stopped(error):
+    """Raison fermée (nom de type seul) : jamais de message, d'URL ni de secret."""
+    try:
+        from ..observability import record_activity
+        name = type(error).__name__
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+            name = "unclassified"
+        record_activity("credential.refresh_stopped", level="error",
+                        message="Relecture du login PostgreSQL arrêtée",
+                        details={"error_type": name})
+    except Exception:
+        pass
+
+
+async def stop_refreshers():
+    """Arrêt propre des tâches de relecture, appelé au shutdown de l'application."""
+    for credentials in list(_LIVE):
+        await credentials.aclose()
 
 
 class StorageUnavailable(RuntimeError):
     """Diagnostic public constant, sans exception libpq/HTTP contenant un secret."""
+
+
+class VaultRefused(StorageUnavailable):
+    """Vault a répondu et refuse, ou a livré un login hors contrat : on l'oublie."""
+
+
+class _HttpRefusal(Exception):
+    """Levée par le hook HTTP : le client MCP ne remonte pas le code 401/403."""
+
+
+def _refusal(error):
+    if isinstance(error, (_HttpRefusal, VaultRefused)):
+        return True
+    return any(_refusal(inner) for inner in getattr(error, "exceptions", None) or ())
+
+
+def _error_type(blocks):
+    for block in blocks:
+        try:
+            value = json.loads(getattr(block, "text", "") or "")
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value.get("error_type") in _REFUSAL_TYPES:
+            return value["error_type"]
+    return None
 
 
 def private_text(filename: str) -> str:
@@ -27,8 +98,98 @@ def private_text(filename: str) -> str:
 
 
 class Credentials:
+    """Le login appartient à l'instance. Les services longs (Access, Files) la gardent
+    pour la durée du processus ; un chemin opérateur ou CLI crée la sienne, donc lit Vault."""
+
     def __init__(self, settings):
         self.s = settings
+        self._cache = None  # (horloge monotone de la lecture réussie, descripteur)
+        self._loop = None
+        self._task = None
+        self._wake = None
+        self._changed = None
+
+    def invalidate(self, descriptor):
+        """Oublie ce login s'il est encore en mémoire et demande une relecture.
+
+        Appelé quand PostgreSQL refuse la connexion ou que l'identité SQL ne correspond
+        pas (rotation, cible déplacée). Un login plus récent n'est jamais effacé.
+        """
+        if self._cache is not None and self._cache[1] == descriptor:
+            self._cache = None
+            if self._wake is not None:
+                self._wake.set()
+
+    def _valid(self):
+        if (self._cache is not None
+                and _now() - self._cache[0] < self.s.files_vault_validity_seconds):
+            return dict(self._cache[1])
+        return None
+
+    def _ensure_refresher(self):
+        loop = asyncio.get_running_loop()
+        if self._loop is loop and self._task is not None:
+            # Même boucle : une tâche morte n'est pas relancée. Le login expire à sa
+            # validité puis le refus est fermé ; le journal dit pourquoi elle s'est arrêtée.
+            return
+        self._loop = loop
+        self._wake = asyncio.Event()
+        self._changed = asyncio.Condition()
+        self._task = loop.create_task(self._refresh_forever())
+        self._task.add_done_callback(self._stopped)
+        _LIVE.add(self)
+
+    @staticmethod
+    def _stopped(task):
+        if not task.cancelled() and task.exception() is not None:
+            _record_refresh_stopped(task.exception())
+
+    async def aclose(self):
+        """Arrête la tâche de cette boucle et oublie le login."""
+        task = self._task
+        self.reset()
+        if task is not None and not task.done() and task.get_loop() is asyncio.get_running_loop():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def reset(self):
+        """Oublie tâche, boucle et login, sans attendre (boucle d'un test déjà fermée)."""
+        self._task = self._loop = self._wake = self._changed = None
+        self._cache = None
+        _LIVE.discard(self)
+
+    async def _refresh_forever(self):
+        last_attempt, failed = None, False
+        while True:
+            if last_attempt is not None:
+                spacing = RETRY_SECONDS if failed else MIN_SPACING_SECONDS
+                await asyncio.sleep(max(0.0, last_attempt + spacing - _now()))
+            self._wake.clear()
+            last_attempt = _now()
+            try:
+                data = await self._read()
+            except VaultRefused:
+                self._cache = None
+                failed = True
+            except Exception:
+                # _read ne laisse sortir aucun détail ; une panne garde le login valide.
+                failed = True
+            else:
+                failed = False
+                async with self._changed:
+                    self._cache = (_now(), dict(data))
+                    self._changed.notify_all()
+            delay = RETRY_SECONDS if failed else self.s.files_vault_refresh_seconds
+            # Pas d'asyncio.wait_for : en 3.11 il avale une annulation qui arrive en même
+            # temps que le réveil (gh-86296), et la tâche ne s'arrête plus au shutdown.
+            try:
+                async with asyncio.timeout(delay):
+                    await self._wake.wait()
+            except TimeoutError:
+                pass
 
     async def sql(self, service=None):
         s = self.s
@@ -41,6 +202,25 @@ class Credentials:
             raise StorageUnavailable("Override service interdit en mode Vault")
         if urlparse(s.files_vault_url).scheme != "https":
             raise StorageUnavailable("Vault exige HTTPS")
+        if s.files_vault_refresh_seconds <= 0:
+            return await self._read()
+        self._ensure_refresher()
+        current = self._valid()
+        if current is not None:
+            return current
+        if self._task.done():
+            raise StorageUnavailable("Vault non autorisé ou indisponible")
+        # Premier usage ou login expiré : attendre la tâche, dans le budget Vault seulement.
+        try:
+            async with asyncio.timeout(s.files_connect_timeout):
+                async with self._changed:
+                    await self._changed.wait_for(lambda: self._valid() is not None)
+                    return self._valid()
+        except TimeoutError:
+            raise StorageUnavailable("Vault non autorisé ou indisponible") from None
+
+    async def _read(self):
+        s = self.s
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
@@ -50,6 +230,8 @@ class Credentials:
             async def reject_redirect(response):
                 if response.is_redirect:
                     raise httpx2.HTTPStatusError("MCP_REDIRECT_REFUSED", request=response.request, response=response)
+                if response.status_code in (401, 403):
+                    raise _HttpRefusal()
             async with asyncio.timeout(s.files_connect_timeout):
                 async with httpx2.AsyncClient(verify=tls, follow_redirects=False,
                         event_hooks={"response": [reject_redirect]},
@@ -62,19 +244,27 @@ class Credentials:
                             result = await session.call_tool("secret_read", {
                                 "vault_id": s.files_vault_id, "path": s.files_vault_path})
                             if getattr(result, "is_error", False) or len(result.content) != 1:
+                                if _error_type(result.content):
+                                    raise VaultRefused("Vault non autorisé ou indisponible")
                                 raise StorageUnavailable("Vault non autorisé ou indisponible")
                             payload = json.loads(result.content[0].text)
-            if payload.get("status") != "ok" or payload.get("vault_id") != s.files_vault_id or payload.get("path") != s.files_vault_path:
+            if payload.get("status") != "ok":
+                if _error_type([result.content[0]]):
+                    raise VaultRefused("Vault non autorisé ou indisponible")
                 raise StorageUnavailable("Vault non autorisé ou indisponible")
+            if payload.get("vault_id") != s.files_vault_id or payload.get("path") != s.files_vault_path:
+                raise VaultRefused("Vault non autorisé ou indisponible")
             data = payload.get("data", {})
             # Secret Tools custom : aucun conninfo/options SQL arbitraire provenant du coffre.
             required = ("host", "port", "dbname", "user", "password")
             if any(not isinstance(data.get(k), (str, int)) or not str(data[k]) for k in required):
-                raise StorageUnavailable("Contrat credential Vault invalide")
+                raise VaultRefused("Contrat credential Vault invalide")
             if data["dbname"] != s.files_pg_database or data["user"] != s.files_pg_role:
-                raise StorageUnavailable("Cible credential Vault invalide")
+                raise VaultRefused("Cible credential Vault invalide")
             return {k: data[k] for k in required}
         except StorageUnavailable:
             raise
-        except Exception:
+        except Exception as error:
+            if _refusal(error):
+                raise VaultRefused("Vault non autorisé ou indisponible") from None
             raise StorageUnavailable("Vault non autorisé ou indisponible") from None

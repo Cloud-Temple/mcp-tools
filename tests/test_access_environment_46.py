@@ -134,7 +134,12 @@ def store(state):
                                role='access_app', database='tools')
 
 
-def test_file_selectors_work_without_changing_environment_and_vault_is_fresh(wiring):
+# Ancien contrat : chaque connexion Access relisait Vault (2 lectures pour 2 _run).
+# Nouveau : deux _run concurrents partagent la même lecture de fond ; 0 garde l'ancien.
+@pytest.mark.parametrize('refresh,reads', [(30, 1), (0, 2)])
+def test_file_selectors_work_without_changing_environment_and_access_login_follows_refresh(
+        wiring, refresh, reads):
+    wiring.settings = wiring.settings.model_copy(update={'access_vault_refresh_seconds': refresh})
     before = dict(os.environ)
     async def scenario():
         files = Catalog(wiring.settings)
@@ -147,7 +152,7 @@ def test_file_selectors_work_without_changing_environment_and_vault_is_fresh(wir
         assert results[0] == results[2] == [dict(ok=True)]
         assert results[1] == results[3] == dict(service='tools-app')
     asyncio.run(scenario())
-    assert len(wiring.reads) == 2 and len(wiring.connects) == 4 and dict(os.environ) == before
+    assert len(wiring.reads) == reads and len(wiring.connects) == 4 and dict(os.environ) == before
     assert sum('service' in row for row in wiring.connects) == 2
     assert all('PGPASSFILE' not in row and 'PGSERVICEFILE' not in row for row in wiring.connects)
 

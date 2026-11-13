@@ -19,7 +19,10 @@ class MCP220Redirects(unittest.IsolatedAsyncioTestCase):
             cfg = SimpleNamespace(files_credentials_mode="vault", files_vault_token_file=str(token),
                 files_vault_url="https://pinned.invalid", files_vault_ca_file=None,
                 files_connect_timeout=1, files_vault_id="scoped", files_vault_path="connection",
-                files_pg_database="tools", files_pg_role="app")
+                files_pg_database="tools", files_pg_role="app",
+                # Protocole et redirections : une lecture directe par appel. Le mode de
+                # relecture de fond est couvert par test_vault_login_refresh.py.
+                files_vault_refresh_seconds=0, files_vault_validity_seconds=0)
             expected = {"host": "database", "port": 5432, "dbname": "tools", "user": "app", "password": "synthetic"}
             for status in (None, 307, 308):
                 for location in ("https://pinned.invalid/next", "https://other.invalid/next"):

@@ -51,4 +51,9 @@ class StorageLifecycleMiddleware:
                 lifecycle.stopped = True
                 lifecycle.state = "stopping"
             return message
-        await self.app(scope, storage_receive, send)
+        try:
+            await self.app(scope, storage_receive, send)
+        finally:
+            # Aucune tâche de relecture du login ne survit au shutdown.
+            from .files_credentials import stop_refreshers
+            await stop_refreshers()

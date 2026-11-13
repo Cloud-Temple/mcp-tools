@@ -16,15 +16,18 @@ from src.mcp_tools.auth.token_store import TokenStoreUnavailable
 from src.mcp_tools.storage import files_credentials
 
 
-def settings(budget=3, total=5):
+def settings(budget=3, total=5, refresh=30):
     return SimpleNamespace(access_pg_hosts='db', access_pg_database='tools', access_pg_role='app',
         access_vault_url='https://vault.example', access_vault_id='credentials', access_vault_path='connection',
         access_vault_token_file='private', access_vault_ca_file='ca', access_operation_timeout=total,
-        access_vault_timeout_seconds=budget)
+        access_vault_timeout_seconds=budget, access_vault_refresh_seconds=refresh,
+        access_vault_validity_seconds=60)
 
 
+# Le budget borne la première lecture, en relecture de fond (30) comme en retour arrière (0).
+@pytest.mark.parametrize('refresh', [30, 0])
 @pytest.mark.parametrize('budget,success', [(2, False), (3, True)])
-def test_complete_protocol_over_two_seconds_obeys_configured_budget(monkeypatch, budget, success):
+def test_complete_protocol_over_two_seconds_obeys_configured_budget(monkeypatch, budget, success, refresh):
     calls = {'initialize': 0, 'read': 0, 'close': 0}
     monkeypatch.setattr(files_credentials, 'private_text', lambda _: 'synthetic-only')
     monkeypatch.setattr(files_credentials.ssl, 'create_default_context', lambda **_: object())
@@ -55,7 +58,7 @@ def test_complete_protocol_over_two_seconds_obeys_configured_budget(monkeypatch,
     monkeypatch.setattr(httpx2, 'AsyncClient', http)
     monkeypatch.setattr(mcp.client.streamable_http, 'streamable_http_client', transport)
     monkeypatch.setattr(mcp, 'ClientSession', Session)
-    credential = AccessCredentials(settings(budget))
+    credential = AccessCredentials(settings(budget, refresh=refresh))
     if success:
         assert asyncio.run(credential.sql())['user'] == 'app'
     else:

@@ -15,7 +15,8 @@ def provider():
     return AccessCredentials(SimpleNamespace(access_pg_hosts='pg1,pg2,pg3', access_pg_database='tools',
         access_pg_role='app', access_vault_url='https://vault', access_vault_id='access',
         access_vault_path='connection', access_vault_token_file='private',
-        access_vault_ca_file='ca', access_operation_timeout=5, access_vault_timeout_seconds=2))
+        access_vault_ca_file='ca', access_operation_timeout=5, access_vault_timeout_seconds=2,
+        access_vault_refresh_seconds=30, access_vault_validity_seconds=60))
 
 
 @pytest.mark.parametrize('configured,total,expected', [(2, 5, 2), (3, 5, 3), (5, 5, 4), (3, 2, 1)])
@@ -23,7 +24,8 @@ def test_vault_sub_budget_is_configurable_and_keeps_global_cleanup_reserve(confi
     settings = SimpleNamespace(**vars(provider().provider.s), access_pg_hosts='pg1',
         access_pg_database='tools', access_pg_role='app', access_vault_url='https://vault',
         access_vault_id='access', access_vault_path='connection', access_vault_token_file='private',
-        access_vault_ca_file='ca', access_operation_timeout=total, access_vault_timeout_seconds=configured)
+        access_vault_ca_file='ca', access_operation_timeout=total, access_vault_timeout_seconds=configured,
+        access_vault_refresh_seconds=30, access_vault_validity_seconds=60)
     assert AccessCredentials(settings).provider.s.files_connect_timeout == expected
 
 
@@ -40,20 +42,34 @@ def test_documented_compose_profile_transmits_vault_sub_budget():
     path = Path(__file__).resolve().parents[1] / 'compose.postgres.yml'
     environment = yaml.safe_load(path.read_text())['services']['mcp-tools']['environment']
     assert environment['ACCESS_VAULT_TIMEOUT_SECONDS'] == '${ACCESS_VAULT_TIMEOUT_SECONDS:-2}'
+    # Relecture de fond : le profil transmet les quatre réglages, aux défauts du code.
+    from src.mcp_tools.config import Settings
+    defaults = Settings(_env_file=None)
+    for prefix in ('ACCESS', 'FILES'):
+        for suffix in ('REFRESH', 'VALIDITY'):
+            name = f'{prefix}_VAULT_{suffix}_SECONDS'
+            value = int(getattr(defaults, name.lower()))
+            assert environment[name] == '${%s:-%d}' % (name, value)
 
 
-def test_host_order_can_follow_primary_but_credentials_are_always_fresh():
+# Ancien contrat (#31) : « credentials always fresh », une lecture Vault par appel.
+# Nouveau contrat : le login est relu en arrière-plan ; deux connexions dans sa validité
+# font une seule lecture. À 0, le retour arrière garde une lecture par connexion.
+@pytest.mark.parametrize('refresh,reads', [(30, 1), (0, 2)])
+def test_host_order_can_follow_primary_and_login_is_read_per_refresh_not_per_call(refresh, reads):
     obj = provider()
+    obj.provider.s.files_vault_refresh_seconds = refresh
     calls = []
     async def read():
         calls.append(1)
         return dict(host='pg3,pg1,pg2', port=5432, dbname='tools', user='app', password='private')
-    obj.provider.sql = read
+    obj.provider._read = read
     async def scenario():
-        await obj.sql()
-        await obj.sql()
+        first = await obj.sql()
+        second = await obj.sql()
+        assert first == second and first['host'] == 'pg3,pg1,pg2'
     asyncio.run(scenario())
-    assert len(calls) == 2
+    assert len(calls) == reads
 
 
 @pytest.mark.parametrize('change', [{'host': 'pg1,pg1,pg3'}, {'host': 'pg1, pg2,pg3'},

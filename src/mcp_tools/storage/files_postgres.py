@@ -54,6 +54,8 @@ class Catalog:
         from psycopg import sql
         async with self.slots:
             c = None
+            credential = None
+            opened = False
             try:
                 credential = await self.credentials.sql(service)
                 if not self.s.files_pg_ca_file:
@@ -90,14 +92,23 @@ class Catalog:
                 if not operator and maintenance_app_role is None:
                     await self.check_schema(c)
                     await self.infrastructure(c)
+                opened = True
                 yield c
             except StorageUnavailable:
+                self._forget(credential, opened)
                 raise
             except Exception:
+                self._forget(credential, opened)
                 raise StorageUnavailable("SQL non disponible ou contrat invalide") from None
             finally:
                 if c is not None:
                     await c.close()
+
+    def _forget(self, credential, opened):
+        # Échec avant l'usage (refus PG, identité, contrat) : relire Vault tout de suite.
+        # Une erreur levée par l'appelant après ouverture ne touche jamais le login.
+        if credential is not None and not opened:
+            self.credentials.invalidate(credential)
 
     @staticmethod
     async def one(c, query, args=()):

@@ -72,7 +72,8 @@ def _finished(task):
 
 
 class PostgresAccessStore:
-    """Le provider fourni lit Vault à chaque connexion ; aucun credential conservé."""
+    """Le provider garde le login PG en mémoire (relu en arrière-plan). Contrat, identité
+    et droits restent vérifiés à chaque connexion ; les tokens MCP à chaque requête."""
 
     def __init__(self, credentials, *, ca_file, role, database, timeout=5.0,
                  cursor_ttl=60, cursor_capacity=1024, retention=False):
@@ -100,6 +101,7 @@ class PostgresAccessStore:
             raise TokenStoreUnavailable('Access cancellation unavailable')
         deadline = time.monotonic() + self.timeout
         connection = None
+        credential = None
         task = None
         phase = 'credentials'
         phase_started = time.monotonic()
@@ -173,6 +175,10 @@ class PostgresAccessStore:
                     and error.diag.message_primary == 'current hub file access refused'
                     and re.fullmatch(_HUB_FILES_ORIGIN, error.diag.context or ''))):
                 raise ValueError('Current local hub access refused') from None
+            if credential is not None and phase in {'credentials', 'connect', 'schema', 'authority'}:
+                # Refus PG (dont 28P01/28000), cible ou identité inattendues : relire Vault
+                # tout de suite. Aucune nouvelle tentative dans cette requête.
+                self.credentials.invalidate(credential)
             enter(phase)
             _record_access_failure(phase, error, elapsed)
             # Aucun détail libpq/HTTP/conninfo ou résultat d'écriture sans ACK.
