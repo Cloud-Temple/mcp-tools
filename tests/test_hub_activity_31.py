@@ -20,7 +20,7 @@ from src.mcp_tools.auth.context import current_token_info
 
 
 def cfg():
-    return SimpleNamespace(access_backend='postgres', hub_activity_enabled=True,
+    return SimpleNamespace(access_backend='postgres', hub_activity_enabled=True, hub_tools_enabled=False,
         hub_activity_issuer='https://mission.test', hub_activity_audience='tools-instance-1',
         hub_activity_owner='mission-owner', hub_activity_jwks_url='https://mission.test/jwks',
         hub_activity_check_url='https://mission.test/internal/hub/delegation-check',

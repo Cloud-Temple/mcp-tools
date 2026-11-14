@@ -6,6 +6,14 @@ from uuid import UUID
 from .files_service import get_files_service, public_ref
 
 
+class HubFileRequestInvalid(Exception):
+    """La requête de lecture ne respecte pas le contrat Files délégué."""
+
+
+class FileGenerationChanged(Exception):
+    """La publication autorisée ne correspond plus à la génération demandée."""
+
+
 async def published(files, call_id, operation_id, claims=None):
     """Une seule source exacte : publication 843 OU dépendance #846, sinon None."""
     dependencies = claims is not None and getattr(
@@ -50,6 +58,8 @@ async def read_hub_files(calls, body, cfg, check, *, files_factory=None, claims=
         if row is None:
             result.append({'call_id': call_id, 'reference_state': 'unavailable'})
             continue
+        if body.get('content') and str(row['generation']) != body['expected_generation']:
+            raise FileGenerationChanged()
         item = {'call_id': call_id, 'reference_state': 'available',
                 **public_ref({**row, 'deleted': False})}
         # public_ref ne restitue jamais la physical_key ni les credentials S3.
@@ -57,29 +67,36 @@ async def read_hub_files(calls, body, cfg, check, *, files_factory=None, claims=
             offset, limit = body['offset'], min(body['limit'], cfg.hub_files_page_bytes)
             data = await files.blobs.get_hub(row['pin'], check)  # taille/hash/version vérifiés chez Tools
             if offset > len(data):
-                raise ValueError('Invalid content range')
+                raise HubFileRequestInvalid()
+            current = await published(files, call_id, calls[call_id], claims)
+            if current != row or str(current['generation']) != body['expected_generation']:
+                raise FileGenerationChanged()
             part = data[offset:offset+limit]
             item.update(content_base64=base64.b64encode(part).decode('ascii'), encoding='base64',
                         offset=offset, returned_bytes=len(part), next_offset=offset+len(part),
                         end=offset+len(part) == len(data))
-            if await published(files, call_id, calls[call_id], claims) != row:
-                raise ValueError('File publication changed')
         result.append(item)
     return {'files': result, 'count': len(result), 'page_complete': True}
 
 
 def validate_request(body, claims):
-    if (set(body) - {'mission_id', 'root_agent_id', 'call_ids', 'content', 'offset', 'limit'}
+    if (set(body) - {'mission_id', 'root_agent_id', 'call_ids', 'content', 'offset', 'limit', 'expected_generation'}
             or body.get('mission_id') != claims['mission_id']
             or body.get('root_agent_id') != claims['root_agent_id']
             or not isinstance(body.get('call_ids'), list) or not 1 <= len(body['call_ids']) <= 64):
-        raise ValueError('Invalid file request')
+        raise HubFileRequestInvalid()
     ids = body['call_ids']
     if any(not isinstance(value, str) or str(UUID(value)) != value for value in ids) or len(set(ids)) != len(ids):
-        raise ValueError('Invalid file references')
+        raise HubFileRequestInvalid()
     if body.get('content') is True:
         if (len(ids) != 1 or type(body.get('offset')) is not int or body['offset'] < 0
-                or type(body.get('limit')) is not int or not 1 <= body['limit'] <= 30000):
-            raise ValueError('Invalid file range')
-    elif set(body) & {'content', 'offset', 'limit'}:
-        raise ValueError('Unexpected file fields')
+                or type(body.get('limit')) is not int or not 1 <= body['limit'] <= 30000
+                or not isinstance(body.get('expected_generation'), str)):
+            raise HubFileRequestInvalid()
+        try:
+            if str(UUID(body['expected_generation'])) != body['expected_generation']:
+                raise HubFileRequestInvalid()
+        except (ValueError, AttributeError):
+            raise HubFileRequestInvalid() from None
+    elif set(body) & {'content', 'offset', 'limit', 'expected_generation'}:
+        raise HubFileRequestInvalid()
