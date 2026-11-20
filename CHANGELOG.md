@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- OpenTelemetry API figé à 1.45.2 pour CVE-2026-126360 (garde pip-audit rouge
+  sur main depuis le 16/11). Mêmes dépendances que 1.45.1 ; aucune autre
+  composante OTel ajoutée.
 - Accès et fichiers PostgreSQL : le login SQL n'est plus lu dans Vault à chaque
   requête. Une tâche de fond le relit toutes les 30 s, les requêtes le prennent
   en mémoire. Le login sert au plus 60 s après la dernière lecture réussie, puis
