@@ -102,6 +102,25 @@ def test_shell_without_missing_path_failure_or_cwd_has_no_hint(monkeypatch, orig
     assert response == original
 
 
+def test_shell_timeout_with_ignored_cwd_keeps_hint(monkeypatch):
+    handler, _ = shell_handler(monkeypatch, result={})
+    monkeypatch.setattr(shell, "_run_in_sandbox", AsyncMock(side_effect=asyncio.TimeoutError()))
+    response = asyncio.run(handler(command="make", cwd="/tmp/projet"))
+    assert response["status"] == "error"
+    assert "Timeout" in response["message"]
+    assert "cwd" in response["hint"]
+
+
+@pytest.mark.parametrize("sandbox_enabled,cwd", [(True, None), (True, ""), (False, "/tmp")])
+def test_shell_timeout_without_ignored_cwd_has_no_hint(monkeypatch, sandbox_enabled, cwd):
+    handler, _ = shell_handler(monkeypatch, sandbox_enabled=sandbox_enabled, result={})
+    target = "_run_in_sandbox" if sandbox_enabled else "_run_local"
+    monkeypatch.setattr(shell, target, AsyncMock(side_effect=asyncio.TimeoutError()))
+    response = asyncio.run(handler(command="make", cwd=cwd))
+    assert "Timeout" in response["message"]
+    assert "hint" not in response
+
+
 @pytest.mark.parametrize("cwd", [None, ""])
 def test_shell_empty_cwd_is_not_an_ignored_cwd(monkeypatch, cwd):
     original = sandbox_result(0, stdout="ok\n")
@@ -150,6 +169,10 @@ def test_checksum_refusal_tells_model_how_to_retry(monkeypatch, backend, argumen
     assert "sans expected_sha256" in result["message"]
     if code == "content_checksum_mismatch":
         assert "ne pas la retirer" in result["message"]
+    else:
+        # Un format invalide ne prouve pas que content diffère de la source.
+        assert "diffère" not in result["message"]
+        assert "valeur intégrale" in result["message"]
     actual = hashlib.sha256(arguments["content"].encode("utf-8")).hexdigest()
     assert actual not in json.dumps(result)
     assert "preuve texte" not in json.dumps(result)

@@ -80,5 +80,10 @@ def _checksum_message(code, content, encoded):
         # content_base64 et le texte vide exigent une empreinte : la retirer ne suffit pas.
         return (message + " Ce transport exige l'empreinte rendue par l'outil qui a produit le contenu ;"
                 " ne jamais la calculer.")
+    if code == "invalid_expected_sha256":
+        # Le format seul est en cause : rien ne dit que content diffère de la source.
+        tail = " Si elle vient d'un outil, reprendre sa valeur intégrale auprès de l'outil producteur."
+    else:
+        tail = _DIGEST_FROM_TOOL
     return (message + " Si cette empreinte ne vient pas d'une réponse d'outil, relancer l'écriture "
-            "sans expected_sha256." + _DIGEST_FROM_TOOL)
+            "sans expected_sha256." + tail)
