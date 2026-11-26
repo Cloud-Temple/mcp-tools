@@ -8,7 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.11.1] — en préparation, non publiée
 
+### Changed
+
+- `shell` : en sandbox, les fichiers écrits sous `/tmp` sont conservés entre les
+  appels d'une même session MCP (#72). Un worker qui télécharge et décompresse
+  des sources à un appel les retrouve à l'appel suivant. Chaque appel garde un
+  conteneur neuf : `cd`, variables et processus ne passent toujours pas.
+  L'espace est un volume tmpfs propre au couple identifiant de session et jeton
+  validé par `AuthMiddleware`, jamais tiré d'un argument. Il est gardé monté
+  par un conteneur de maintien sans réseau ni droit, qui s'arrête seul à l'âge
+  maximal. Bornes réglables : 256 Mio par espace, 16 espaces, 4 Gio au total,
+  15 min d'inactivité, 2 h au plus (`SHELL_WORKSPACE_*`) ; `0` espace rend le
+  comportement antérieur. Au-delà de la capacité, la commande s'exécute avec le
+  `/tmp` éphémère et la réponse le dit (`workspace.persistent: false`, `hint`).
+  Sans session MCP, ou sur le chemin sans session du SDK (protocole
+  `2026-07-28`), rien ne change. La réponse porte un champ `workspace` sans
+  identifiant.
+- L'identifiant de session MCP ne sort plus en clair : les journaux du SDK le
+  remplacent par une empreinte courte, et le journal d'accès du WAF ne garde
+  plus l'en-tête `Mcp-Session-Id` (#72).
+
 ### Fixed
+
+- `shell` : la description de `network` disait que `network=true` retirait
+  `noexec` de `/tmp`. Docker ajoute `noexec` à un `--tmpfs` qui ne demande pas
+  `exec` : `/tmp` reste non exécutable dans tous les modes. Seule la
+  description change, pas les droits de la sandbox (#72).
 
 - `shell` : la description de l'outil et celles de `command` et `cwd` disent
   qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun fichier, `cd`

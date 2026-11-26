@@ -173,6 +173,20 @@ class Settings(BaseSettings):
     sandbox_dns: str = "8.8.8.8,8.8.4.4"  # DNS pour les sandbox réseau (séparés par virgule)
     sandbox_enabled: bool = True  # False = exécution locale (dev sans Docker)
 
+    # --- Espace /tmp de shell par session MCP (#72) ---
+    # Volume tmpfs monté sur /tmp à chaque appel shell d'une même session.
+    # Mémoire de l'hôte au pire cas : shell_workspace_max_total_bytes.
+    # 0 espace = /tmp éphémère à chaque appel, comportement antérieur.
+    shell_workspace_max_count: int = Field(default=16, ge=0, le=1024)
+    shell_workspace_size_bytes: int = Field(default=256 * 1024 * 1024, ge=1024 * 1024)
+    shell_workspace_max_total_bytes: int = Field(default=4 * 1024 * 1024 * 1024, ge=0)
+    shell_workspace_idle_seconds: int = Field(default=900, ge=60)
+    shell_workspace_max_age_seconds: int = Field(default=7200, ge=60)
+    # Étiquette Docker des espaces de cette instance. La purge du démarrage ne
+    # retire que les espaces de la même valeur : deux instances sur un même
+    # démon Docker doivent en porter deux distinctes.
+    shell_workspace_instance: str = Field(default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+
     # --- Email (optionnel, Phase 2) ---
     smtp_host: str = ""
     smtp_port: int = 587

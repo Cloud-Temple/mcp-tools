@@ -4,13 +4,14 @@ Middlewares ASGI : authentification pour mcp-tools.
 Vérifie le Bearer token et injecte ses infos pour les outils.
 """
 
+import hashlib
 import hmac
 import json
 import time
 import sys
 from typing import Optional
 
-from .context import current_token_info
+from .context import current_credential_sha256, current_token_info
 from .token_store import TokenStoreUnavailable
 from ..config import get_settings
 from ..observability import bind_activity, get_activity_context, record_activity
@@ -91,9 +92,12 @@ class AuthMiddleware:
             )
 
         tok = current_token_info.set(token_info)
+        # Empreinte du jeton validé ci-dessus, pour lier un espace shell à ce jeton (#72).
+        credential = current_credential_sha256.set(hashlib.sha256(token.encode()).hexdigest())
         try:
             await self.app(scope, receive, send)
         finally:
+            current_credential_sha256.reset(credential)
             current_token_info.reset(tok)
 
     def _extract_token(self, scope) -> Optional[str]:

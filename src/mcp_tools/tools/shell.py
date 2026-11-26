@@ -24,6 +24,7 @@ from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
 from ..observability import record_activity, traced_tool
+from . import shell_workspace
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -48,14 +49,41 @@ CWD_IGNORED_HINT = (
     "dans le même appel que la création du répertoire."
 )
 MISSING_PATH = "No such file or directory"
+# Indices quand la session a un espace /tmp (#72).
+WORKSPACE_HINT = (
+    "Seuls les fichiers écrits sous /tmp sont conservés entre les appels shell de cette session MCP ; "
+    "le répertoire courant et les variables ne le sont pas : utiliser des chemins absolus sous /tmp "
+    "(par exemple cd /tmp/a && make). Un chemin créé par une autre étape, un autre worker, "
+    "ou avant l'expiration de l'espace n'existe pas ici : le recréer dans cette session, "
+    "ou conserver le résultat avec l'outil files."
+)
+NEW_WORKSPACE_HINT = (
+    "L'espace /tmp de cette session vient d'être créé : aucun fichier d'un appel antérieur n'y figure. "
+    + WORKSPACE_HINT
+)
+EPHEMERAL_REASONS = {
+    "capacity": "capacité du serveur atteinte",
+    "unavailable": "création impossible",
+}
 
 
-def _stateless_hint(result: dict, cwd: Optional[str]) -> Optional[str]:
-    """Indice si un cwd non vide a été ignoré, ou si un échec signale un chemin absent."""
+def _ephemeral_hint(reason: Optional[str]) -> str:
+    cause = EPHEMERAL_REASONS.get(reason or "", "indisponible")
+    return (f"L'espace /tmp persistant de cette session n'est pas disponible ({cause}) : "
+            "ce /tmp est éphémère et disparaît à la fin de l'appel. " + STATELESS_HINT)
+
+
+def _stateless_hint(result: dict, cwd: Optional[str], lease=None) -> Optional[str]:
+    """Indice si un cwd non vide a été ignoré, si /tmp est éphémère malgré une session,
+    ou si un échec signale un chemin absent."""
     if cwd:
         return CWD_IGNORED_HINT
+    if lease is not None and lease.workspace is None:
+        return _ephemeral_hint(lease.reason)
     if result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or ""):
-        return STATELESS_HINT
+        if lease is None:
+            return STATELESS_HINT
+        return NEW_WORKSPACE_HINT if lease.new else WORKSPACE_HINT
     return None
 
 
@@ -96,11 +124,13 @@ async def _kill_container(name: str) -> None:
         pass
 
 
-async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False) -> dict:
+async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False,
+                          workspace_args: Optional[list] = None) -> dict:
     """Exécute la commande dans un conteneur Docker éphémère isolé.
-    
+
     Si network=True, le conteneur a accès au réseau (--network=bridge + DNS).
     Sinon, isolation totale (--network=none).
+    Si workspace_args est fourni, le volume de session qu'il monte remplace le tmpfs de /tmp (#72).
     """
     exec_flag = SHELL_EXEC_FLAGS.get(shell, "-c")
     container_name = f"sandbox-{uuid.uuid4().hex[:12]}"
@@ -125,7 +155,8 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     # - pids-limit relevé (pip spawne des sous-processus)
     if network:
         tmpfs_size = "256m"
-        tmpfs_opts = f"nosuid,nodev,size={tmpfs_size}"  # pas de noexec (pip en a besoin)
+        # Sans exec explicite, Docker ajoute noexec à --tmpfs : /tmp reste non exécutable (#72).
+        tmpfs_opts = f"nosuid,nodev,size={tmpfs_size}"
         pids_limit = 50
     else:
         tmpfs_size = settings.sandbox_tmpfs_size
@@ -140,8 +171,11 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         f"--pids-limit={pids_limit}",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
-        f"--tmpfs=/tmp:{tmpfs_opts}",
     ])
+    if workspace_args:
+        docker_cmd.extend(workspace_args)
+    else:
+        docker_cmd.append(f"--tmpfs=/tmp:{tmpfs_opts}")
 
     # Variables d'environnement pour compatibilité packages Python
     # OPENBLAS_NUM_THREADS=1 évite que numpy/scipy spawne trop de threads (pids-limit)
@@ -243,18 +277,19 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("shell")
     async def shell(
-        command: Annotated[str, Field(description="Commande complète. En mode sandbox, elle s'exécute dans un conteneur neuf : mettre dans une seule commande les étapes qui dépendent les unes des autres (&&, ;, script multiligne), car un fichier créé ou un cd fait par un appel précédent n'existe plus.")],
+        command: Annotated[str, Field(description="Commande complète. En mode sandbox, chaque appel démarre dans un conteneur neuf : le répertoire courant et les variables ne passent pas à l'appel suivant ; seuls les fichiers sous /tmp de la même session MCP sont conservés (voir le champ workspace de la réponse). Mettre dans une seule commande les étapes qui dépendent d'un cd ou d'une variable (&&, ;, script multiligne).")],
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
-        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel, un répertoire créé par un appel précédent n'existe donc plus. Écrire cd <répertoire> && ... dans command, dans le même appel que la création du répertoire.")] = None,
+        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel et démarre dans le répertoire par défaut. Écrire cd <répertoire> && ... dans command ; un répertoire créé par un appel précédent n'existe que s'il est sous /tmp, dans la même session MCP.")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
-        network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau et noexec de /tmp. Défaut: false (isolé, sans réseau)")] = False,
+        network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau ; /tmp reste non exécutable. Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
     ) -> dict:
-        """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
+        """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, chaque appel démarre dans un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
 
-        En mode sandbox, aucun état ne passe d'un appel au suivant : fichiers téléchargés ou créés, répertoire courant, variables et paquets installés disparaissent. Enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour réutiliser un résultat plus tard, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
+        En mode sandbox, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; le champ workspace de la réponse le confirme et donne ces limites. Cette conservation est au mieux : si le serveur ne peut pas créer l'espace (capacité atteinte), workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
         # cwd ignoré : l'indice accompagne aussi un échec après tentative sandbox (timeout).
         cwd_ignored = False
+        lease = None
         try:
             check_tool_access("shell")
             settings = get_settings()
@@ -269,10 +304,22 @@ def register(mcp: MCPServer) -> None:
                 cwd_ignored = bool(cwd)
                 if cwd:
                     print(f"[shell] WARN: cwd ignoré en mode sandbox (pas de montage volume)", file=sys.stderr)
-                result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
-                hint = _stateless_hint(result, cwd)
+                # Espace de session (#72) : clé tirée de la requête, jamais des arguments.
+                # Sans session MCP, ou espaces désactivés, /tmp reste éphémère comme avant.
+                key = shell_workspace.key_from_context(ctx)
+                if key is not None and settings.shell_workspace_max_count > 0:
+                    lease = await shell_workspace.registry.acquire(key, settings)
+                if lease is not None and lease.workspace is not None:
+                    result = await _run_in_sandbox(
+                        command, shell, timeout, settings, network=network,
+                        workspace_args=shell_workspace.call_args(lease.workspace, settings))
+                else:
+                    result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
+                hint = _stateless_hint(result, cwd, lease)
                 if hint:
                     result["hint"] = hint
+                if lease is not None:
+                    result["workspace"] = lease.public(settings)
             else:
                 result = await _run_local(command, shell, cwd, timeout, settings)
 
@@ -284,3 +331,6 @@ def register(mcp: MCPServer) -> None:
             return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
         except Exception as e:
             return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored)
+        finally:
+            if lease is not None:
+                shell_workspace.registry.release(lease)

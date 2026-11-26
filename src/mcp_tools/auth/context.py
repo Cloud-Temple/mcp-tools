@@ -11,6 +11,10 @@ from typing import Optional
 current_token_info: ContextVar[Optional[dict]] = ContextVar("current_token_info", default=None)
 # Créé par le serveur avant admission, jamais rempli depuis une métadonnée client.
 current_access_operation: ContextVar[Optional[str]] = ContextVar("current_access_operation", default=None)
+# SHA-256 du Bearer que le middleware a validé pour cette requête (#72). Lire le
+# jeton validé, et non l'en-tête relu ailleurs : avec deux en-têtes
+# Authorization, le middleware valide le dernier et un lecteur d'en-têtes rend le premier.
+current_credential_sha256: ContextVar[Optional[str]] = ContextVar("current_credential_sha256", default=None)
 
 def check_tool_access(tool_name: str) -> None:
     """

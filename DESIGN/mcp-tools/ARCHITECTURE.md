@@ -89,6 +89,15 @@ lancé via `docker run --rm` avec les contraintes de sécurité suivantes :
 | `--no-new-privileges` | Pas d'escalade          | Bloque setuid/setgid                   |
 | `--tmpfs /tmp:noexec` | Temp sans exec          | Pas d'exécution depuis /tmp            |
 
+**Espace /tmp de session (#72)** : pour une requête d'une session MCP
+authentifiée, `/tmp` est un volume tmpfs (`size`, `mode=1777,nosuid,nodev,noexec`)
+propre au couple identifiant de session et jeton validé. Un conteneur de
+maintien sans réseau ni droit garde le volume monté entre deux appels ; il
+s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
+ou l'âge maximal, et purge au démarrage les espaces de son instance. Bornes :
+`SHELL_WORKSPACE_*` (`src/mcp_tools/config.py`). La table des espaces vit dans
+le processus : mcp-tools reste mono-processus.
+
 **Image sandbox** : `mcp-tools-sandbox` (Alpine 3.24 + bash, coreutils,
 grep, sed, awk, jq, bc, curl, git, openssl, gnupg, python3, node).
 Buildée par `docker compose up`.
