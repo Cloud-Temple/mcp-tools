@@ -105,7 +105,8 @@ s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
 ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace
 reste compté dans la capacité jusqu'à ce que Docker confirme le retrait de
 son volume ; tant que la purge du démarrage n'est pas confirmée, aucun espace
-n'est créé. Bornes :
+n'est créé. Capacité pleine : l'appel d'une session sans espace est refusé
+sans exécuter la commande (`workspace.reason: capacity`). Bornes :
 `SHELL_WORKSPACE_*` (`src/mcp_tools/config.py`). La table des espaces vit dans
 le processus : mcp-tools reste mono-processus.
 

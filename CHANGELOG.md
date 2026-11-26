@@ -27,8 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`SHELL_WORKSPACE_*`) ; `0` espace rend le comportement antérieur. Dans un
   appel avec espace, la taille d'un fichier est limitée à celle des données,
   partout dans le conteneur, et les attributs étendus, ACL POSIX comprises,
-  sont refusés (`EOPNOTSUPP`) : le noyau les garderait hors du budget. Au-delà de la capacité, la commande s'exécute avec le
-  `/tmp` éphémère et la réponse le dit (`workspace.persistent: false`, `hint`).
+  sont refusés (`EOPNOTSUPP`) : le noyau les garderait hors du budget. Au-delà de la capacité, la commande n'est pas exécutée :
+  la réponse est une erreur avec `workspace.reason: capacity` et un `hint`.
+  Si l'espace ne peut pas être créé pour une autre raison, la commande
+  s'exécute avec le `/tmp` éphémère et la réponse le dit
+  (`workspace.persistent: false`, `reason: unavailable`).
   Sans session MCP, ou sur le chemin sans session du SDK (protocole
   `2026-07-28`), rien ne change. La réponse porte un champ `workspace` sans
   identifiant, y compris après un délai dépassé. Un espace reste compté dans la

@@ -66,9 +66,16 @@ CWD_IGNORED_WORKSPACE_HINT = (
     "Écrire cd <répertoire> && ... dans command."
 )
 EPHEMERAL_REASONS = {
-    "capacity": "capacité du serveur atteinte",
     "unavailable": "création impossible",
 }
+CAPACITY_MESSAGE = (
+    "Capacité des espaces /tmp de session atteinte : la commande n'a pas été exécutée."
+)
+CAPACITY_HINT = (
+    "Aucun espace /tmp de session n'est libre sur le serveur. Réessayer plus tard : "
+    "un espace inactif est libéré après idle_seconds. Ne pas supposer que les fichiers "
+    "d'un appel antérieur de cette session existent."
+)
 
 
 def _ephemeral_hint(reason: Optional[str]) -> str:
@@ -366,7 +373,7 @@ def register(mcp: MCPServer) -> None:
     ) -> dict:
         """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, chaque appel démarre dans un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
 
-        En mode sandbox, si le serveur l'active, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; seul le champ workspace de la réponse le confirme et donne ces limites. Cette conservation est au mieux : si le serveur ne peut pas créer l'espace (capacité atteinte), workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
+        En mode sandbox, si le serveur l'active, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; seul le champ workspace de la réponse le confirme et donne ces limites. Si la capacité des espaces du serveur est atteinte, la commande n'est pas exécutée : la réponse est une erreur avec workspace.reason=capacity, réessayer plus tard. Si le serveur ne peut pas créer l'espace pour une autre raison, workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
         # cwd ignoré : l'indice accompagne aussi un échec après tentative sandbox (timeout).
         cwd_ignored = False
         lease = None
@@ -393,6 +400,12 @@ def register(mcp: MCPServer) -> None:
                 key = shell_workspace.key_from_context(ctx)
                 if key is not None and settings.shell_workspace_max_count > 0:
                     lease = await shell_workspace.registry.acquire(key, settings)
+                if lease is not None and lease.reason == "capacity" and lease.workspace is None:
+                    # Décision Root (#72) : capacité pleine = refus explicite, pas de /tmp
+                    # éphémère silencieux. La commande ne démarre pas.
+                    return {"status": "error", "message": CAPACITY_MESSAGE, "hint": CAPACITY_HINT,
+                            "workspace": {**lease.public(settings),
+                                          "idle_seconds": settings.shell_workspace_idle_seconds}}
                 if lease is not None and lease.workspace is not None:
                     result = await _run_in_sandbox(
                         command, shell, timeout, settings, network=network,

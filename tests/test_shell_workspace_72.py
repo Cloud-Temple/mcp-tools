@@ -439,19 +439,21 @@ def test_call_mount_and_holder_are_bounded_and_unprivileged(docker, registry, se
     {"shell_workspace_max_count": 2},
     {"shell_workspace_max_total_bytes": 2 * 256 * MiB + MiB},
 ])
-def test_capacity_refuses_the_workspace_and_runs_ephemeral(docker, registry, settings, overrides):
+def test_capacity_refuses_the_call_without_running_it(docker, registry, settings, overrides):
+    """Décision Root : capacité pleine, la commande ne démarre pas, ni avec un /tmp éphémère."""
     settings["value"] = make_settings(**overrides)
     function = handler()
 
     async def body():
         await invoke(function, sid="1" * 32)
         await invoke(function, sid="2" * 32)
-        return await invoke(function, "ls", sid="3" * 32)
+        return await invoke(function, "ls", sid="3" * 32, cwd="/tmp/a")
     result = scenario(registry, body)
-    assert result["workspace"] == {"persistent": False, "reason": "capacity"}
-    assert "capacité du serveur atteinte" in result["hint"] and "éphémère" in result["hint"]
-    assert mounted_volume(docker.calls[2]) is None
-    assert any(a.startswith("--tmpfs=/tmp:") for a in docker.calls[2])
+    assert result["status"] == "error" and result["message"] == shell.CAPACITY_MESSAGE
+    assert "stdout" not in result and "returncode" not in result
+    assert result["workspace"] == {"persistent": False, "reason": "capacity", "idle_seconds": 900}
+    assert result["hint"] == shell.CAPACITY_HINT
+    assert len(docker.calls) == 2
     assert len(registry.live()) == 2 and registry.reserved_bytes() == 2 * 256 * MiB
 
 
@@ -461,11 +463,14 @@ def test_existing_session_keeps_its_workspace_when_capacity_is_full(docker, regi
 
     async def body():
         await invoke(function, sid=SID_A)
-        await invoke(function, sid=SID_B)
-        return await invoke(function, sid=SID_A)
-    result = scenario(registry, body)
+        refused = await invoke(function, sid=SID_B)
+        return refused, await invoke(function, sid=SID_A)
+    refused, result = scenario(registry, body)
+    assert refused["status"] == "error" and refused["workspace"]["reason"] == "capacity"
     assert result["workspace"]["persistent"] is True
-    assert mounted_volume(docker.calls[0]) == mounted_volume(docker.calls[2])
+    # B n'a lancé aucun conteneur : le second docker run est celui de A.
+    assert len(docker.calls) == 2
+    assert mounted_volume(docker.calls[0]) == mounted_volume(docker.calls[1])
 
 
 def test_creation_failure_is_reported_and_cleaned(docker, registry, settings):
@@ -576,7 +581,7 @@ def test_delayed_removal_keeps_the_workspace_counted(docker, registry, settings,
         after = await invoke(function, sid=SID_B)
         return during, observed, after
     during, observed, after = scenario(registry, body)
-    assert during["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert during["status"] == "error" and during["workspace"]["reason"] == "capacity"
     assert observed == (1, 0)
     assert after["workspace"]["persistent"] is True
     assert len(registry.live()) == 1 == mounted_count(docker)
@@ -600,7 +605,7 @@ def test_refused_removal_keeps_the_workspace_counted_until_a_retry_succeeds(dock
         admitted = await invoke(function, sid=SID_B)
         return refused, counted, admitted
     refused, counted, admitted = scenario(registry, body)
-    assert refused["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert refused["status"] == "error" and refused["workspace"]["reason"] == "capacity"
     assert counted == 1
     assert admitted["workspace"]["persistent"] is True
     assert len(registry.live()) == 1 == mounted_count(docker) == len(docker.volumes)
@@ -626,7 +631,7 @@ def test_cancelled_removal_keeps_the_workspace_counted(docker, registry, setting
         await registry.sweep(settings["value"])
         return counted, refused
     counted, refused = scenario(registry, body)
-    assert counted == 1 and refused["workspace"]["reason"] == "capacity"
+    assert counted == 1 and refused["status"] == "error" and refused["workspace"]["reason"] == "capacity"
     assert registry.live() == [] and docker.volumes == {}
 
 
@@ -671,7 +676,7 @@ def test_creation_timeout_with_refused_cleanup_stays_counted(docker, registry, s
         return first, second, len(registry.live()), mounted_count(docker)
     first, second, counted, mounted = scenario(registry, body)
     assert first["workspace"]["reason"] == "unavailable"
-    assert second["workspace"]["reason"] == "capacity"
+    assert second["status"] == "error" and second["workspace"]["reason"] == "capacity"
     assert counted == 1 == mounted
 
 
@@ -735,23 +740,23 @@ def test_timeout_response_keeps_the_workspace_state(docker, registry, settings, 
 
 
 def test_timeout_response_on_ephemeral_fallback_says_so(docker, registry, settings, monkeypatch):
-    settings["value"] = make_settings(shell_workspace_max_total_bytes=0)
+    docker.fail.add("volume create")
 
     async def timing_out(*args, **kwargs):
         raise asyncio.TimeoutError()
     monkeypatch.setattr(shell, "_run_in_sandbox", timing_out)
     result = scenario(registry, lambda: invoke(handler(), "sleep 99", cwd="/tmp/a"))
-    assert result["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert result["workspace"] == {"persistent": False, "reason": "unavailable"}
     assert result["hint"].startswith(shell.CWD_IGNORED_WORKSPACE_HINT)
     assert "éphémère" in result["hint"]
 
 
 def test_cwd_hint_does_not_hide_the_ephemeral_reason(docker, registry, settings):
-    settings["value"] = make_settings(shell_workspace_max_total_bytes=0)
+    docker.fail.add("volume create")
     result = scenario(registry, lambda: invoke(handler(), "ls", cwd="/tmp/a"))
-    assert result["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert result["workspace"] == {"persistent": False, "reason": "unavailable"}
     assert shell.CWD_IGNORED_WORKSPACE_HINT in result["hint"]
-    assert "capacité du serveur atteinte" in result["hint"]
+    assert "création impossible" in result["hint"]
 
 
 def test_without_workspace_cwd_hint_is_unchanged(docker, registry, settings):
