@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] — en préparation, non publiée
+
 ### Fixed
 
 - `shell` : la description de l'outil et celles de `command` et `cwd` disent
