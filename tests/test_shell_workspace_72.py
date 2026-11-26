@@ -1300,13 +1300,14 @@ def test_real_docker_files_persist_in_session_and_stay_isolated(registry, settin
             "cd_same": await h.shell("cd /tmp/src && cat f && pwd", sid=sid_a),
             "other_session": await h.shell("cat /tmp/src/f", sid=sid_a2),
             "other_token": await h.shell("cat /tmp/src/f", token="token-B", sid=sid_a),
-            "entries_bound": await h.shell("mkdir /tmp/n && cd /tmp/n && "
-                                           "for i in $(seq 1 600); do : > f$i || { echo stop $i; break; }; done; "
-                                           "cd / && rm -rf /tmp/n", sid=sid_a),
             "size_bound": await h.shell("dd if=/dev/zero of=/tmp/big bs=1M count=20 2>&1 | tail -1; "
                                         "df -k /tmp | tail -1; truncate -s 0 /tmp/big", sid=sid_a),
             "no_exec": await h.shell("printf 'echo ran' > /tmp/s.sh && chmod +x /tmp/s.sh && /tmp/s.sh", sid=sid_a),
             "mounts": await h.shell("grep ' /tmp ' /proc/mounts; id -u", sid=sid_a),
+            # En dernier : l'espace reste plein d'entrées, aucun nettoyage n'est nécessaire.
+            "entries_bound": await h.shell("mkdir /tmp/n && cd /tmp/n && "
+                                           "for i in $(seq 1 600); do : > f$i || { echo stop $i; break; }; done",
+                                           sid=sid_a),
         }
         names = [(w.volume, w.holder) for w in registry.live()]
         clock.now += 10_000
@@ -1375,7 +1376,7 @@ def test_real_docker_kernel_memory_of_a_full_workspace_stays_within_its_budget(r
 
     async def body(h):
         sid = await h.open("token-A")
-        reply = await h.shell(f"mkdir /tmp/w && python3 -c '{script}' {data} {stride}; rm -rf /tmp/w",
+        reply = await h.shell(f"mkdir /tmp/w && python3 -c '{script}' {data} {stride}",
                               sid=sid, extra={"timeout": 30})
         clock.now += 10_000
         await registry.sweep(settings["value"])
