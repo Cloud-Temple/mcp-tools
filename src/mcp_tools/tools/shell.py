@@ -33,6 +33,32 @@ def _truncate(text: str, max_chars: int) -> str:
     return text
 
 
+# Rappel du contrat sandbox (#68). Heuristique : le texte n'affirme pas la cause,
+# un chemin peut aussi être faux dès le premier appel.
+STATELESS_HINT = (
+    "Rappel : chaque appel shell démarre dans un conteneur neuf, détruit à la fin de l'appel. "
+    "Si ce chemin venait d'un appel précédent (téléchargement, extraction, cd), il n'existe plus ici. "
+    "Enchaîner les étapes dépendantes dans une seule commande "
+    "(par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make), "
+    "ou conserver le résultat avec l'outil files."
+)
+CWD_IGNORED_HINT = (
+    "cwd est ignoré en sandbox : la commande a démarré dans le répertoire par défaut. "
+    "Chaque appel shell démarre dans un conteneur neuf ; écrire cd <répertoire> && ... dans command, "
+    "dans le même appel que la création du répertoire."
+)
+MISSING_PATH = "No such file or directory"
+
+
+def _stateless_hint(result: dict, cwd: Optional[str]) -> Optional[str]:
+    """Indice si un cwd non vide a été ignoré, ou si un échec signale un chemin absent."""
+    if cwd:
+        return CWD_IGNORED_HINT
+    if result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or ""):
+        return STATELESS_HINT
+    return None
+
+
 # Mapping shell → flag d'exécution inline
 SHELL_EXEC_FLAGS = {
     "bash": "-c",
@@ -211,14 +237,16 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("shell")
     async def shell(
-        command: Annotated[str, Field(description="La commande à exécuter dans le conteneur sandbox")],
+        command: Annotated[str, Field(description="Commande complète, exécutée dans un conteneur neuf. Mettre dans une seule commande les étapes qui dépendent les unes des autres (&&, ;, script multiligne) : un fichier créé ou un cd fait par un appel précédent n'existe plus.")],
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
-        cwd: Annotated[Optional[str], Field(default=None, description="Répertoire de travail (ignoré en mode sandbox)")] = None,
+        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel, un répertoire créé par un appel précédent n'existe donc plus. Écrire cd <répertoire> && ... dans command, dans le même appel que la création du répertoire.")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
         network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau et noexec de /tmp. Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
     ) -> dict:
-        """Exécute une commande dans un conteneur sandbox isolé (sans réseau, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node."""
+        """Exécute une commande dans un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
+
+        En mode sandbox, celui des déploiements, aucun état ne passe d'un appel au suivant : fichiers téléchargés ou créés, répertoire courant, variables et paquets installés disparaissent. Enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour réutiliser un résultat plus tard, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
         try:
             check_tool_access("shell")
             settings = get_settings()
@@ -233,6 +261,9 @@ def register(mcp: MCPServer) -> None:
                 if cwd:
                     print(f"[shell] WARN: cwd ignoré en mode sandbox (pas de montage volume)", file=sys.stderr)
                 result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
+                hint = _stateless_hint(result, cwd)
+                if hint:
+                    result["hint"] = hint
             else:
                 result = await _run_local(command, shell, cwd, timeout, settings)
 
