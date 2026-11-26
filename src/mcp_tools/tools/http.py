@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
+from .raw_text import RawText
 from ..config import get_settings
 from ..observability import bind_activity, record_activity, traced_tool
 
@@ -456,10 +457,10 @@ def register(mcp: MCPServer) -> None:
         url: Annotated[str, Field(description="URL cible (http:// ou https://). Les IPs privées RFC 1918 sont bloquées (anti-SSRF)")],
         method: Annotated[str, Field(default="GET", description="Méthode HTTP : GET, POST, PUT, DELETE, PATCH ou HEAD")] = "GET",
         headers: Annotated[Optional[Dict[str, str]], Field(default=None, description="Headers HTTP additionnels (objet clé/valeur)")] = None,
-        body: Annotated[Optional[str], Field(default=None, description="Corps de la requête en texte brut")] = None,
+        body: Annotated[RawText, Field(default=None, description="Corps de la requête en texte brut")] = None,
         json_body: Annotated[Optional[Dict[str, Any]], Field(default=None, description="Corps de la requête en JSON (prioritaire sur body)")] = None,
         auth_type: Annotated[Optional[str], Field(default=None, description="Type d'authentification : basic, bearer ou api_key")] = None,
-        auth_value: Annotated[Optional[str], Field(default=None, description="Valeur d'authentification (ex: 'user:pass' pour basic, token pour bearer)")] = None,
+        auth_value: Annotated[RawText, Field(default=None, description="Valeur d'authentification (ex: 'user:pass' pour basic, token pour bearer)")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
         verify_ssl: Annotated[bool, Field(default=True, description="Vérifier le certificat SSL (false pour les certificats auto-signés)")] = True,
         ctx: Optional[Context] = None,

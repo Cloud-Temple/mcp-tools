@@ -2,10 +2,64 @@
 import base64
 import binascii
 import hashlib
+import json
 import re
 
 MAX_VERIFIED_BYTES = 5_000_000
 MAX_BASE64_CHARS = 4 * ((MAX_VERIFIED_BYTES + 2) // 3)
+
+
+def serialize_json_content(value):
+    """Texte écrit pour un objet ou une liste JSON passé dans content.
+
+    Déterministe : UTF-8 sans échappement ASCII, indentation de 2 espaces,
+    ordre des clés reçu, aucun retour à la ligne final. NaN et Infinity sont
+    refusés, car ils ne sont pas du JSON standard.
+    """
+    return json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+
+
+def normalize_write_content(operation, content):
+    """Ramène content à un texte avant tout contrôle d'intégrité ou stockage.
+
+    Un texte reste tel quel, octet pour octet. Un objet ou une liste JSON est
+    sérialisé par serialize_json_content ; empreinte, taille et expected_sha256
+    portent ensuite sur ce texte. None garde le refus « content requis » du
+    handler. Les autres types sont refusés sans rien publier. Hors write,
+    content n'est pas utilisé : une valeur non texte y est ignorée, comme une
+    chaîne l'était déjà.
+    """
+    if content is None or isinstance(content, str):
+        return content, None
+    if operation != "write":
+        return None, None
+    if isinstance(content, (dict, list)):
+        try:
+            return serialize_json_content(content), None
+        except (TypeError, ValueError, RecursionError):
+            return None, _content_error(
+                "invalid_content_json",
+                "Rien n'a été écrit : l'objet ou la liste passé dans content n'est pas du JSON "
+                "standard (NaN, Infinity ou valeur non sérialisable). Passer le texte à écrire "
+                "comme chaîne.")
+    return None, _content_error(
+        "invalid_content_type",
+        f"Rien n'a été écrit : content doit être une chaîne de caractères ; reçu {_json_type(content)}. "
+        "Pour écrire un nombre ou un booléen, le passer comme texte, par exemple \"42\".")
+
+
+def _json_type(value):
+    if isinstance(value, bool):
+        return "un booléen"
+    if isinstance(value, (int, float)):
+        return "un nombre"
+    if isinstance(value, (bytes, bytearray)):
+        return "des octets"
+    return f"le type {type(value).__name__}"
+
+
+def _content_error(code, message):
+    return {"status": "error", "code": code, "effect_state": "not_published", "message": message}
 
 
 def decode_write_content(operation, content, content_base64, expected_sha256):
@@ -34,7 +88,7 @@ def decode_write_content(operation, content, content_base64, expected_sha256):
                   "message": "Transport de preuve texte refusé avant publication."}
 
 
-def validate_write_checksum(operation, content, expected_sha256, *, encoded=False):
+def validate_write_checksum(operation, content, expected_sha256, *, encoded=False, serialized=False):
     """Aucun accès stockage ; les réponses ne reprennent jamais le contenu."""
     if expected_sha256 is None:
         return None  # contrat historique, sans attestation de correspondance
@@ -57,7 +111,7 @@ def validate_write_checksum(operation, content, expected_sha256, *, encoded=Fals
                 code = "content_checksum_mismatch"
     if code:
         return {"status": "error", "code": code, "effect_state": "not_published",
-                "message": _checksum_message(code, content, encoded)}
+                "message": _checksum_message(code, content, encoded, serialized)}
     return None
 
 
@@ -71,11 +125,16 @@ _CHECKSUM_PROBLEMS = {
 }
 
 
-def _checksum_message(code, content, encoded):
+def _checksum_message(code, content, encoded, serialized=False):
     problem = _CHECKSUM_PROBLEMS.get(code)
     if problem is None:
         return "Contrat d'intégrité write refusé avant publication."
     message = "Rien n'a été écrit : " + problem
+    if serialized and code == "content_checksum_mismatch":
+        # L'empreinte d'une source porte sur ses octets, pas sur notre sérialisation.
+        message += (" content a été reçu comme objet ou liste JSON et sérialisé avec une indentation"
+                    " de 2 espaces ; pour écrire les octets exacts de la source, passer son texte"
+                    " intégral comme chaîne.")
     if encoded or not content:
         # content_base64 et le texte vide exigent une empreinte : la retirer ne suffit pas.
         return (message + " Ce transport exige l'empreinte rendue par l'outil qui a produit le contenu ;"

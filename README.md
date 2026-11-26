@@ -170,12 +170,28 @@ outil. Pour `content_base64` ou un texte vide, qui exigent une empreinte, il
 demande celle de l'outil producteur. La réponse
 d'écriture réussie contient `sha256`. Le mode vérifié est borné à 5 MB en octets.
 
-Pour un JSON, utiliser **`content_base64` avec `expected_sha256`**. Le SDK MCP2.2
-pré-décode les objets/tableaux JSON de l'ancien champ nullable `content` avant
-le handler ; cet ancien contrat est conservé avec sa limite. `content_base64`
-transporte les octets sans cette transformation. Il doit provenir d'une réponse
-native qui l'émet déjà (par exemple une lecture Files paginée) ou d'un encodeur
-programmatique, jamais d'une génération de texte par le modèle.
+Un texte JSON passé comme chaîne dans `content` est écrit octet pour octet.
+Le SDK MCP 2.2 applique `json.loads` à une chaîne destinée à un paramètre qui
+n'est pas déclaré `str` pur. `content` est déclaré pour l'éviter (#70). La
+chaîne `"null"` est donc le texte « null ». Un objet ou une liste JSON passé
+tel quel est toléré, mais réécrit avec
+`json.dumps(ensure_ascii=False, indent=2, allow_nan=False)` : ordre des clés
+conservé, aucun retour à la ligne final. La taille, le `sha256` et la
+comparaison avec `expected_sha256` portent sur ce texte réécrit. Il ne
+correspond donc pas à l'empreinte d'une source formatée autrement. Dans ce cas,
+passer le texte intégral de la source comme chaîne. Un nombre, un booléen ou
+des octets sont refusés avec `code="invalid_content_type"` et
+`effect_state="not_published"`. Un `null` JSON garde le refus « content
+requis ». Le schéma publié de `content` reste `string` ou `null`.
+
+D'autres paramètres de texte libre reçoivent aussi intacte une chaîne de forme
+JSON : `http.body`, `http.auth_value`, `ssh.content`, `ssh.password`,
+`perplexity_doc.context` et `files.separator`. L'issue #70 donne l'inventaire
+des paramètres laissés tels quels.
+
+`content_base64` transporte des octets produits par un encodeur programmatique
+ou recopiés d'une réponse native qui l'émet déjà, par exemple une lecture Files
+paginée. Il ne vient jamais d'une génération de texte par le modèle.
 
 Pour plusieurs pages, décoder chaque page puis réassembler **les octets**, et
 ré-encoder l'ensemble ; ne pas concaténer les chaînes base64. Une page ne porte

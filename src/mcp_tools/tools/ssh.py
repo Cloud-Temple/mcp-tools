@@ -33,6 +33,7 @@ from typing import Annotated, Optional
 from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
+from .raw_text import RawText
 from ..config import get_settings
 from ..observability import bind_activity, record_activity, traced_tool
 
@@ -479,13 +480,13 @@ def register(mcp: MCPServer) -> None:
         username: Annotated[str, Field(description="Nom d'utilisateur SSH pour la connexion")],
         operation: Annotated[str, Field(default="exec", description="Opération : exec (commande), status (test connexion), upload (envoyer fichier), download (récupérer fichier)")] = "exec",
         auth_type: Annotated[str, Field(default="password", description="Type d'authentification : password ou key (clé privée)")] = "password",
-        password: Annotated[Optional[str], Field(default=None, description="Mot de passe SSH (requis si auth_type=password)")] = None,
+        password: Annotated[RawText, Field(default=None, description="Mot de passe SSH (requis si auth_type=password)")] = None,
         private_key: Annotated[Optional[str], Field(default=None, description="Clé privée SSH en texte (requis si auth_type=key)")] = None,
         command: Annotated[Optional[str], Field(default=None, description="Commande à exécuter sur le serveur distant (requis pour exec)")] = None,
         sudo: Annotated[bool, Field(default=False, description="Exécuter la commande avec sudo")] = False,
         port: Annotated[int, Field(default=22, description="Port SSH (1-65535, défaut 22)")] = 22,
         remote_path: Annotated[Optional[str], Field(default=None, description="Chemin du fichier distant (requis pour upload/download)")] = None,
-        content: Annotated[Optional[str], Field(default=None, description="Contenu du fichier à uploader (requis pour upload, max 1 MB)")] = None,
+        content: Annotated[RawText, Field(default=None, description="Contenu du fichier à uploader (requis pour upload, max 1 MB)")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max 60)")] = 30,
         ctx: Optional[Context] = None,
     ) -> dict:
