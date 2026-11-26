@@ -63,6 +63,12 @@ SDK_SESSION_LOGGERS = ("mcp.server.streamable_http", "mcp.server.streamable_http
 # Mesuré sur Linux 6.8 : 1,5 Kio pour un fichier vide au nom de 246 caractères,
 # 1 Kio pour un répertoire ou un lien court. Arrondi au-dessus.
 INODE_COST_BYTES = 2048
+# Index des pages d'un fichier tmpfs : nœuds de 64 entrées, 576 octets sur
+# x86_64. Mesuré sur Linux 6.8 : 585 octets par page et par niveau quand chaque
+# page est seule dans son nœud. Arrondi au-dessus.
+PAGE_BYTES = 4096
+XARRAY_FANOUT = 64
+XARRAY_NODE_BYTES = 640
 
 
 def short_fingerprint(value: str) -> str:
@@ -155,7 +161,7 @@ class Lease:
             return {"persistent": False, "reason": self.reason}
         data, max_entries = tmpfs_layout(self.workspace.size)
         info = {"persistent": True, "path": MOUNT_POINT, "new": self.new,
-                "size_bytes": data, "max_entries": max_entries,
+                "size_bytes": data, "max_file_bytes": data, "max_entries": max_entries,
                 "idle_seconds": settings.shell_workspace_idle_seconds,
                 "max_age_seconds": settings.shell_workspace_max_age_seconds}
         if self.reason:
@@ -163,18 +169,36 @@ class Lease:
         return info
 
 
-def tmpfs_layout(size: int) -> tuple[int, int]:
-    """Répartit le budget mémoire d'un espace entre données et métadonnées.
+def _xarray_height(pages: int) -> int:
+    """Hauteur de l'index des pages d'un fichier qui couvre `pages` pages."""
+    height = 1
+    while XARRAY_FANOUT ** height < pages:
+        height += 1
+    return height
 
-    `size=` ne borne que les pages de données. Sans `nr_inodes`, le noyau fixe
-    le nombre d'inodes d'après la RAM de l'hôte, et chaque fichier, répertoire
-    ou lien garde en mémoire noyau son inode et son entrée de répertoire. Un
-    huitième du budget va donc aux métadonnées, à INODE_COST_BYTES par entrée.
-    Rend (octets de données, nombre maximal d'entrées) ; leur somme mémoire
-    reste dans `size`.
+
+def tmpfs_layout(size: int) -> tuple[int, int]:
+    """Répartit le budget mémoire `size` d'un espace : données, entrées, index des pages.
+
+    `size=` ne borne que les pages de données. Le noyau garde aussi en mémoire :
+    - pour chaque fichier, répertoire ou lien, son inode et son entrée de
+      répertoire. `nr_inodes` les borne ; un huitième du budget leur revient,
+      à INODE_COST_BYTES par entrée ;
+    - pour chaque page de données, les nœuds de l'index des pages du fichier.
+      Un fichier creux dont les pages sont très espacées alloue au pire un
+      nœud par niveau et par page. `--ulimit fsize` borne la taille d'un
+      fichier à la taille des données, donc la hauteur de l'index.
+    Rend (octets de données, nombre maximal d'entrées). Données, entrées et
+    index tiennent ensemble dans `size`.
     """
     max_entries = max(1, size // (8 * INODE_COST_BYTES))
-    return size - max_entries * INODE_COST_BYTES, max_entries
+    budget = size - max_entries * INODE_COST_BYTES
+    height = 1
+    while True:
+        pages = max(1, budget // (PAGE_BYTES + height * XARRAY_NODE_BYTES))
+        if _xarray_height(pages) <= height:
+            return pages * PAGE_BYTES, max_entries
+        height += 1
 
 
 def _tmpfs_options(size: int) -> str:
@@ -190,12 +214,15 @@ def call_args(workspace: Workspace, settings) -> list[str]:
     le recrée vide, mais toujours en tmpfs borné, jamais en volume disque.
     volume-nocopy : le contenu de /tmp ne vient jamais de l'image.
     """
+    data, _ = tmpfs_layout(workspace.size)
     return [
         "--label", f"{LABEL}={CALL_ROLE}",
         "--label", f"{INSTANCE_LABEL}={settings.shell_workspace_instance}",
         f"--mount=type=volume,src={workspace.volume},dst={MOUNT_POINT},volume-nocopy,"
         f"volume-driver=local,volume-opt=type=tmpfs,volume-opt=device=tmpfs,"
         f"\"volume-opt=o={_tmpfs_options(workspace.size)}\"",
+        # Borne la hauteur de l'index des pages, donc sa mémoire (tmpfs_layout).
+        f"--ulimit=fsize={data}:{data}",
     ]
 
 
@@ -247,6 +274,7 @@ class WorkspaceRegistry:
         self._loop = None
         self._sweeper: Optional[asyncio.Task] = None
         self._purged = False
+        self._purging = False
         self._purge_retry_at = float("-inf")
 
     # --- état observable (tests, diagnostic) -------------------------------
@@ -401,6 +429,11 @@ class WorkspaceRegistry:
         gone = False
         try:
             await _docker("rm", "-f", workspace.holder)
+            # Sans appel en cours, un conteneur qui monte encore le volume est un
+            # appel dont le nettoyage a échoué : il garderait le tmpfs monté.
+            code, out = await _docker("ps", "-aq", "--filter", f"volume={workspace.volume}")
+            if code == 0 and out.split():
+                await _docker("rm", "-f", *out.split())
             await _docker("volume", "rm", workspace.volume)
             gone = await self._volume_gone(workspace.volume)
         except asyncio.CancelledError:
@@ -445,6 +478,35 @@ class WorkspaceRegistry:
     async def _destroy_all(self, workspaces: list[Workspace]) -> None:
         for workspace in workspaces:
             await self._destroy(workspace)
+
+    def _spawn(self, coroutine) -> None:
+        """Lance un retrait ou une purge hors du chemin de l'appel, sans que son annulation l'interrompe."""
+        try:
+            task = asyncio.get_running_loop().create_task(coroutine)
+        except RuntimeError:
+            coroutine.close()
+            return
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def prepare(self, settings) -> None:
+        """Premier appel sandbox du processus : purge les espaces d'un processus précédent.
+
+        Indépendant des admissions : après un retour à SHELL_WORKSPACE_MAX_COUNT=0
+        ou sans session, les anciens conteneurs de maintien sont quand même
+        retirés. La purge tourne en tâche de fond : l'appel ne l'attend pas.
+        """
+        if self._purged or self._purging or self._clock() < self._purge_retry_at:
+            return
+        self._purging = True
+        self._spawn(self._purge_in_background(settings))
+
+    async def _purge_in_background(self, settings) -> None:
+        try:
+            async with self._bind_loop():
+                await self._ensure_purged(settings)
+        finally:
+            self._purging = False
 
     async def acquire(self, key: str, settings) -> Lease:
         """Rend l'espace de la clé, en le créant si la capacité le permet."""
@@ -497,7 +559,11 @@ class WorkspaceRegistry:
                 lease.workspace.active += 1
                 lease.workspace.last_used = now
             pending = [w for w in self._pending() if w not in already_doomed]
-        await self._destroy_all(pending)
+        # Le retrait d'un espace remplacé ne doit pas suivre la réservation sur
+        # le chemin de l'appel : une annulation ici perdrait la réservation, que
+        # `release` ne pourrait plus rendre.
+        for workspace in pending:
+            self._spawn(self._destroy(workspace))
         return lease
 
     def release(self, lease: Lease) -> None:
@@ -512,12 +578,7 @@ class WorkspaceRegistry:
                 self._retiring.remove(workspace)
             if workspace not in self._doomed:
                 self._doomed.append(workspace)
-            try:
-                task = asyncio.get_running_loop().create_task(self._destroy(workspace))
-            except RuntimeError:
-                return
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._spawn(self._destroy(workspace))
 
     async def sweep(self, settings) -> None:
         """Détruit les espaces expirés hors appel en cours, et retente les retraits non confirmés."""

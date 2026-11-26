@@ -89,11 +89,15 @@ lancé via `docker run --rm` avec les contraintes de sécurité suivantes :
 | `--no-new-privileges` | Pas d'escalade          | Bloque setuid/setgid                   |
 | `--tmpfs /tmp:noexec` | Temp sans exec          | Pas d'exécution depuis /tmp            |
 
-**Espace /tmp de session (#72)** : pour une requête d'une session MCP
+**Espace /tmp de session (#72)** : désactivé par défaut
+(`SHELL_WORKSPACE_MAX_COUNT=0`). Une fois activé, pour une requête d'une session MCP
 authentifiée, `/tmp` est un volume tmpfs (`size`, `nr_inodes`,
 `mode=1777,nosuid,nodev,noexec`) propre au couple identifiant de session et
 jeton validé. `AuthMiddleware` renseigne `scope["user"]` avec l'empreinte du
-jeton : le SDK refuse en 404 une session présentée par un autre jeton. Un conteneur de
+jeton : le SDK refuse en 404 une session présentée par un autre jeton. Le
+conteneur d'appel reçoit `--ulimit fsize` : la taille d'un fichier, donc la
+hauteur de l'index de ses pages, reste bornée ; `size_bytes` de 256 Mio couvre
+au pire données, entrées et index (`tmpfs_layout`). Un conteneur de
 maintien sans réseau ni droit garde le volume monté entre deux appels ; il
 s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
 ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace

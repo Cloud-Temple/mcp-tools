@@ -119,35 +119,92 @@ SHELL_EXEC_FLAGS = {
 }
 
 
-async def _kill_container(name: str) -> None:
-    """Force-kill et supprime un conteneur Docker par son nom."""
+DOCKER_CLEANUP_TIMEOUT = 15
+CLEANUP_CHECKS = 10
+CLEANUP_CHECK_INTERVAL = 0.5
+# Nettoyages en cours : une référence les garde en vie jusqu'à leur fin.
+_CLEANUPS: set = set()
+
+
+async def _docker_quiet(*args: str) -> tuple[int, bytes]:
+    """Commande docker bornée dans le temps ; (-1, b"") si elle échoue ou dépasse le délai."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "kill", name,
-            stdout=asyncio.subprocess.DEVNULL,
+            "docker", *args,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await proc.wait()
     except Exception:
-        pass
+        return -1, b""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-    except Exception:
-        pass
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=DOCKER_CLEANUP_TIMEOUT)
+    except BaseException as error:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        return -1, b""
+    return proc.returncode, out
+
+
+async def _kill_container(name: str) -> bool:
+    """Force-kill et supprime un conteneur Docker par son nom. Rend True si Docker confirme sa disparition.
+
+    `--rm` fait retirer le conteneur par Docker après `kill` : le retrait peut
+    encore être en cours au premier contrôle, d'où quelques contrôles espacés.
+    """
+    await _docker_quiet("kill", name)
+    await _docker_quiet("rm", "-f", name)
+    for attempt in range(CLEANUP_CHECKS):
+        code, out = await _docker_quiet("ps", "-aq", "--filter", f"name=^{name}$")
+        if code == 0 and not out.split():
+            return True
+        if attempt + 1 < CLEANUP_CHECKS:
+            await asyncio.sleep(CLEANUP_CHECK_INTERVAL)
+            await _docker_quiet("rm", "-f", name)
+    return False
+
+
+def _start_cleanup(process, container_name: str, cleanups: Optional[list]) -> asyncio.Task:
+    """Arrête le client docker run et retire le conteneur, dans une tâche à part.
+
+    Une annulation MCP annule l'appel à chaque attente : un nettoyage attendu
+    dans l'appel ne passerait jamais sa première commande docker. La tâche à
+    part va au bout, chaque commande bornée par DOCKER_CLEANUP_TIMEOUT.
+    """
+    async def cleanup() -> bool:
+        try:
+            process.kill()
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=DOCKER_CLEANUP_TIMEOUT)
+        except Exception:
+            pass
+        gone = await _kill_container(container_name)
+        if not gone:
+            record_activity("sandbox.cleanup_failed", level="error", message="Sandbox non retirée après arrêt",
+                            details={"sandbox_id": container_name})
+        return gone
+
+    task = asyncio.get_running_loop().create_task(cleanup())
+    _CLEANUPS.add(task)
+    task.add_done_callback(_CLEANUPS.discard)
+    if cleanups is not None:
+        cleanups.append(task)
+    return task
 
 
 async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False,
-                          workspace_args: Optional[list] = None) -> dict:
+                          workspace_args: Optional[list] = None, cleanups: Optional[list] = None) -> dict:
     """Exécute la commande dans un conteneur Docker éphémère isolé.
 
     Si network=True, le conteneur a accès au réseau (--network=bridge + DNS).
     Sinon, isolation totale (--network=none).
     Si workspace_args est fourni, le volume de session qu'il monte remplace le tmpfs de /tmp (#72).
+    Après un délai dépassé ou une annulation, la tâche de nettoyage est ajoutée à `cleanups`.
     """
     exec_flag = SHELL_EXEC_FLAGS.get(shell, "-c")
     container_name = f"sandbox-{uuid.uuid4().hex[:12]}"
@@ -228,23 +285,14 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     except asyncio.TimeoutError:
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
         # Tuer le process docker run ET le conteneur Docker
-        try:
-            process.kill()
-            await process.wait()
-        except Exception:
-            pass
-        await _kill_container(container_name)
+        await asyncio.shield(_start_cleanup(process, container_name, cleanups))
         raise  # Re-raise pour que l'appelant gère le message d'erreur
     except asyncio.CancelledError:
         # Le SDK v2 propage l'annulation du client : docker run ne doit pas
         # survivre au call MCP abandonné.
-        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
-        try:
-            process.kill()
-            await process.wait()
-        except Exception:
-            pass
-        await _kill_container(container_name)
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée, nettoyage lancé", details={"sandbox_id": container_name})
+        # Pas d'attente ici : l'annulation interromprait le nettoyage (#72).
+        _start_cleanup(process, container_name, cleanups)
         raise
 
     max_chars = settings.tool_max_output_chars
@@ -303,11 +351,12 @@ def register(mcp: MCPServer) -> None:
     ) -> dict:
         """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, chaque appel démarre dans un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
 
-        En mode sandbox, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; le champ workspace de la réponse le confirme et donne ces limites. Cette conservation est au mieux : si le serveur ne peut pas créer l'espace (capacité atteinte), workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
+        En mode sandbox, si le serveur l'active, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; seul le champ workspace de la réponse le confirme et donne ces limites. Cette conservation est au mieux : si le serveur ne peut pas créer l'espace (capacité atteinte), workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
         # cwd ignoré : l'indice accompagne aussi un échec après tentative sandbox (timeout).
         cwd_ignored = False
         lease = None
         settings = None
+        cleanups: list = []
         try:
             check_tool_access("shell")
             settings = get_settings()
@@ -322,6 +371,8 @@ def register(mcp: MCPServer) -> None:
                 cwd_ignored = bool(cwd)
                 if cwd:
                     print(f"[shell] WARN: cwd ignoré en mode sandbox (pas de montage volume)", file=sys.stderr)
+                # Purge des espaces d'un processus précédent, même sans session ni espace (#72).
+                shell_workspace.registry.prepare(settings)
                 # Espace de session (#72) : clé tirée de la requête, jamais des arguments.
                 # Sans session MCP, ou espaces désactivés, /tmp reste éphémère comme avant.
                 key = shell_workspace.key_from_context(ctx)
@@ -330,7 +381,7 @@ def register(mcp: MCPServer) -> None:
                 if lease is not None and lease.workspace is not None:
                     result = await _run_in_sandbox(
                         command, shell, timeout, settings, network=network,
-                        workspace_args=shell_workspace.call_args(lease.workspace, settings))
+                        workspace_args=shell_workspace.call_args(lease.workspace, settings), cleanups=cleanups)
                 else:
                     result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
                 hint = _stateless_hint(result, cwd, lease)
@@ -352,4 +403,11 @@ def register(mcp: MCPServer) -> None:
             return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored, lease, settings)
         finally:
             if lease is not None:
-                shell_workspace.registry.release(lease)
+                pending = [task for task in cleanups if not task.done()]
+                if pending:
+                    # Le conteneur d'appel monte encore l'espace : la réservation
+                    # tient jusqu'à la fin de son retrait.
+                    asyncio.gather(*pending, return_exceptions=True).add_done_callback(
+                        lambda _, lease=lease: shell_workspace.registry.release(lease))
+                else:
+                    shell_workspace.registry.release(lease)

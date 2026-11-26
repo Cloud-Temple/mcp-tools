@@ -10,22 +10,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `shell` : en sandbox, les fichiers écrits sous `/tmp` sont conservés entre les
-  appels d'une même session MCP (#72). Un worker qui télécharge et décompresse
+- `shell` : en sandbox, les fichiers écrits sous `/tmp` peuvent être conservés
+  entre les appels d'une même session MCP (#72). Désactivé par défaut
+  (`SHELL_WORKSPACE_MAX_COUNT=0`) : l'identifiant de session devient un secret
+  d'accès à ce `/tmp`. À activer, avec 16 espaces, seulement si chaque mission
+  a son propre jeton ou si le client ne journalise pas cet identifiant
+  (mcp-agent#618). Une fois activé, un worker qui télécharge et décompresse
   des sources à un appel les retrouve à l'appel suivant. Chaque appel garde un
   conteneur neuf : `cd`, variables et processus ne passent toujours pas.
   L'espace est un volume tmpfs propre au couple identifiant de session et jeton
   validé par `AuthMiddleware`, jamais tiré d'un argument. Il est gardé monté
   par un conteneur de maintien sans réseau ni droit, qui s'arrête seul à l'âge
-  maximal. Bornes réglables : 256 Mio par espace, métadonnées comprises
-  (224 Mio de données et 16384 entrées), 16 espaces, 4 Gio au total,
-  15 min d'inactivité, 2 h au plus (`SHELL_WORKSPACE_*`) ; `0` espace rend le
-  comportement antérieur. Au-delà de la capacité, la commande s'exécute avec le
+  maximal. Bornes réglables : 256 Mio de mémoire noyau par espace, entrées et
+  index des pages compris (152 Mio de données, 16384 entrées, fichier de
+  152 Mio au plus), 4 Gio au total, 15 min d'inactivité, 2 h au plus
+  (`SHELL_WORKSPACE_*`) ; `0` espace rend le comportement antérieur. Au-delà de la capacité, la commande s'exécute avec le
   `/tmp` éphémère et la réponse le dit (`workspace.persistent: false`, `hint`).
   Sans session MCP, ou sur le chemin sans session du SDK (protocole
   `2026-07-28`), rien ne change. La réponse porte un champ `workspace` sans
   identifiant, y compris après un délai dépassé. Un espace reste compté dans la
-  capacité jusqu'au retrait confirmé de son volume.
+  capacité jusqu'au retrait confirmé de son volume. Au premier appel sandbox,
+  la purge retire les espaces d'un processus précédent, même avec `0` espace.
+- `shell` : après une annulation MCP, le conteneur d'appel est arrêté et retiré
+  dans une tâche à part. Auparavant, l'annulation interrompait ce nettoyage et
+  le conteneur pouvait tourner jusqu'à la fin de sa commande (#72).
 - Une session MCP est liée au jeton qui l'a ouverte : un autre jeton qui
   présente son identifiant reçoit 404 du SDK, avant tout routage. Auparavant,
   deux jetons valides pouvaient partager le transport d'une session (#72).

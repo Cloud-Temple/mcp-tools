@@ -175,9 +175,13 @@ class Settings(BaseSettings):
 
     # --- Espace /tmp de shell par session MCP (#72) ---
     # Volume tmpfs monté sur /tmp à chaque appel shell d'une même session.
-    # Mémoire de l'hôte au pire cas : shell_workspace_max_total_bytes.
-    # 0 espace = /tmp éphémère à chaque appel, comportement antérieur.
-    shell_workspace_max_count: int = Field(default=16, ge=0, le=1024)
+    # Mémoire de l'hôte au pire cas : shell_workspace_max_total_bytes, données,
+    # entrées et index des pages compris (shell_workspace.tmpfs_layout).
+    # 0 espace = /tmp éphémère à chaque appel, comportement antérieur. Désactivé
+    # par défaut : l'identifiant de session devient un secret d'accès à /tmp, à
+    # n'activer qu'avec un jeton par mission ou des clients qui ne le
+    # journalisent pas (mcp-agent#618). Valeur prévue une fois activé : 16.
+    shell_workspace_max_count: int = Field(default=0, ge=0, le=1024)
     shell_workspace_size_bytes: int = Field(default=256 * 1024 * 1024, ge=1024 * 1024)
     shell_workspace_max_total_bytes: int = Field(default=4 * 1024 * 1024 * 1024, ge=0)
     shell_workspace_idle_seconds: int = Field(default=900, ge=60)

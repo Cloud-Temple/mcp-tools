@@ -66,6 +66,27 @@ class FakeProcess:
         return self.returncode
 
 
+class GatedProcess(FakeProcess):
+    """Client docker run d'un appel qui dure jusqu'à l'ouverture de la porte."""
+
+    def __init__(self, docker, name, gate):
+        super().__init__(0, b"ok\n", b"")
+        self.docker, self.name, self.gate, self.killed = docker, name, gate, asyncio.Event()
+
+    async def communicate(self):
+        await self.gate.wait()
+        self.docker.running.pop(self.name, None)
+        return self._stdout, self._stderr
+
+    def kill(self):
+        # Tuer le client n'arrête pas le conteneur : seul docker kill ou rm -f le fait.
+        self.killed.set()
+
+    async def wait(self):
+        await self.killed.wait()
+        return -9
+
+
 def option(args, prefix):
     return next(a[len(prefix):] for a in args if a.startswith(prefix))
 
@@ -94,9 +115,11 @@ class FakeDocker:
         self.leftover_containers, self.leftover_volumes = [], []
         self.fail = set()
         self.gate = {}
+        # Conteneurs d'appel encore en marche après l'arrêt de leur client : nom -> volume monté.
+        self.running = {}
 
     def mounted(self):
-        return {mounted_volume(args) for args in self.holders.values()}
+        return {mounted_volume(args) for args in self.holders.values()} | set(self.running.values())
 
     async def exec(self, *argv, **kwargs):
         assert argv[0] == "docker"
@@ -134,6 +157,11 @@ class FakeDocker:
             return FakeProcess(0, b"id\n")
         if verb == "run":
             self.calls.append(args)
+            if "call" in self.gate:
+                # Le conteneur tourne tant que la porte reste fermée, même si son client est arrêté.
+                name = option(args, "--name=")
+                self.running[name] = mounted_volume(args)
+                return GatedProcess(self, name, self.gate["call"])
             return FakeProcess(0, b"ok\n", b"")
         if verb == "inspect":
             return FakeProcess(0, b"true\n") if args[-1] in self.holders else FakeProcess(1)
@@ -142,14 +170,25 @@ class FakeDocker:
                 return FakeProcess(1)
             for name in args[2:]:
                 self.holders.pop(name, None)
+                self.running.pop(name, None)
                 if name in self.leftover_containers:
                     self.leftover_containers.remove(name)
             return FakeProcess(0)
         if verb == "ps":
             if "ps" in self.fail:
                 return FakeProcess(1)
+            name = next((a[len("name=^"):-1] for a in args if a.startswith("name=^")), None)
+            if name is not None:
+                return FakeProcess(0, (name + "\n").encode() if name in self.running else b"")
+            volume = next((a[len("volume="):] for a in args if a.startswith("volume=")), None)
+            if volume is not None:
+                users = [n for n, v in self.running.items() if v == volume]
+                return FakeProcess(0, "\n".join(users).encode())
             return FakeProcess(0, "\n".join(self.leftover_containers).encode())
         if verb == "kill":
+            if "kill" in self.fail:
+                return FakeProcess(1)
+            self.running.pop(args[1], None)
             return FakeProcess(0)
         raise AssertionError(f"commande docker inattendue : {args}")
 
@@ -308,7 +347,10 @@ def test_without_workspace_the_call_is_unchanged(docker, registry, settings, net
     assert anonymized(docker.calls[0]) == expected_legacy_command(settings["value"], network, "ls /tmp")
     assert "workspace" not in result and "hint" not in result
     assert docker.volumes == {} and docker.holders == {}
-    assert [c for c in docker.commands if c[0] != "run"] == []
+    # Seuls s'ajoutent les inventaires de la purge du démarrage, filtrés sur l'instance.
+    inventories = [c for c in docker.commands if c[0] != "run"]
+    assert [c[:2] for c in inventories] == [["ps", "-aq"], ["volume", "ls"], ["ps", "-aq"], ["volume", "ls"]]
+    assert all(f"label={shell_workspace.INSTANCE_LABEL}=t72" in c for c in inventories)
 
 
 def test_without_workspace_missing_path_keeps_the_previous_hint(docker, registry, settings, monkeypatch):
@@ -334,7 +376,8 @@ def test_same_session_and_token_mount_the_same_volume(docker, registry, settings
     assert volumes[0] is not None and volumes[0] == volumes[1]
     assert first["workspace"]["persistent"] and first["workspace"]["new"] is True
     assert second["workspace"]["new"] is False
-    assert first["workspace"]["size_bytes"] == 224 * MiB and first["workspace"]["max_entries"] == 16384
+    assert first["workspace"]["size_bytes"] == 159916032 and first["workspace"]["max_entries"] == 16384
+    assert first["workspace"]["max_file_bytes"] == 159916032
     assert not any(a.startswith("--tmpfs=/tmp") for c in docker.calls for a in c)
     assert len(docker.volumes) == 1 and len(docker.holders) == 1
 
@@ -367,7 +410,7 @@ def test_volume_name_does_not_derive_from_session_token_or_arguments(docker, reg
 def test_call_mount_and_holder_are_bounded_and_unprivileged(docker, registry, settings):
     scenario(registry, lambda: invoke(handler()))
     create = next(c for c in docker.commands if c[:2] == ["volume", "create"])
-    assert "o=size=234881024,nr_inodes=16384,mode=1777,nosuid,nodev,noexec" in create
+    assert "o=size=159916032,nr_inodes=16384,mode=1777,nosuid,nodev,noexec" in create
     assert f"{shell_workspace.INSTANCE_LABEL}=t72" in create
     holder = next(iter(docker.holders.values()))
     for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
@@ -379,7 +422,8 @@ def test_call_mount_and_holder_are_bounded_and_unprivileged(docker, registry, se
     call = docker.calls[0]
     call_mount = option(call, "--mount=")
     assert "volume-nocopy" in call_mount
-    assert '"volume-opt=o=size=234881024,nr_inodes=16384,mode=1777,nosuid,nodev,noexec"' in call_mount
+    assert '"volume-opt=o=size=159916032,nr_inodes=16384,mode=1777,nosuid,nodev,noexec"' in call_mount
+    assert "--ulimit=fsize=159916032:159916032" in call
     assert f"{shell_workspace.LABEL}={shell_workspace.CALL_ROLE}" in labels(call)
     for flag in ("--read-only", "--cap-drop=ALL", "--network=none", "--user=sandbox:sandbox"):
         assert flag in call
@@ -658,7 +702,21 @@ def test_tmpfs_layout_keeps_data_and_entries_within_the_space_budget():
         data, entries = shell_workspace.tmpfs_layout(size)
         assert data > 0 and entries > 0
         assert data + entries * shell_workspace.INODE_COST_BYTES <= size
-    assert shell_workspace.tmpfs_layout(256 * MiB) == (224 * MiB, 16384)
+    assert shell_workspace.tmpfs_layout(256 * MiB) == (159916032, 16384)
+
+
+def test_tmpfs_layout_reserves_the_page_index_of_a_sparse_file():
+    """Au pire, chaque page d'un fichier creux a son propre nœud à chaque niveau de l'index."""
+    for size in (MiB, 8 * MiB, 256 * MiB, 4096 * MiB):
+        data, entries = shell_workspace.tmpfs_layout(size)
+        pages = data // shell_workspace.PAGE_BYTES
+        height = shell_workspace._xarray_height(pages)
+        worst = data + pages * height * shell_workspace.XARRAY_NODE_BYTES + entries * shell_workspace.INODE_COST_BYTES
+        assert worst <= size
+
+
+def test_workspaces_are_disabled_by_default():
+    assert Settings().shell_workspace_max_count == 0
 
 
 # --- réponses d'erreur et indices combinés ------------------------------------------
@@ -695,6 +753,164 @@ def test_cwd_hint_does_not_hide_the_ephemeral_reason(docker, registry, settings)
 def test_without_workspace_cwd_hint_is_unchanged(docker, registry, settings):
     result = scenario(registry, lambda: invoke(handler(), "ls", sid=None, cwd="/tmp/a"))
     assert result["hint"] == shell.CWD_IGNORED_HINT and "workspace" not in result
+
+
+# --- annulation : réservation et conteneur d'appel ---------------------------------------
+
+def test_replacing_an_expired_workspace_does_not_wait_for_its_removal(docker, registry, settings, clock):
+    """Le retrait de l'ancien espace ne suit pas la réservation du nouveau sur le chemin de l'appel.
+
+    Sinon une annulation pendant ce retrait perdait la réservation : `active` restait à 1.
+    """
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        clock.now += 10_000
+        docker.gate["volume rm"] = asyncio.Event()
+        replaced = await asyncio.wait_for(invoke(function), 2)
+        active = [w.active for w in registry.live()]
+        docker.gate.pop("volume rm").set()
+        return replaced, active
+    replaced, active = scenario(registry, body)
+    assert replaced["workspace"]["new"] is True and replaced["workspace"]["reason"] == "expired"
+    assert active == [0, 0]
+    assert len(registry.live()) == 1 and len(docker.volumes) == 1
+
+
+def _cancel_running_call(docker, registry, function, cancel):
+    """Lance un appel dont le conteneur tourne, l'annule avec `cancel`, rend l'état observé."""
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        call = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        await cancel(call)
+        for _ in range(200):
+            if not docker.running and all(w.active == 0 for w in registry.live()):
+                break
+            await asyncio.sleep(0.01)
+        return dict(docker.running), [w.active for w in registry.live()]
+    return scenario(registry, body)
+
+
+def test_cancelled_call_removes_its_container_then_releases_the_workspace(docker, registry, settings):
+    async def cancel(call):
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+    running, active = _cancel_running_call(docker, registry, handler(), cancel)
+    assert running == {}
+    assert active == [0]
+    name = next(c for c in docker.commands if c[0] == "kill")[1]
+    assert ["rm", "-f", name] in docker.commands
+    assert ["ps", "-aq", "--filter", f"name=^{name}$"] in docker.commands
+
+
+def test_anyio_cancellation_does_not_interrupt_the_cleanup(docker, registry, settings):
+    """Le SDK annule par portée AnyIO, qui relance l'annulation à chaque attente de l'appel."""
+    import anyio
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        async with anyio.create_task_group() as group:
+            group.start_soon(invoke, function, "sleep 600")
+            while not docker.running:
+                await asyncio.sleep(0)
+            group.cancel_scope.cancel()
+        for _ in range(200):
+            if not docker.running and all(w.active == 0 for w in registry.live()):
+                break
+            await asyncio.sleep(0.01)
+        return dict(docker.running), [w.active for w in registry.live()]
+    running, active = scenario(registry, body)
+    assert running == {} and active == [0]
+
+
+def test_cleanup_that_cannot_remove_the_container_is_reported(docker, registry, settings, monkeypatch):
+    events = []
+    monkeypatch.setattr(shell, "record_activity", lambda event, **kw: events.append(event))
+    monkeypatch.setattr(shell, "CLEANUP_CHECK_INTERVAL", 0)
+    docker.fail.update({"kill", "rm"})
+
+    async def cancel(call):
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(200):
+            if "sandbox.cleanup_failed" in events:
+                break
+            await asyncio.sleep(0.01)
+    running, _ = _cancel_running_call(docker, registry, handler(), cancel)
+    assert "sandbox.cleanup_failed" in events
+    assert len(running) == 1
+    name = next(iter(running))
+    checks = [c for c in docker.commands if c == ["ps", "-aq", "--filter", f"name=^{name}$"]]
+    assert len(checks) == shell.CLEANUP_CHECKS
+    docker.running.clear()
+
+def test_workspace_stays_reserved_until_the_call_container_is_gone(docker, registry, settings, clock):
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+    docker.gate["kill"] = asyncio.Event()
+
+    async def body():
+        call = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        during = ([w.active for w in registry.live()], len(docker.volumes))
+        docker.gate.pop("kill").set()
+        for _ in range(200):
+            if registry.live() == []:
+                break
+            await registry.sweep(settings["value"])
+            await asyncio.sleep(0.01)
+        return during
+    during = scenario(registry, body)
+    assert during == ([1], 1)
+    assert registry.live() == [] and docker.volumes == {} and docker.running == {}
+
+
+def test_removal_also_stops_an_orphan_call_container(docker, registry, settings, clock):
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        volume = registry.live()[0].volume
+        docker.running["sandbox-orphan"] = volume
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return volume
+    volume = scenario(registry, body)
+    assert ["ps", "-aq", "--filter", f"volume={volume}"] in docker.commands
+    assert ["rm", "-f", "sandbox-orphan"] in docker.commands
+    assert registry.live() == [] and docker.volumes == {} and docker.running == {}
+
+
+def test_startup_purge_runs_even_when_workspaces_are_disabled(docker, registry, settings):
+    """Après un retour à 0, les anciens maintiens ne gardent pas leur tmpfs jusqu'à leur échéance."""
+    settings["value"] = make_settings(shell_workspace_max_count=0)
+    docker.leftover_containers = ["old-holder"]
+    docker.leftover_volumes = ["shellws-old"]
+    function = handler()
+
+    async def body():
+        result = await invoke(function, "ls")
+        await registry.stop()
+        return result
+    result = scenario(registry, body)
+    assert "workspace" not in result
+    assert ["rm", "-f", "old-holder"] in docker.commands and ["volume", "rm", "shellws-old"] in docker.commands
+    assert docker.leftover_containers == [] and docker.leftover_volumes == []
+    assert mounted_volume(docker.calls[0]) is None
 
 
 def test_missing_path_hint_names_the_session_workspace(docker, registry, settings, monkeypatch):
@@ -804,8 +1020,8 @@ class HttpHarness:
         await self.post({"jsonrpc": "2.0", "method": "notifications/initialized"}, token=token, sid=sid)
         return sid
 
-    async def shell(self, command, *, token="token-A", sid=None, meta=None, **kwargs):
-        params = {"name": "shell", "arguments": {"command": command}}
+    async def shell(self, command, *, token="token-A", sid=None, meta=None, extra=None, **kwargs):
+        params = {"name": "shell", "arguments": {"command": command, **(extra or {})}}
         if meta is not None:
             params["_meta"] = meta
         reply = await self.post({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params},
@@ -824,6 +1040,11 @@ def free_port():
 
 
 def run_http(registry, monkeypatch, body):
+    # sse_starlette garde, par fil, un indicateur d'arrêt qu'un serveur précédent du
+    # même processus de test a pu lever : il fermerait d'emblée les flux SSE suivants.
+    import sse_starlette.sse as sse
+    monkeypatch.setattr(sse.AppStatus, "should_exit", False)
+    monkeypatch.setattr(sse._thread_state, "shutdown_state", None, raising=False)
     monkeypatch.setattr(auth_middleware.AuthMiddleware, "_validate_token",
                         lambda self, token: dict(TOKENS[token]) if token in TOKENS else None)
     server = MCPServer("shell-workspace-72")
@@ -978,11 +1199,106 @@ def test_real_docker_files_persist_in_session_and_stay_isolated(registry, settin
     # 8 Mio : 512 entrées au plus, dont la racine et /tmp/src déjà présents.
     assert out["entries_bound"][1]["stdout"].startswith("stop ")
     assert int(out["entries_bound"][1]["stdout"].split()[1]) < 512
-    assert "No space left" in out["size_bound"][1]["stdout"] or "7168" in out["size_bound"][1]["stdout"]
+    assert "5460" in out["size_bound"][1]["stdout"]
     assert out["no_exec"][1]["returncode"] == 126
     mounts = out["mounts"][1]["stdout"]
-    assert "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec" in mounts and "size=7168k" in mounts
+    assert "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec" in mounts and "size=5460k" in mounts
     assert "nr_inodes=512" in mounts
     assert len(names) == 2
     for volume, holder in names:
         assert not docker_exists("volume", volume) and not docker_exists("container", holder)
+
+
+WORST_CASE_WRITER = r"""
+import os, sys
+def stat():
+    return {l.split()[0]: int(l.split()[1]) for l in open('/sys/fs/cgroup/memory.stat')}
+data, stride = int(sys.argv[1]), sys.argv[2]
+before = stat()
+files = 0
+try:
+    while True:
+        files += 1
+        with open(f'/tmp/w/{files:05d}' + 'n' * 200, 'wb', buffering=0) as f:
+            index = 0
+            while True:
+                offset = data - 4096 if stride == 'max' else index * int(stride) * 4096
+                if offset + 4096 > data:
+                    break
+                f.seek(offset); f.write(b'x' * 4096); index += 1
+                if stride == 'max':
+                    break
+except OSError:
+    pass
+after = stat()
+print((after['shmem'] - before['shmem']) + (after['slab'] - before['slab']), after['slab'] - before['slab'])
+"""
+
+
+@real_docker
+@pytest.mark.parametrize("stride", ["64", "4096", "max"])
+def test_real_docker_kernel_memory_of_a_full_workspace_stays_within_its_budget(registry, settings, monkeypatch,
+                                                                               clock, stride):
+    """Mesure mémoire : pages, inodes, entrées et index des pages d'un fichier creux, au pire cas.
+
+    Le conteneur d'appel porte toutes ces allocations dans son groupe de contrôle mémoire.
+    """
+    budget = 32 * MiB
+    instance = f"t72-{uuid.uuid4().hex[:8]}"
+    settings["value"] = make_settings(sandbox_image=REAL_IMAGE, shell_workspace_instance=instance,
+                                      shell_workspace_size_bytes=budget, sandbox_memory="512m")
+    data, _ = shell_workspace.tmpfs_layout(budget)
+    script = WORST_CASE_WRITER.replace("'", "'\"'\"'")
+
+    async def body(h):
+        sid = await h.open("token-A")
+        reply = await h.shell(f"mkdir /tmp/w && python3 -c '{script}' {data} {stride}; rm -rf /tmp/w",
+                              sid=sid, extra={"timeout": 30})
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return reply
+    status, reply = run_http(registry, monkeypatch, body)
+    assert status == 200, reply
+    used, slab = map(int, reply["stdout"].split())
+    assert used <= budget
+    if stride != "64":
+        assert slab > 0
+
+
+@real_docker
+def test_real_docker_mcp_cancellation_removes_the_call_container(registry, settings, monkeypatch, clock):
+    instance = f"t72-{uuid.uuid4().hex[:8]}"
+    settings["value"] = make_settings(sandbox_image=REAL_IMAGE, shell_workspace_instance=instance,
+                                      shell_workspace_size_bytes=8 * MiB)
+    calls = ["docker", "ps", "-q", "--filter", f"label={shell_workspace.LABEL}={shell_workspace.CALL_ROLE}",
+             "--filter", f"label={shell_workspace.INSTANCE_LABEL}={instance}"]
+
+    async def body(h):
+        sid = await h.open("token-A")
+        call = asyncio.ensure_future(h.shell("sleep 25", sid=sid, extra={"timeout": 30}))
+        for _ in range(200):
+            if subprocess.run(calls, capture_output=True, text=True).stdout.split():
+                break
+            await asyncio.sleep(0.05)
+        started = bool(subprocess.run(calls, capture_output=True, text=True).stdout.split())
+        cancelled = await h.post({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                  "params": {"requestId": 1, "reason": "test"}}, sid=sid)
+        gone_after = None
+        for tenth in range(150):
+            released = all(w.active == 0 for w in registry.live())
+            if released and not subprocess.run(calls, capture_output=True, text=True).stdout.split():
+                gone_after = tenth / 10
+                break
+            await asyncio.sleep(0.1)
+        call.cancel()
+        active = [w.active for w in registry.live()]
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return started, cancelled.status_code, gone_after, active
+    started, status, gone_after, active = run_http(registry, monkeypatch, body)
+    assert started and status == 202
+    assert gone_after is not None and gone_after < 15
+    assert active == [0]
+    assert registry.live() == []
