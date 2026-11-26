@@ -175,14 +175,17 @@ def _start_cleanup(process, container_name: str, cleanups: Optional[list]) -> as
     part va au bout, chaque commande bornée par DOCKER_CLEANUP_TIMEOUT.
     """
     async def cleanup() -> bool:
-        try:
-            process.kill()
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(process.wait(), timeout=DOCKER_CLEANUP_TIMEOUT)
-        except Exception:
-            pass
+        # process vaut None si l'annulation a interrompu son lancement : le
+        # conteneur a pu démarrer quand même, son nom suffit à le retirer.
+        if process is not None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=DOCKER_CLEANUP_TIMEOUT)
+            except Exception:
+                pass
         gone = await _kill_container(container_name)
         if not gone:
             record_activity("sandbox.cleanup_failed", level="error", message="Sandbox non retirée après arrêt",
@@ -195,6 +198,13 @@ def _start_cleanup(process, container_name: str, cleanups: Optional[list]) -> as
     if cleanups is not None:
         cleanups.append(task)
     return task
+
+
+def _cleanups_succeeded(done) -> bool:
+    try:
+        return all(result is True for result in done.result())
+    except BaseException:
+        return False
 
 
 async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False,
@@ -269,18 +279,23 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     docker_cmd.extend([
         "--user=sandbox:sandbox",
         settings.sandbox_image,
-        shell, exec_flag, command,
     ])
+    if workspace_args:
+        docker_cmd.extend(shell_workspace.confined_command(shell, exec_flag, command))
+    else:
+        docker_cmd.extend([shell, exec_flag, command])
 
     record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "network": network, "timeout": timeout})
-    process = await asyncio.create_subprocess_exec(
-        *docker_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
-
+    process = None
     try:
+        # Lancement sous la même garde que l'attente : une annulation pendant
+        # create_subprocess_exec peut survenir après le démarrage du conteneur.
+        process = await asyncio.create_subprocess_exec(
+            *docker_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
@@ -403,11 +418,12 @@ def register(mcp: MCPServer) -> None:
             return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored, lease, settings)
         finally:
             if lease is not None:
-                pending = [task for task in cleanups if not task.done()]
-                if pending:
-                    # Le conteneur d'appel monte encore l'espace : la réservation
-                    # tient jusqu'à la fin de son retrait.
-                    asyncio.gather(*pending, return_exceptions=True).add_done_callback(
-                        lambda _, lease=lease: shell_workspace.registry.release(lease))
+                if cleanups:
+                    # Le conteneur d'appel peut encore monter l'espace : la
+                    # réservation tient jusqu'à la fin de son retrait. Un retrait
+                    # non confirmé retire l'espace, compté jusqu'à son démontage.
+                    asyncio.gather(*cleanups, return_exceptions=True).add_done_callback(
+                        lambda done, lease=lease: shell_workspace.registry.release(
+                            lease, orphaned=not _cleanups_succeeded(done)))
                 else:
                     shell_workspace.registry.release(lease)

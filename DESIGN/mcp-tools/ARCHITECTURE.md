@@ -97,7 +97,9 @@ jeton validé. `AuthMiddleware` renseigne `scope["user"]` avec l'empreinte du
 jeton : le SDK refuse en 404 une session présentée par un autre jeton. Le
 conteneur d'appel reçoit `--ulimit fsize` : la taille d'un fichier, donc la
 hauteur de l'index de ses pages, reste bornée ; `size_bytes` de 256 Mio couvre
-au pire données, entrées et index (`tmpfs_layout`). Un conteneur de
+au pire données, entrées et index (`tmpfs_layout`). La commande y tourne sous
+un filtre seccomp ajouté qui refuse les attributs étendus, ACL comprises
+(`XATTR_GUARD`). Un conteneur de
 maintien sans réseau ni droit garde le volume monté entre deux appels ; il
 s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
 ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace

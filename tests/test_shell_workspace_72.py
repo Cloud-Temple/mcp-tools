@@ -157,6 +157,10 @@ class FakeDocker:
             return FakeProcess(0, b"id\n")
         if verb == "run":
             self.calls.append(args)
+            if "launch" in self.gate:
+                # Docker a démarré le conteneur, mais le lancement du client n'a pas encore rendu la main.
+                self.running[option(args, "--name=")] = mounted_volume(args)
+                await self.gate["launch"].wait()
             if "call" in self.gate:
                 # Le conteneur tourne tant que la porte reste fermée, même si son client est arrêté.
                 name = option(args, "--name=")
@@ -851,6 +855,101 @@ def test_cleanup_that_cannot_remove_the_container_is_reported(docker, registry, 
     assert len(checks) == shell.CLEANUP_CHECKS
     docker.running.clear()
 
+def test_cancellation_while_launching_still_removes_the_container(docker, registry, settings):
+    """Annulée pendant create_subprocess_exec, l'attente laisse un conteneur déjà démarré : il est retiré."""
+    function = handler()
+    docker.gate["launch"] = asyncio.Event()
+
+    async def body():
+        call = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(200):
+            if not docker.running and all(w.active == 0 for w in registry.live()):
+                break
+            await asyncio.sleep(0.01)
+        return dict(docker.running), [w.active for w in registry.live()]
+    running, active = scenario(registry, body)
+    assert running == {} and active == [0]
+    assert any(c[0] == "kill" for c in docker.commands)
+
+
+def test_failed_cleanup_retires_the_workspace_and_keeps_it_counted(docker, registry, settings, monkeypatch, clock):
+    """La commande annulée tourne peut-être encore : la session ne remonte jamais ce /tmp."""
+    monkeypatch.setattr(shell, "CLEANUP_CHECK_INTERVAL", 0)
+    settings["value"] = make_settings(shell_workspace_max_count=2)
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        docker.fail.update({"kill", "rm"})
+        call = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        old = mounted_volume(docker.calls[0])
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(300):
+            if registry._doomed:
+                break
+            await asyncio.sleep(0.01)
+        docker.gate.pop("call")
+        again = await invoke(function, "ls")
+        counted = len(registry.live())
+        docker.fail.clear()
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return old, again, counted
+    old, again, counted = scenario(registry, body)
+    assert again["workspace"]["new"] is True
+    assert mounted_volume(docker.calls[-1]) != old
+    assert counted == 2
+    assert old not in docker.volumes and docker.running == {}
+    assert len(registry.live()) == 1
+
+
+def test_background_purge_retries_without_waiting_for_a_call(docker, registry, settings, monkeypatch):
+    monkeypatch.setattr(shell_workspace, "SWEEP_INTERVAL_SECONDS", 0.01)
+    settings["value"] = make_settings(shell_workspace_max_count=0)
+    docker.leftover_containers = ["old-holder"]
+    docker.fail.add("ps")
+    function = handler()
+
+    async def body():
+        await invoke(function, "ls")
+        await asyncio.sleep(0.05)
+        failed_once = docker.leftover_containers == ["old-holder"]
+        docker.fail.clear()
+        for _ in range(200):
+            if docker.leftover_containers == []:
+                break
+            await asyncio.sleep(0.01)
+        return failed_once
+    failed_once = scenario(registry, body)
+    assert failed_once and docker.leftover_containers == []
+    assert len(docker.calls) == 1
+
+
+def test_xattr_guard_covers_every_setxattr_entry_point():
+    """Numéros d'appel système : x86_64 et aarch64 (asm-generic), setxattrat commun depuis Linux 6.13."""
+    namespace = {}
+    source = shell_workspace.XATTR_GUARD.split("if platform.machine() not in ARCHES")[0]
+    exec(source, namespace)
+    assert namespace["ARCHES"] == {"x86_64": (0xC000003E, (188, 189, 190)), "aarch64": (0xC00000B7, (5, 6, 7))}
+    assert "numbers = numbers + (463,)" in shell_workspace.XATTR_GUARD
+
+
+def test_workspace_call_runs_under_the_xattr_guard(docker, registry, settings):
+    scenario(registry, lambda: invoke(handler(), "ls /tmp"))
+    call = docker.calls[0]
+    image = call.index(settings["value"].sandbox_image)
+    assert call[image + 1:] == ["python3", "-I", "-S", "-c", shell_workspace.XATTR_GUARD, "bash", "-c", "ls /tmp"]
+    compile(shell_workspace.XATTR_GUARD, "xattr_guard", "exec")
+
 def test_workspace_stays_reserved_until_the_call_container_is_gone(docker, registry, settings, clock):
     function = handler()
     docker.gate["call"] = asyncio.Event()
@@ -1302,3 +1401,38 @@ def test_real_docker_mcp_cancellation_removes_the_call_container(registry, setti
     assert gone_after is not None and gone_after < 15
     assert active == [0]
     assert registry.live() == []
+
+
+@real_docker
+def test_real_docker_workspace_refuses_acls_and_extended_attributes(registry, settings, monkeypatch, clock):
+    """Les ACL POSIX resteraient en mémoire noyau hors du budget de l'espace : setxattr est refusé."""
+    instance = f"t72-{uuid.uuid4().hex[:8]}"
+    settings["value"] = make_settings(sandbox_image=REAL_IMAGE, shell_workspace_instance=instance,
+                                      shell_workspace_size_bytes=8 * MiB)
+    acl = "\\x02\\x00\\x00\\x00\\x01\\x00\\x06\\x00\\xff\\xff\\xff\\xff\\x02\\x00\\x04\\x00\\xd2\\x04\\x00\\x00" \
+          "\\x04\\x00\\x04\\x00\\xff\\xff\\xff\\xff\\x10\\x00\\x04\\x00\\xff\\xff\\xff\\xff\\x20\\x00\\x04\\x00\\xff\\xff\\xff\\xff"
+    # setxattr par chemin, lsetxattr sans suivre le lien, fsetxattr par descripteur.
+    probe = ("echo x > /tmp/f && python3 -c \"import os\n"
+             "fd = os.open('/tmp/f', os.O_RDONLY)\n"
+             "for how, target, follow in [('path', '/tmp/f', True), ('nofollow', '/tmp/f', False), ('fd', fd, True)]:\n"
+             "    for name, value in [('system.posix_acl_access', b'" + acl + "'), ('user.k', b'v')]:\n"
+             "        try:\n            os.setxattr(target, name, value, follow_symlinks=follow); print(how, name, 'ok')\n"
+             "        except OSError as e:\n            print(how, name, e.errno)\" && cp -a /tmp/f /tmp/g && echo copied")
+
+    async def body(h):
+        sid = await h.open("token-A")
+        reply = await h.shell(probe, sid=sid)
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return reply
+    status, reply = run_http(registry, monkeypatch, body)
+    assert status == 200 and reply["workspace"]["persistent"] is True
+    expected = "".join(f"{how} {name} 95\n" for how in ("path", "nofollow", "fd")
+                       for name in ("system.posix_acl_access", "user.k"))
+    assert reply["stdout"] == expected + "copied\n"
+    # Témoin : sans le filtre, le même tmpfs accepte l'ACL et l'attribut.
+    plain = subprocess.run(["docker", "run", "--rm", "--network=none", "--user=sandbox:sandbox",
+                            "--tmpfs=/tmp:size=8m", REAL_IMAGE, "bash", "-c", probe],
+                           capture_output=True, text=True, timeout=60)
+    assert plain.stdout == expected.replace(" 95", " ok") + "copied\n"

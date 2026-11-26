@@ -226,6 +226,48 @@ def call_args(workspace: Workspace, settings) -> list[str]:
     ]
 
 
+# Filtre seccomp ajouté par-dessus le profil Docker dans les appels avec espace.
+# Les ACL POSIX et autres attributs étendus d'un tmpfs restent en mémoire noyau
+# hors de `nr_inodes` et de `size` : une ACL peut peser 64 Kio par entrée.
+# setxattr, lsetxattr, fsetxattr et setxattrat (Linux 6.13) rendent donc
+# EOPNOTSUPP, comme sur un système de fichiers sans attributs étendus ; cp -a
+# et tar continuent sans eux. Une architecture inconnue, ou un filtre qui ne
+# s'installe pas, arrête l'appel avant la commande (code 126).
+XATTR_GUARD = """import ctypes, os, platform, struct, sys
+ARCHES = {"x86_64": (0xC000003E, (188, 189, 190)), "aarch64": (0xC00000B7, (5, 6, 7))}
+if platform.machine() not in ARCHES:
+    sys.stderr.write("sandbox: architecture non prise en charge par le filtre xattr\\n")
+    sys.exit(126)
+arch, numbers = ARCHES[platform.machine()]
+numbers = numbers + (463,)
+deny, allow = 0x00050000 | 95, 0x7FFF0000
+n = len(numbers)
+code = [(0x20, 0, 0, 4), (0x15, 1, 0, arch), (0x06, 0, 0, deny), (0x20, 0, 0, 0),
+        (0x35, n + 1, 0, 0x40000000)]
+code += [(0x15, n - i, 0, number) for i, number in enumerate(numbers)]
+code += [(0x06, 0, 0, allow), (0x06, 0, 0, deny)]
+program = ctypes.create_string_buffer(b"".join(struct.pack("=HBBI", *c) for c in code))
+
+
+class Fprog(ctypes.Structure):
+    _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_void_p)]
+
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
+fprog = Fprog(len(code), ctypes.addressof(program))
+if libc.prctl(38, 1, None, 0, 0) != 0 or libc.prctl(22, 2, ctypes.byref(fprog), 0, 0) != 0:
+    sys.stderr.write("sandbox: filtre xattr non installé\\n")
+    sys.exit(126)
+os.execvp(sys.argv[1], sys.argv[1:])
+"""
+
+
+def confined_command(shell: str, exec_flag: str, command: str) -> list[str]:
+    """Fin de la commande `docker run` d'un appel avec espace : le shell lancé sous XATTR_GUARD."""
+    return ["python3", "-I", "-S", "-c", XATTR_GUARD, shell, exec_flag, command]
+
+
 async def _docker(*args: str, timeout: float = DOCKER_COMMAND_TIMEOUT) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         "docker", *args,
@@ -275,6 +317,7 @@ class WorkspaceRegistry:
         self._sweeper: Optional[asyncio.Task] = None
         self._purged = False
         self._purging = False
+        self._purge_task: Optional[asyncio.Task] = None
         self._purge_retry_at = float("-inf")
 
     # --- état observable (tests, diagnostic) -------------------------------
@@ -300,7 +343,15 @@ class WorkspaceRegistry:
             self._sweeper = asyncio.get_running_loop().create_task(self._sweep_forever(settings))
 
     async def stop(self) -> None:
-        """Arrête la tâche de nettoyage et attend les retraits lancés (tests, arrêt propre)."""
+        """Arrête nettoyage et purge en attente, puis attend les retraits lancés (tests, arrêt propre)."""
+        for task in (self._purge_task,):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._purge_task = None
         if self._sweeper is not None and not self._sweeper.done():
             self._sweeper.cancel()
             try:
@@ -499,12 +550,20 @@ class WorkspaceRegistry:
         if self._purged or self._purging or self._clock() < self._purge_retry_at:
             return
         self._purging = True
-        self._spawn(self._purge_in_background(settings))
+        try:
+            self._purge_task = asyncio.get_running_loop().create_task(self._purge_in_background(settings))
+        except RuntimeError:
+            self._purging = False
 
     async def _purge_in_background(self, settings) -> None:
+        """Retente la purge à chaque intervalle jusqu'à sa confirmation, sans attendre d'appel."""
         try:
-            async with self._bind_loop():
-                await self._ensure_purged(settings)
+            while not self._purged:
+                async with self._bind_loop():
+                    self._purge_retry_at = float("-inf")
+                    await self._ensure_purged(settings)
+                if not self._purged:
+                    await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
         finally:
             self._purging = False
 
@@ -566,13 +625,24 @@ class WorkspaceRegistry:
             self._spawn(self._destroy(workspace))
         return lease
 
-    def release(self, lease: Lease) -> None:
-        """Fin d'appel. Un espace retiré pendant l'appel passe à détruire maintenant."""
+    def release(self, lease: Lease, orphaned: bool = False) -> None:
+        """Fin d'appel. Un espace retiré pendant l'appel passe à détruire maintenant.
+
+        `orphaned` : le conteneur d'appel n'a pas pu être retiré et monte peut-être
+        encore l'espace. L'espace est retiré : la session en reçoit un neuf, et
+        l'ancien reste compté jusqu'à ce que `_destroy` confirme son démontage,
+        conteneur orphelin compris.
+        """
         workspace = lease.workspace
         if workspace is None:
             return
         workspace.active -= 1
         workspace.last_used = self._clock()
+        if orphaned and not workspace.retiring and self._spaces.get(workspace.key) is workspace:
+            self._retire(workspace, "orphaned")
+            if workspace in self._doomed:
+                self._spawn(self._destroy(workspace))
+            return
         if workspace.retiring and workspace.active == 0:
             if workspace in self._retiring:
                 self._retiring.remove(workspace)
