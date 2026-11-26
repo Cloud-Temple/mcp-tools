@@ -157,9 +157,17 @@ python scripts/mcp_cli.py shell
 L'outil MCP `files` accepte `expected_sha256` pour `operation="write"`, sur
 les backends S3 et catalogue PostgreSQL. Fournir les 64 chiffres hexadécimaux
 retournés par la source native et le texte original intégral dans `content`.
+L'empreinte vient toujours d'un outil ou de la source, jamais d'un calcul fait
+par le modèle. Les descriptions MCP le disent au modèle. Sans empreinte d'outil,
+il omet le paramètre et l'écriture reste possible.
 Le serveur compare le SHA-256 des octets UTF-8 exacts avant toute publication :
 aucun reformatage JSON, changement de fin de ligne ou normalisation Unicode.
-Un refus renvoie un `code` fermé et `effect_state="not_published"`. La réponse
+Un refus renvoie un `code` fermé et `effect_state="not_published"`. Son
+`message` dit que rien n'a été écrit et comment reprendre, sans donner
+l'empreinte réelle du contenu. Pour un texte non vide passé dans `content`, il
+conseille de relancer sans `expected_sha256` si l'empreinte ne vient pas d'un
+outil. Pour `content_base64` ou un texte vide, qui exigent une empreinte, il
+demande celle de l'outil producteur. La réponse
 d'écriture réussie contient `sha256`. Le mode vérifié est borné à 5 MB en octets.
 
 Pour un JSON, utiliser **`content_base64` avec `expected_sha256`**. Le SDK MCP2.2
@@ -321,7 +329,7 @@ ActivityMiddleware → AdminMiddleware → HealthCheckMiddleware → AuthMiddlew
 
 | Outil               | Description                                                                                                                                                            |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shell`             | Sandbox Docker isolée (bash, sh, python3, node) — sans réseau par défaut, `network=true` pour pip install. Python packages pré-installés : numpy, pandas, requests, beautifulsoup4, scipy, matplotlib… |
+| `shell`             | Sandbox Docker isolée (bash, sh, python3, node) — sans réseau par défaut, `network=true` pour pip install. Conteneur neuf à chaque appel : aucun fichier, `cd` ni variable ne passe à l'appel suivant, `cwd` est ignoré. Enchaîner les étapes dépendantes dans une seule commande, ou conserver le résultat avec `files`. La réponse porte `hint` si `cwd` est fourni ou si un échec signale « No such file or directory ». Python packages pré-installés : numpy, pandas, requests, beautifulsoup4, scipy, matplotlib… |
 | `network`           | Diagnostic réseau en sandbox Docker (ping, traceroute, nslookup, dig) — IPs privées RFC 1918 interdites                                                                |
 | `http`              | Client HTTP/REST en sandbox Docker (anti-SSRF, auth basic/bearer/api_key) — IPs privées bloquées                                                                       |
 | `ssh`               | Exécution de commandes et transfert de fichiers via SSH en sandbox Docker (exec, status, upload, download) — auth password/key                                         |

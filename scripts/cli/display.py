@@ -218,6 +218,8 @@ def show_shell_result(result: dict):
         console.print(Panel(stderr.rstrip(), title="stderr", border_style="red"))
     if result.get("message"):
         console.print(f"[yellow]{result['message']}[/yellow]")
+    if result.get("hint"):
+        console.print(f"[cyan]{result['hint']}[/cyan]")
 
 
 # =============================================================================

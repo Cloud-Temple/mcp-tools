@@ -34,7 +34,7 @@ def decode_write_content(operation, content, content_base64, expected_sha256):
                   "message": "Transport de preuve texte refusé avant publication."}
 
 
-def validate_write_checksum(operation, content, expected_sha256):
+def validate_write_checksum(operation, content, expected_sha256, *, encoded=False):
     """Aucun accès stockage ; les réponses ne reprennent jamais le contenu."""
     if expected_sha256 is None:
         return None  # contrat historique, sans attestation de correspondance
@@ -57,5 +57,33 @@ def validate_write_checksum(operation, content, expected_sha256):
                 code = "content_checksum_mismatch"
     if code:
         return {"status": "error", "code": code, "effect_state": "not_published",
-                "message": "Contrat d'intégrité write refusé avant publication."}
+                "message": _checksum_message(code, content, encoded)}
     return None
+
+
+# Le refus dit au modèle comment reprendre, sans donner l'empreinte réelle :
+# recopiée, elle ferait passer n'importe quel contenu (#68).
+_DIGEST_FROM_TOOL = (" Si elle vient d'un outil, ne pas la retirer : content diffère de la source "
+                     "et ne doit pas être publié comme sa copie.")
+_CHECKSUM_PROBLEMS = {
+    "content_checksum_mismatch": "le SHA-256 des octets UTF-8 du contenu ne correspond pas à expected_sha256.",
+    "invalid_expected_sha256": "expected_sha256 doit contenir 64 caractères hexadécimaux.",
+}
+
+
+def _checksum_message(code, content, encoded):
+    problem = _CHECKSUM_PROBLEMS.get(code)
+    if problem is None:
+        return "Contrat d'intégrité write refusé avant publication."
+    message = "Rien n'a été écrit : " + problem
+    if encoded or not content:
+        # content_base64 et le texte vide exigent une empreinte : la retirer ne suffit pas.
+        return (message + " Ce transport exige l'empreinte rendue par l'outil qui a produit le contenu ;"
+                " ne jamais la calculer.")
+    if code == "invalid_expected_sha256":
+        # Le format seul est en cause : rien ne dit que content diffère de la source.
+        tail = " Si elle vient d'un outil, reprendre sa valeur intégrale auprès de l'outil producteur."
+    else:
+        tail = _DIGEST_FROM_TOOL
+    return (message + " Si cette empreinte ne vient pas d'une réponse d'outil, relancer l'écriture "
+            "sans expected_sha256." + tail)

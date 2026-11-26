@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] — en préparation, non publiée
+
+### Fixed
+
+- `shell` : la description de l'outil et celles de `command` et `cwd` disent
+  qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun fichier, `cd`
+  ni variable ne passe à l'appel suivant. En sandbox, la réponse porte un champ
+  `hint` quand `cwd` est fourni, donc ignoré, ou quand un échec signale « No such
+  file or directory ». `status`, `returncode`, `stdout` et `stderr` ne changent
+  pas. Le CLI affiche `hint` (#68).
+- `files` : `expected_sha256` ne se fournit que pour recopier une empreinte
+  rendue par un outil, et `content_base64` est réservé aux appelants
+  programmatiques. Les refus `content_checksum_mismatch` et
+  `invalid_expected_sha256` gardent `status`, `code` et
+  `effect_state: not_published`. Seul leur `message` change : il dit que rien
+  n'a été écrit et comment reprendre, sans donner l'empreinte réelle (#68).
+
 ## [0.11.0] — 2026-11-20
 
 ### Fixed

@@ -829,8 +829,8 @@ def register(mcp: MCPServer) -> None:
         cursor: Annotated[Optional[str], Field(default=None, description="Curseur opaque de catalogue list/versions (PostgreSQL)")] = None,
         operation_id: Annotated[Optional[str], Field(default=None, description="UUID de mutation ou journal ; retry = inspection, sans replay")] = None,
         expected_revision: Annotated[Optional[StrictInt], Field(default=None, description="CAS de destination du catalogue, facultatif")] = None,
-        expected_sha256: Annotated[Optional[str], Field(default=None, description="write uniquement : SHA-256 natif attendu (64 hex) des octets UTF-8 exacts de content ; mismatch refuse avant publication, aucun reformatage JSON")] = None,
-        content_base64: Annotated[Optional[str], Field(default=None, description="write vérifié : base64 canonique standard du texte UTF-8 (max5MB décodés), fourni par la source native ou un encodeur programmatique/CLI, jamais inventé par le modèle. Exclut content, exige expected_sha256 natif ; recommandé pour JSON avec SDK2.2.")] = None,
+        expected_sha256: Annotated[Optional[str], Field(default=None, description="write uniquement, facultatif. Ne le fournir que pour recopier une empreinte SHA-256 (64 hex) rendue par un outil ou par la source du contenu ; ne jamais la calculer ni l'estimer. Sans une telle empreinte, omettre ce paramètre : l'écriture fonctionne sans lui. Le serveur compare le SHA-256 des octets UTF-8 exacts de content et refuse l'écriture, sans rien publier, s'il diffère.")] = None,
+        content_base64: Annotated[Optional[str], Field(default=None, description="Réservé à un appelant programmatique (CLI, plan figé) : base64 canonique standard du texte UTF-8 (max 5 MB décodés), produit par un encodeur ou recopié d'une réponse d'outil, jamais encodé par le modèle. Exclut content et exige un expected_sha256 de même provenance. Un modèle passe son texte dans content.")] = None,
         ctx: Optional[Context] = None,
     ) -> dict:
         """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
@@ -839,7 +839,8 @@ def register(mcp: MCPServer) -> None:
             content, transport_error = decode_write_content(operation, content, content_base64, expected_sha256)
             if transport_error:
                 return transport_error
-            integrity_error = validate_write_checksum(operation, content, expected_sha256)
+            integrity_error = validate_write_checksum(
+                operation, content, expected_sha256, encoded=content_base64 is not None)
             if integrity_error:
                 return integrity_error
             settings = get_settings()
