@@ -18,7 +18,7 @@ from src.mcp_tools.storage import files_service
 from src.mcp_tools.tools import files, shell
 from tests.test_files_verified_write import real_server, sdk_call
 
-# Texte non JSON : le SDK 2.2 pré-décode un objet JSON passé dans `content`.
+# Texte non JSON, choisi quand le SDK 2.2 pré-décodait encore `content` (corrigé par #70).
 TEXT = "preuve texte é\r\n"
 SHA = hashlib.sha256(TEXT.encode("utf-8")).hexdigest()
 

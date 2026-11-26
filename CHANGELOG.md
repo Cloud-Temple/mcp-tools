@@ -22,6 +22,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `invalid_expected_sha256` gardent `status`, `code` et
   `effect_state: not_published`. Seul leur `message` change : il dit que rien
   n'a été écrit et comment reprendre, sans donner l'empreinte réelle (#68).
+- `files` `write` : un texte JSON passé comme chaîne dans `content` est écrit
+  octet pour octet. Le SDK MCP 2.2 le décodait en objet puis le refusait
+  (`Input should be a valid string`, `input_type=dict`), et changeait la chaîne
+  `"null"` en `None`. Un objet ou une liste JSON est toléré et écrit avec
+  `json.dumps(ensure_ascii=False, indent=2, allow_nan=False)`, ordre des clés
+  conservé, sans retour à la ligne final. Taille, `sha256`, `expected_sha256` et
+  reçu du catalogue portent sur ces octets. Un nombre, un booléen ou des octets
+  sont refusés avec `invalid_content_type` et `effect_state: not_published`. Le
+  schéma publié reste `string` ou `null` (#70).
+- `http.body`, `http.auth_value`, `ssh.content`, `ssh.password`,
+  `perplexity_doc.context` et `files.separator` reçoivent aussi intacte une
+  chaîne de forme JSON. Leur schéma publié ne change pas (#70).
 
 ## [0.11.0] — 2026-11-20
 

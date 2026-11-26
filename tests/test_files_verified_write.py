@@ -224,7 +224,8 @@ def test_sdk_entry_writes_and_reads_exact_base64_text(monkeypatch, text):
     ({"content_base64": "_w=="}, "invalid_content_base64"),
     ({"content_base64": "/w=="}, "invalid_content_base64"),
     ({"content_base64": "null"}, "invalid_verified_content"),
-    ({"content": "null"}, "invalid_verified_content"),
+    # Le texte « null » arrive intact (#70) : son empreinte n'est pas SHA.
+    ({"content": "null"}, "content_checksum_mismatch"),
     ({"operation": "read", "content_base64": "e30="}, "checksum_write_only"),
 ])
 def test_sdk_entry_refuses_bad_proof_before_backend(monkeypatch, arguments, code):

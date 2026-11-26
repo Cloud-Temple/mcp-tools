@@ -33,7 +33,12 @@ from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
 from ..observability import bind_activity, record_activity, traced_tool
-from ..storage.files_integrity import decode_write_content, validate_write_checksum
+from ..storage.files_integrity import (
+    decode_write_content,
+    normalize_write_content,
+    validate_write_checksum,
+)
+from .raw_text import RawText, RawValue
 
 
 # =============================================================================
@@ -810,10 +815,10 @@ def register(mcp: MCPServer) -> None:
     async def files(
         operation: Annotated[str, Field(description="Opération files : list, read, write, delete, info, diff, versions, enable_versioning, concat ; catalogue : metadata_batch, operation_info, reconcile")],
         path: Annotated[Optional[str], Field(default=None, description="Chemin (clé) de l'objet S3 ; destination requise pour read, write, delete, info, diff et concat")] = None,
-        content: Annotated[Optional[str], Field(default=None, description="Contenu à écrire dans l'objet S3 (requis pour write, max 5 MB)")] = None,
+        content: Annotated[RawValue, Field(default=None, description="Texte à écrire dans l'objet S3 (requis pour write, max 5 MB). Passer une chaîne : elle est écrite telle quelle, octet pour octet, y compris un texte JSON. Un objet ou une liste JSON est toléré : il est écrit sous la forme json.dumps(ensure_ascii=False, indent=2), ordre des clés conservé, sans retour à la ligne final, et size, sha256 et expected_sha256 portent sur ce texte. Un nombre, un booléen ou null sont refusés.")] = None,
         path2: Annotated[Optional[str], Field(default=None, description="Second chemin S3 pour l'opération diff")] = None,
         paths: Annotated[Optional[list[str]], Field(default=None, description="Sources S3 ordonnées pour concat (1 à 64 clés ; leur contenu ne transite pas par MCP)")] = None,
-        separator: Annotated[Optional[str], Field(default="\n\n", description="Séparateur UTF-8 inséré entre les sources de concat (max 65536 octets)")] = "\n\n",
+        separator: Annotated[RawText, Field(default="\n\n", description="Séparateur UTF-8 inséré entre les sources de concat (max 65536 octets)")] = "\n\n",
         prefix: Annotated[Optional[str], Field(default=None, description="Préfixe pour filtrer le listing d'objets (opération list)")] = None,
         version_id: Annotated[Optional[str], Field(default=None, description="ID de version S3 pour lire une version spécifique")] = None,
         offset: Annotated[Optional[StrictInt], Field(default=None, description="Offset en octets pour une lecture paginée (read)")] = None,
@@ -833,14 +838,19 @@ def register(mcp: MCPServer) -> None:
         content_base64: Annotated[Optional[str], Field(default=None, description="Réservé à un appelant programmatique (CLI, plan figé) : base64 canonique standard du texte UTF-8 (max 5 MB décodés), produit par un encodeur ou recopié d'une réponse d'outil, jamais encodé par le modèle. Exclut content et exige un expected_sha256 de même provenance. Un modèle passe son texte dans content.")] = None,
         ctx: Optional[Context] = None,
     ) -> dict:
-        """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
+        """Opérations fichiers sur S3 Dell ECS dans un conteneur sandbox isolé. `write` écrit la chaîne content telle quelle ; un objet ou une liste JSON y est toléré et sérialisé avec une indentation de 2 espaces, et la réponse donne la taille et le SHA-256 des octets écrits. `concat` assemble des sources texte côté service et retourne un manifeste vérifiable, sans exposer leur contenu via MCP."""
         try:
             check_tool_access("files")
+            serialized = operation == "write" and isinstance(content, (dict, list))
+            content, content_error = normalize_write_content(operation, content)
+            if content_error:
+                return content_error
             content, transport_error = decode_write_content(operation, content, content_base64, expected_sha256)
             if transport_error:
                 return transport_error
             integrity_error = validate_write_checksum(
-                operation, content, expected_sha256, encoded=content_base64 is not None)
+                operation, content, expected_sha256, encoded=content_base64 is not None,
+                serialized=serialized)
             if integrity_error:
                 return integrity_error
             settings = get_settings()

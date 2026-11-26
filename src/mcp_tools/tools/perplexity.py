@@ -8,6 +8,7 @@ from typing import Annotated, Optional
 from pydantic import Field
 from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
+from .raw_text import RawText
 from ..config import get_settings
 from ..observability import traced_tool
 
@@ -83,7 +84,7 @@ def register(mcp: MCPServer) -> None:
     @traced_tool("perplexity_doc")
     async def perplexity_doc(
         query: Annotated[str, Field(description="Technologie, librairie ou API à documenter (ex: 'FastAPI', 'boto3 S3', 'React hooks')")],
-        context: Annotated[Optional[str], Field(default=None, description="Contexte spécifique à approfondir (ex: 'authentification JWT', 'gestion des erreurs')")] = None,
+        context: Annotated[RawText, Field(default=None, description="Contexte spécifique à approfondir (ex: 'authentification JWT', 'gestion des erreurs')")] = None,
         model: Annotated[Optional[str], Field(default=None, description="Modèle Perplexity à utiliser (optionnel, défaut selon config serveur)")] = None,
         ctx: Optional[Context] = None
     ) -> dict:
