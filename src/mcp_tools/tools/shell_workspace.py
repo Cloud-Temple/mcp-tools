@@ -146,6 +146,8 @@ class Workspace:
     retiring: bool = False
     destroying: bool = False
     retire_reason: str = ""
+    # Nettoyages de conteneurs d'appel en cours : l'espace n'est pas remis tant qu'il en reste.
+    cleaning: int = 0
 
 
 @dataclass
@@ -352,6 +354,8 @@ class WorkspaceRegistry:
                 except asyncio.CancelledError:
                     pass
         self._purge_task = None
+        # Une tâche annulée avant son premier pas n'exécute pas son finally.
+        self._purging = False
         if self._sweeper is not None and not self._sweeper.done():
             self._sweeper.cancel()
             try:
@@ -461,12 +465,22 @@ class WorkspaceRegistry:
             raise
         return workspace
 
-    async def _holder_running(self, workspace: Workspace) -> bool:
+    async def _holder_running(self, workspace: Workspace) -> Optional[bool]:
+        """True : maintien actif. False : arrêt ou absence confirmés par Docker.
+        None : Docker ne répond pas de façon sûre ; l'espace ne doit pas être détruit sur ce seul indice.
+        """
         try:
             code, out = await _docker("inspect", "--format", "{{.State.Running}}", workspace.holder)
+            if code == 0:
+                return out.strip() == "true"
+            # inspect échoue aussi bien sur un conteneur absent que sur un démon
+            # indisponible : seul un inventaire réussi et vide confirme l'absence.
+            code, out = await _docker("ps", "-aq", "--filter", f"name=^{workspace.holder}$")
         except Exception:
+            return None
+        if code == 0 and not out.split():
             return False
-        return code == 0 and out.strip() == "true"
+        return None
 
     async def _volume_gone(self, volume: str) -> bool:
         code, out = await _docker("volume", "ls", "-q", "--filter", f"name={volume}")
@@ -582,8 +596,14 @@ class WorkspaceRegistry:
             current = self._spaces.get(key)
             if current is not None:
                 expired = _expired(current, now, settings)
-                if expired is None and not await self._holder_running(current):
-                    expired = "lost"
+                running = None
+                if expired is None:
+                    running = await self._holder_running(current)
+                    # L'âge maximal a pu passer pendant le contrôle.
+                    now = self._clock()
+                    expired = _expired(current, now, settings)
+                    if expired is None and running is False:
+                        expired = "lost"
                 if self._spaces.get(key) is not current:
                     # Retiré pendant le contrôle du maintien, hors verrou, par
                     # release(orphaned=True) : il est déjà à détruire.
@@ -593,6 +613,10 @@ class WorkspaceRegistry:
                     reason = expired
                     self._retire(current, expired)
                     current = None
+                elif running is None or current.cleaning:
+                    # Docker incertain, ou nettoyage d'un appel arrêté en cours : l'espace
+                    # est gardé tel quel, mais pas remis à cet appel, qui part en éphémère.
+                    return Lease(None, reason="unavailable")
             if current is None:
                 size = settings.shell_workspace_size_bytes
                 if (len(self.live()) >= settings.shell_workspace_max_count

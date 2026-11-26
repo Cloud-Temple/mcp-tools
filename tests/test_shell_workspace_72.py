@@ -168,6 +168,8 @@ class FakeDocker:
                 return GatedProcess(self, name, self.gate["call"])
             return FakeProcess(0, b"ok\n", b"")
         if verb == "inspect":
+            if "inspect" in self.fail:
+                return FakeProcess(1)
             return FakeProcess(0, b"true\n") if args[-1] in self.holders else FakeProcess(1)
         if verb == "rm":
             if "rm" in self.fail:
@@ -183,7 +185,8 @@ class FakeDocker:
                 return FakeProcess(1)
             name = next((a[len("name=^"):-1] for a in args if a.startswith("name=^")), None)
             if name is not None:
-                return FakeProcess(0, (name + "\n").encode() if name in self.running else b"")
+                present = name in self.running or name in self.holders
+                return FakeProcess(0, (name + "\n").encode() if present else b"")
             volume = next((a[len("volume="):] for a in args if a.startswith("volume=")), None)
             if volume is not None:
                 users = [n for n, v in self.running.items() if v == volume]
@@ -203,6 +206,13 @@ class Clock:
 
     def __call__(self):
         return self.now
+
+
+@pytest.fixture(autouse=True)
+def unremoved_calls(monkeypatch):
+    """Les retraits de conteneurs d'appel en échec sont un état du module : isolé par test."""
+    monkeypatch.setattr(shell, "_UNREMOVED", set())
+    monkeypatch.setattr(shell, "_RETRY_TASK", None)
 
 
 @pytest.fixture
@@ -556,6 +566,61 @@ def test_lost_holder_gives_a_new_workspace(docker, registry, settings):
     assert len(docker.volumes) == 1
 
 
+
+def test_uncertain_holder_check_keeps_the_workspace(docker, registry, settings):
+    """inspect en échec et inventaire impossible : rien ne prouve la perte, l'espace et ses fichiers restent."""
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        volume = registry.live()[0].volume
+        docker.fail.update({"inspect", "ps"})
+        during = await invoke(function)
+        docker.fail.clear()
+        after = await invoke(function)
+        return volume, during, after
+    volume, during, after = scenario(registry, body)
+    assert during["workspace"] == {"persistent": False, "reason": "unavailable"}
+    assert mounted_volume(docker.calls[1]) is None
+    assert after["workspace"]["persistent"] is True and after["workspace"]["new"] is False
+    assert mounted_volume(docker.calls[2]) == volume and volume in docker.volumes
+    assert not any(c[:2] == ["volume", "rm"] for c in docker.commands)
+
+
+def test_holder_absent_by_inventory_is_lost(docker, registry, settings):
+    """inspect en échec, inventaire réussi et vide : l'absence est confirmée."""
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        docker.holders.clear()
+        docker.fail.add("inspect")
+        return await invoke(function)
+    result = scenario(registry, body)
+    assert result["workspace"]["new"] is True and result["workspace"]["reason"] == "lost"
+
+
+def test_max_age_reached_during_the_holder_check_is_not_handed_out(docker, registry, settings, clock):
+    # Inactivité plus longue que l'âge maximal : seul l'âge maximal peut expirer l'espace ici.
+    settings["value"] = make_settings(shell_workspace_idle_seconds=100_000)
+    function = handler()
+    max_age = settings["value"].shell_workspace_max_age_seconds
+
+    async def body():
+        await invoke(function)
+        old = registry.live()[0].volume
+        clock.now += max_age - 1
+        docker.gate["inspect"] = asyncio.Event()
+        call = asyncio.ensure_future(invoke(function))
+        while not any(c[0] == "inspect" for c in docker.commands):
+            await asyncio.sleep(0)
+        clock.now += 2
+        docker.gate.pop("inspect").set()
+        return old, await call
+    old, result = scenario(registry, body)
+    assert result["workspace"]["new"] is True and result["workspace"]["reason"] == "expired"
+    assert mounted_volume(docker.calls[-1]) != old
+
 # --- retrait confirmé : la capacité suit la mémoire réellement montée ------------------
 
 def mounted_count(docker):
@@ -756,7 +821,7 @@ def test_cwd_hint_does_not_hide_the_ephemeral_reason(docker, registry, settings)
     result = scenario(registry, lambda: invoke(handler(), "ls", cwd="/tmp/a"))
     assert result["workspace"] == {"persistent": False, "reason": "unavailable"}
     assert shell.CWD_IGNORED_WORKSPACE_HINT in result["hint"]
-    assert "création impossible" in result["hint"]
+    assert "espace indisponible pour cet appel" in result["hint"]
 
 
 def test_without_workspace_cwd_hint_is_unchanged(docker, registry, settings):
@@ -972,12 +1037,151 @@ def test_xattr_guard_covers_every_setxattr_entry_point():
     assert "numbers = numbers + (463,)" in shell_workspace.XATTR_GUARD
 
 
+
+def _guard_program(machine):
+    """Programme BPF que XATTR_GUARD construit sur `machine`, sans l'installer."""
+    source = shell_workspace.XATTR_GUARD.split("program = ")[0].replace("platform.machine()", repr(machine))
+    namespace = {}
+    exec(source, namespace)
+    return namespace["code"]
+
+
+def _run_bpf(code, nr, arch):
+    """Interprète les seules instructions du filtre : LD W ABS, JEQ K, JGE K, RET K, sur seccomp_data."""
+    data = {0: nr, 4: arch}
+    accumulator, pc = 0, 0
+    while True:
+        op, jt, jf, k = code[pc]
+        if op == 0x20:
+            accumulator, pc = data[k], pc + 1
+        elif op in (0x15, 0x35):
+            taken = accumulator == k if op == 0x15 else accumulator >= k
+            pc += 1 + (jt if taken else jf)
+        elif op == 0x06:
+            return k
+        else:
+            raise AssertionError(f"instruction inattendue {op:#x}")
+        assert pc < len(code)
+
+
+@pytest.mark.parametrize("machine, arch, xattr, ordinary", [
+    ("x86_64", 0xC000003E, (188, 189, 190, 463), (0, 1, 2, 257, 59, 231)),
+    ("aarch64", 0xC00000B7, (5, 6, 7, 463), (63, 64, 56, 221, 93, 8)),
+])
+def test_xattr_guard_program_decisions(machine, arch, xattr, ordinary):
+    deny, allow = 0x00050000 | 95, 0x7FFF0000
+    code = _guard_program(machine)
+    for nr in xattr:
+        assert _run_bpf(code, nr, arch) == deny
+    for nr in ordinary:
+        assert _run_bpf(code, nr, arch) == allow
+    # Appel x32 (bit 30) et architecture inattendue : refusés quel que soit le numéro.
+    assert _run_bpf(code, 0x40000000 | 1, arch) == deny
+    for other in (0x40000003, 0xC000003E if machine == "aarch64" else 0xC00000B7):
+        assert _run_bpf(code, ordinary[0], other) == deny
+        assert _run_bpf(code, xattr[0], other) == deny
+
 def test_workspace_call_runs_under_the_xattr_guard(docker, registry, settings):
     scenario(registry, lambda: invoke(handler(), "ls /tmp"))
     call = docker.calls[0]
     image = call.index(settings["value"].sandbox_image)
     assert call[image + 1:] == ["python3", "-I", "-S", "-c", shell_workspace.XATTR_GUARD, "bash", "-c", "ls /tmp"]
     compile(shell_workspace.XATTR_GUARD, "xattr_guard", "exec")
+
+def test_workspace_is_not_handed_out_while_a_call_container_is_being_removed(docker, registry, settings):
+    """A annulé, son conteneur pas encore retiré : B de la même session ne remonte pas ce /tmp."""
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+    docker.gate["kill"] = asyncio.Event()
+
+    async def body():
+        call = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        volume = mounted_volume(docker.calls[0])
+        docker.gate.pop("call")
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        during = await invoke(function)
+        docker.gate.pop("kill").set()
+        for _ in range(200):
+            if all(w.active == 0 and w.cleaning == 0 for w in registry.live()):
+                break
+            await asyncio.sleep(0.01)
+        after = await invoke(function)
+        return volume, during, after
+    volume, during, after = scenario(registry, body)
+    assert during["workspace"] == {"persistent": False, "reason": "unavailable"}
+    assert mounted_volume(docker.calls[1]) is None
+    assert after["workspace"]["persistent"] is True and mounted_volume(docker.calls[2]) == volume
+
+
+def test_timeout_with_failed_cleanup_does_not_promise_the_workspace(docker, registry, settings, monkeypatch):
+    monkeypatch.setattr(shell, "CLEANUP_CHECK_INTERVAL", 0)
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        docker.fail.update({"kill", "rm"})
+        result = await invoke(function, "sleep 600", timeout=1)
+        for _ in range(200):
+            if registry._doomed:
+                break
+            await asyncio.sleep(0.01)
+        docker.fail.clear()
+        docker.gate.pop("call").set()
+        return result
+    result = scenario(registry, body)
+    assert result["status"] == "error" and result["message"].startswith("Timeout")
+    assert result["workspace"] == {"persistent": False, "reason": "orphaned"}
+    assert "non confirmé" in result["hint"]
+
+
+def test_unremoved_ephemeral_container_is_retried_until_removed(docker, registry, settings, monkeypatch):
+    """Sans espace, aucun registre ne reprend le retrait : la tâche de reprise le fait."""
+    monkeypatch.setattr(shell, "CLEANUP_CHECK_INTERVAL", 0)
+    monkeypatch.setattr(shell, "CLEANUP_RETRY_INTERVAL", 0.01)
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        docker.fail.update({"kill", "rm"})
+        call = asyncio.ensure_future(invoke(function, "sleep 600", sid=None))
+        while not docker.running:
+            await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(300):
+            if shell._UNREMOVED:
+                break
+            await asyncio.sleep(0.01)
+        still = dict(docker.running)
+        docker.fail.clear()
+        for _ in range(300):
+            if not shell._UNREMOVED and not docker.running:
+                break
+            await asyncio.sleep(0.01)
+        docker.gate.pop("call").set()
+        return still
+    still = scenario(registry, body)
+    assert len(still) == 1
+    assert docker.running == {} and shell._UNREMOVED == set()
+    assert mounted_volume(docker.calls[0]) is None
+
+
+def test_purge_restarts_after_stop_before_its_first_step(docker, registry, settings):
+    async def body():
+        registry.prepare(settings["value"])
+        await registry.stop()
+        registry.prepare(settings["value"])
+        for _ in range(200):
+            if registry._purged:
+                break
+            await asyncio.sleep(0.01)
+        return registry._purged
+    assert scenario(registry, body) is True
 
 def test_workspace_stays_reserved_until_the_call_container_is_gone(docker, registry, settings, clock):
     function = handler()
@@ -1466,3 +1670,37 @@ def test_real_docker_workspace_refuses_acls_and_extended_attributes(registry, se
                             "--tmpfs=/tmp:size=8m", REAL_IMAGE, "bash", "-c", probe],
                            capture_output=True, text=True, timeout=60)
     assert plain.stdout == expected.replace(" 95", " ok") + "copied\n"
+
+
+
+@real_docker
+def test_real_docker_file_size_limit_applies_beyond_max_file_bytes(registry, settings, monkeypatch, clock):
+    """Une page au-delà de max_file_bytes échoue en EFBIG alors que le volume a encore de la place."""
+    instance = f"t72-{uuid.uuid4().hex[:8]}"
+    settings["value"] = make_settings(sandbox_image=REAL_IMAGE, shell_workspace_instance=instance,
+                                      shell_workspace_size_bytes=8 * MiB)
+    data, _ = shell_workspace.tmpfs_layout(8 * MiB)
+    probe = ("python3 -c \"import os, sys\n"
+             "def write(offset):\n"
+             "    with open('/tmp/s', 'wb') as f:\n"
+             "        f.seek(offset); f.write(b'x' * 4096)\n"
+             "write(int(sys.argv[1]) - 4096); print('inside ok')\n"
+             "try:\n    write(int(sys.argv[1])); print('beyond ok')\n"
+             "except OSError as e:\n    print('beyond', e.errno)\n"
+             f"\" {data}")
+
+    async def body(h):
+        sid = await h.open("token-A")
+        reply = await h.shell(probe, sid=sid)
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return reply
+    status, reply = run_http(registry, monkeypatch, body)
+    assert status == 200 and reply["workspace"]["max_file_bytes"] == data
+    assert reply["stdout"] == "inside ok\nbeyond 27\n"
+    # Témoin : le même tmpfs sans limite de taille de fichier accepte l'écriture au-delà.
+    plain = subprocess.run(["docker", "run", "--rm", "--network=none", "--user=sandbox:sandbox",
+                            "--tmpfs=/tmp:size=8m", REAL_IMAGE, "bash", "-c", probe],
+                           capture_output=True, text=True, timeout=60)
+    assert plain.stdout == "inside ok\nbeyond ok\n"

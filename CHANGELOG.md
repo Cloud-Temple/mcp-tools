@@ -40,8 +40,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `shell` : après une annulation MCP, y compris pendant le lancement de
   `docker run`, le conteneur d'appel est arrêté et retiré dans une tâche à
   part. Auparavant, l'annulation interrompait ce nettoyage et le conteneur
-  pouvait tourner jusqu'à la fin de sa commande. Si le retrait échoue, l'espace
-  de la session est retiré et reste compté jusqu'à son démontage (#72).
+  pouvait tourner jusqu'à la fin de sa commande. Si le retrait échoue, une
+  tâche le retente chaque minute jusqu'au succès, avec ou sans espace, et
+  l'espace de la session est retiré et reste compté jusqu'à son démontage.
+  Tant que ce retrait est en cours, l'espace n'est remis à aucun appel (#72).
+- `shell` : un contrôle Docker sans réponse sûre ne détruit plus l'espace
+  d'une session ; seul un arrêt ou une absence confirmés du conteneur de
+  maintien le font (#72).
 - Une session MCP est liée au jeton qui l'a ouverte : un autre jeton qui
   présente son identifiant reçoit 404 du SDK, avant tout routage. Auparavant,
   deux jetons valides pouvaient partager le transport d'une session (#72).

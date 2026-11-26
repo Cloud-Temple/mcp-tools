@@ -66,7 +66,8 @@ CWD_IGNORED_WORKSPACE_HINT = (
     "Écrire cd <répertoire> && ... dans command."
 )
 EPHEMERAL_REASONS = {
-    "unavailable": "création impossible",
+    "unavailable": "espace indisponible pour cet appel",
+    "orphaned": "arrêt du conteneur d'appel non confirmé, espace retiré",
 }
 CAPACITY_MESSAGE = (
     "Capacité des espaces /tmp de session atteinte : la commande n'a pas été exécutée."
@@ -129,6 +130,10 @@ SHELL_EXEC_FLAGS = {
 DOCKER_CLEANUP_TIMEOUT = 15
 CLEANUP_CHECKS = 10
 CLEANUP_CHECK_INTERVAL = 0.5
+# Conteneurs d'appel dont le retrait a échoué : retentés jusqu'au succès, avec ou sans espace.
+CLEANUP_RETRY_INTERVAL = 60
+_UNREMOVED: set = set()
+_RETRY_TASK: Optional[asyncio.Task] = None
 # Nettoyages en cours : une référence les garde en vie jusqu'à leur fin.
 _CLEANUPS: set = set()
 
@@ -174,13 +179,36 @@ async def _kill_container(name: str) -> bool:
     return False
 
 
-def _start_cleanup(process, container_name: str, cleanups: Optional[list]) -> asyncio.Task:
+async def _retry_unremoved() -> None:
+    """Retente le retrait des conteneurs d'appel restés en place, jusqu'à ce qu'il n'en reste aucun."""
+    while _UNREMOVED:
+        await asyncio.sleep(CLEANUP_RETRY_INTERVAL)
+        for name in sorted(_UNREMOVED):
+            if await _kill_container(name):
+                _UNREMOVED.discard(name)
+                record_activity("sandbox.cleanup_recovered", message="Sandbox retirée après nouvelle tentative",
+                                details={"sandbox_id": name})
+
+
+def _remember_unremoved(name: str) -> None:
+    global _RETRY_TASK
+    _UNREMOVED.add(name)
+    loop = asyncio.get_running_loop()
+    if _RETRY_TASK is None or _RETRY_TASK.done() or _RETRY_TASK.get_loop() is not loop:
+        _RETRY_TASK = loop.create_task(_retry_unremoved())
+
+
+def _start_cleanup(process, container_name: str, cleanups: Optional[list], workspace=None) -> asyncio.Task:
     """Arrête le client docker run et retire le conteneur, dans une tâche à part.
 
     Une annulation MCP annule l'appel à chaque attente : un nettoyage attendu
     dans l'appel ne passerait jamais sa première commande docker. La tâche à
     part va au bout, chaque commande bornée par DOCKER_CLEANUP_TIMEOUT.
+    `workspace` : l'espace monté par l'appel n'est plus remis jusqu'au rappel
+    de fin d'appel, qui décompte ce nettoyage.
     """
+    if workspace is not None:
+        workspace.cleaning += 1
     async def cleanup() -> bool:
         # process vaut None si l'annulation a interrompu son lancement : le
         # conteneur a pu démarrer quand même, son nom suffit à le retirer.
@@ -197,6 +225,7 @@ def _start_cleanup(process, container_name: str, cleanups: Optional[list]) -> as
         if not gone:
             record_activity("sandbox.cleanup_failed", level="error", message="Sandbox non retirée après arrêt",
                             details={"sandbox_id": container_name})
+            _remember_unremoved(container_name)
         return gone
 
     task = asyncio.get_running_loop().create_task(cleanup())
@@ -214,8 +243,24 @@ def _cleanups_succeeded(done) -> bool:
         return False
 
 
+def _cleanups_succeeded_now(cleanups: list) -> bool:
+    """Nettoyages déjà terminés (délai dépassé : attendus) et tous confirmés."""
+    try:
+        return all(task.done() and task.result() is True for task in cleanups)
+    except BaseException:
+        return False
+
+
+def _end_cleanups(lease, count: int, done) -> None:
+    """Rappel de fin des nettoyages : décompte, puis rend la réservation, avant tout autre tour de boucle."""
+    if lease.workspace is not None:
+        lease.workspace.cleaning -= count
+    shell_workspace.registry.release(lease, orphaned=not _cleanups_succeeded(done))
+
+
 async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False,
-                          workspace_args: Optional[list] = None, cleanups: Optional[list] = None) -> dict:
+                          workspace_args: Optional[list] = None, cleanups: Optional[list] = None,
+                          workspace=None) -> dict:
     """Exécute la commande dans un conteneur Docker éphémère isolé.
 
     Si network=True, le conteneur a accès au réseau (--network=bridge + DNS).
@@ -307,14 +352,14 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     except asyncio.TimeoutError:
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
         # Tuer le process docker run ET le conteneur Docker
-        await asyncio.shield(_start_cleanup(process, container_name, cleanups))
+        await asyncio.shield(_start_cleanup(process, container_name, cleanups, workspace))
         raise  # Re-raise pour que l'appelant gère le message d'erreur
     except asyncio.CancelledError:
         # Le SDK v2 propage l'annulation du client : docker run ne doit pas
         # survivre au call MCP abandonné.
         record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée, nettoyage lancé", details={"sandbox_id": container_name})
         # Pas d'attente ici : l'annulation interromprait le nettoyage (#72).
-        _start_cleanup(process, container_name, cleanups)
+        _start_cleanup(process, container_name, cleanups, workspace)
         raise
 
     max_chars = settings.tool_max_output_chars
@@ -409,7 +454,8 @@ def register(mcp: MCPServer) -> None:
                 if lease is not None and lease.workspace is not None:
                     result = await _run_in_sandbox(
                         command, shell, timeout, settings, network=network,
-                        workspace_args=shell_workspace.call_args(lease.workspace, settings), cleanups=cleanups)
+                        workspace_args=shell_workspace.call_args(lease.workspace, settings), cleanups=cleanups,
+                        workspace=lease.workspace)
                 else:
                     result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
                 hint = _stateless_hint(result, cwd, lease)
@@ -423,8 +469,12 @@ def register(mcp: MCPServer) -> None:
             return result
 
         except asyncio.TimeoutError:
+            shown = lease
+            if lease is not None and lease.workspace is not None and not _cleanups_succeeded_now(cleanups):
+                # Le rappel de fin d'appel va retirer cet espace : ne pas le promettre.
+                shown = shell_workspace.Lease(None, reason="orphaned")
             return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."},
-                                  cwd_ignored, lease, settings)
+                                  cwd_ignored, shown, settings)
         except FileNotFoundError:
             return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
         except Exception as e:
@@ -436,7 +486,6 @@ def register(mcp: MCPServer) -> None:
                     # réservation tient jusqu'à la fin de son retrait. Un retrait
                     # non confirmé retire l'espace, compté jusqu'à son démontage.
                     asyncio.gather(*cleanups, return_exceptions=True).add_done_callback(
-                        lambda done, lease=lease: shell_workspace.registry.release(
-                            lease, orphaned=not _cleanups_succeeded(done)))
+                        lambda done, lease=lease, n=len(cleanups): _end_cleanups(lease, n, done))
                 else:
                     shell_workspace.registry.release(lease)
