@@ -584,7 +584,12 @@ class WorkspaceRegistry:
                 expired = _expired(current, now, settings)
                 if expired is None and not await self._holder_running(current):
                     expired = "lost"
-                if expired is not None:
+                if self._spaces.get(key) is not current:
+                    # Retiré pendant le contrôle du maintien, hors verrou, par
+                    # release(orphaned=True) : il est déjà à détruire.
+                    reason = current.retire_reason or "lost"
+                    current = None
+                elif expired is not None:
                     reason = expired
                     self._retire(current, expired)
                     current = None

@@ -912,6 +912,30 @@ def test_failed_cleanup_retires_the_workspace_and_keeps_it_counted(docker, regis
     assert len(registry.live()) == 1
 
 
+def test_workspace_retired_during_the_holder_check_is_not_handed_out(docker, registry, settings, monkeypatch):
+    """release(orphaned=True) tourne hors du verrou : il peut retirer l'espace pendant le contrôle du maintien."""
+    function = handler()
+    real_check = registry._holder_running
+
+    async def body():
+        await invoke(function)
+        old = registry.live()[0]
+
+        async def check_while_retiring(workspace):
+            running = await real_check(workspace)
+            old.active += 1
+            registry.release(shell_workspace.Lease(old), orphaned=True)
+            return running
+        monkeypatch.setattr(registry, "_holder_running", check_while_retiring)
+        result = await invoke(function)
+        await registry.stop()
+        return old, result
+    old, result = scenario(registry, body)
+    assert result["workspace"]["new"] is True and result["workspace"]["reason"] == "orphaned"
+    assert mounted_volume(docker.calls[-1]) != old.volume
+    assert old.volume not in docker.volumes and old.active == 0
+    assert len(registry.live()) == 1
+
 def test_background_purge_retries_without_waiting_for_a_call(docker, registry, settings, monkeypatch):
     monkeypatch.setattr(shell_workspace, "SWEEP_INTERVAL_SECONDS", 0.01)
     settings["value"] = make_settings(shell_workspace_max_count=0)
