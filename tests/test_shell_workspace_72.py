@@ -82,28 +82,50 @@ def mounted_volume(args):
 
 
 class FakeDocker:
-    """Enregistre les commandes docker et simule volumes et conteneurs de maintien."""
+    """Enregistre les commandes docker et simule volumes, conteneurs de maintien et orphelins.
+
+    Comme Docker, `volume rm` refuse un volume encore monté par un conteneur de maintien.
+    `fail` fait échouer une opération ; `gate` suspend une opération jusqu'à son événement.
+    """
 
     def __init__(self):
         self.commands, self.calls = [], []
         self.volumes, self.holders = {}, {}
         self.leftover_containers, self.leftover_volumes = [], []
         self.fail = set()
+        self.gate = {}
+
+    def mounted(self):
+        return {mounted_volume(args) for args in self.holders.values()}
 
     async def exec(self, *argv, **kwargs):
         assert argv[0] == "docker"
         args = list(argv[1:])
         self.commands.append(args)
         verb = args[0]
+        op = " ".join(args[:2]) if verb == "volume" else verb
+        if op in self.gate:
+            await self.gate[op].wait()
         if args[:2] == ["volume", "create"]:
             if "volume create" in self.fail:
                 return FakeProcess(1)
             self.volumes[args[-1]] = args
             return FakeProcess(0, args[-1].encode())
         if args[:2] == ["volume", "rm"]:
-            self.volumes.pop(args[2], None)
+            name = args[2]
+            if "volume rm" in self.fail or name in self.mounted():
+                return FakeProcess(1)
+            self.volumes.pop(name, None)
+            if name in self.leftover_volumes:
+                self.leftover_volumes.remove(name)
             return FakeProcess(0)
         if args[:2] == ["volume", "ls"]:
+            if "volume ls" in self.fail:
+                return FakeProcess(1)
+            name = next((a[len("name="):] for a in args if a.startswith("name=")), None)
+            if name is not None:
+                found = [v for v in list(self.volumes) + self.leftover_volumes if name in v]
+                return FakeProcess(0, "\n".join(found).encode())
             return FakeProcess(0, "\n".join(self.leftover_volumes).encode())
         if verb == "run" and "-d" in args:
             if "holder run" in self.fail:
@@ -116,10 +138,16 @@ class FakeDocker:
         if verb == "inspect":
             return FakeProcess(0, b"true\n") if args[-1] in self.holders else FakeProcess(1)
         if verb == "rm":
+            if "rm" in self.fail:
+                return FakeProcess(1)
             for name in args[2:]:
                 self.holders.pop(name, None)
+                if name in self.leftover_containers:
+                    self.leftover_containers.remove(name)
             return FakeProcess(0)
         if verb == "ps":
+            if "ps" in self.fail:
+                return FakeProcess(1)
             return FakeProcess(0, "\n".join(self.leftover_containers).encode())
         if verb == "kill":
             return FakeProcess(0)
@@ -306,7 +334,7 @@ def test_same_session_and_token_mount_the_same_volume(docker, registry, settings
     assert volumes[0] is not None and volumes[0] == volumes[1]
     assert first["workspace"]["persistent"] and first["workspace"]["new"] is True
     assert second["workspace"]["new"] is False
-    assert first["workspace"]["size_bytes"] == 256 * MiB
+    assert first["workspace"]["size_bytes"] == 224 * MiB and first["workspace"]["max_entries"] == 16384
     assert not any(a.startswith("--tmpfs=/tmp") for c in docker.calls for a in c)
     assert len(docker.volumes) == 1 and len(docker.holders) == 1
 
@@ -339,7 +367,7 @@ def test_volume_name_does_not_derive_from_session_token_or_arguments(docker, reg
 def test_call_mount_and_holder_are_bounded_and_unprivileged(docker, registry, settings):
     scenario(registry, lambda: invoke(handler()))
     create = next(c for c in docker.commands if c[:2] == ["volume", "create"])
-    assert "o=size=268435456,mode=1777,nosuid,nodev,noexec" in create
+    assert "o=size=234881024,nr_inodes=16384,mode=1777,nosuid,nodev,noexec" in create
     assert f"{shell_workspace.INSTANCE_LABEL}=t72" in create
     holder = next(iter(docker.holders.values()))
     for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
@@ -351,7 +379,7 @@ def test_call_mount_and_holder_are_bounded_and_unprivileged(docker, registry, se
     call = docker.calls[0]
     call_mount = option(call, "--mount=")
     assert "volume-nocopy" in call_mount
-    assert '"volume-opt=o=size=268435456,mode=1777,nosuid,nodev,noexec"' in call_mount
+    assert '"volume-opt=o=size=234881024,nr_inodes=16384,mode=1777,nosuid,nodev,noexec"' in call_mount
     assert f"{shell_workspace.LABEL}={shell_workspace.CALL_ROLE}" in labels(call)
     for flag in ("--read-only", "--cap-drop=ALL", "--network=none", "--user=sandbox:sandbox"):
         assert flag in call
@@ -475,6 +503,200 @@ def test_lost_holder_gives_a_new_workspace(docker, registry, settings):
     assert len(docker.volumes) == 1
 
 
+# --- retrait confirmé : la capacité suit la mémoire réellement montée ------------------
+
+def mounted_count(docker):
+    return len(docker.mounted())
+
+
+def test_delayed_removal_keeps_the_workspace_counted(docker, registry, settings, clock):
+    """Pendant un retrait en cours, l'espace reste compté : jamais deux volumes montés pour un compté."""
+    settings["value"] = make_settings(shell_workspace_max_count=1)
+    function = handler()
+    docker.gate["volume rm"] = asyncio.Event()
+
+    async def body():
+        await invoke(function, sid=SID_A)
+        clock.now += 10_000
+        sweep = asyncio.ensure_future(registry.sweep(settings["value"]))
+        while not any(c[:2] == ["volume", "rm"] for c in docker.commands):
+            await asyncio.sleep(0)
+        during = await invoke(function, sid=SID_B)
+        observed = (len(registry.live()), mounted_count(docker))
+        docker.gate.pop("volume rm").set()
+        await sweep
+        after = await invoke(function, sid=SID_B)
+        return during, observed, after
+    during, observed, after = scenario(registry, body)
+    assert during["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert observed == (1, 0)
+    assert after["workspace"]["persistent"] is True
+    assert len(registry.live()) == 1 == mounted_count(docker)
+
+
+@pytest.mark.parametrize("failure", ["rm", "volume rm", "volume ls"])
+def test_refused_removal_keeps_the_workspace_counted_until_a_retry_succeeds(docker, registry, settings, clock,
+                                                                            failure):
+    settings["value"] = make_settings(shell_workspace_max_count=1)
+    function = handler()
+
+    async def body():
+        await invoke(function, sid=SID_A)
+        clock.now += 10_000
+        docker.fail.add(failure)
+        await registry.sweep(settings["value"])
+        refused = await invoke(function, sid=SID_B)
+        counted = len(registry.live())
+        docker.fail.discard(failure)
+        await registry.sweep(settings["value"])
+        admitted = await invoke(function, sid=SID_B)
+        return refused, counted, admitted
+    refused, counted, admitted = scenario(registry, body)
+    assert refused["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert counted == 1
+    assert admitted["workspace"]["persistent"] is True
+    assert len(registry.live()) == 1 == mounted_count(docker) == len(docker.volumes)
+
+
+def test_cancelled_removal_keeps_the_workspace_counted(docker, registry, settings, clock):
+    settings["value"] = make_settings(shell_workspace_max_count=1)
+    function = handler()
+    docker.gate["volume rm"] = asyncio.Event()
+
+    async def body():
+        await invoke(function, sid=SID_A)
+        clock.now += 10_000
+        sweep = asyncio.ensure_future(registry.sweep(settings["value"]))
+        while not any(c[:2] == ["volume", "rm"] for c in docker.commands):
+            await asyncio.sleep(0)
+        sweep.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sweep
+        counted = len(registry.live())
+        refused = await invoke(function, sid=SID_B)
+        docker.gate.pop("volume rm").set()
+        await registry.sweep(settings["value"])
+        return counted, refused
+    counted, refused = scenario(registry, body)
+    assert counted == 1 and refused["workspace"]["reason"] == "capacity"
+    assert registry.live() == [] and docker.volumes == {}
+
+
+def test_creation_timeout_keeps_the_half_created_workspace_counted(docker, registry, settings, monkeypatch):
+    """Un délai dépassé sur le démarrage du maintien peut le laisser démarré : il reste compté."""
+    settings["value"] = make_settings(shell_workspace_max_count=1)
+    real_exec = docker.exec
+
+    async def timing_out(*argv, **kwargs):
+        process = await real_exec(*argv, **kwargs)
+        if argv[1] == "run" and "-d" in argv:
+            raise asyncio.TimeoutError()
+        return process
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", timing_out)
+    function = handler()
+
+    async def body():
+        first = await invoke(function, sid=SID_A)
+        return first
+    first = scenario(registry, body)
+    assert first["workspace"] == {"persistent": False, "reason": "unavailable"}
+    # Le retrait qui suit l'échec a confirmé l'absence du volume : plus rien n'est compté ni monté.
+    assert registry.live() == [] and docker.volumes == {} and docker.holders == {}
+
+
+def test_creation_timeout_with_refused_cleanup_stays_counted(docker, registry, settings, monkeypatch):
+    settings["value"] = make_settings(shell_workspace_max_count=1)
+    real_exec = docker.exec
+
+    async def timing_out(*argv, **kwargs):
+        process = await real_exec(*argv, **kwargs)
+        if argv[1] == "run" and "-d" in argv and "rm" not in docker.fail:
+            docker.fail.add("rm")
+            raise asyncio.TimeoutError()
+        return process
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", timing_out)
+    function = handler()
+
+    async def body():
+        first = await invoke(function, sid=SID_A)
+        second = await invoke(function, sid=SID_B)
+        return first, second, len(registry.live()), mounted_count(docker)
+    first, second, counted, mounted = scenario(registry, body)
+    assert first["workspace"]["reason"] == "unavailable"
+    assert second["workspace"]["reason"] == "capacity"
+    assert counted == 1 == mounted
+
+
+@pytest.mark.parametrize("failure", ["ps", "volume ls", "leftover"])
+def test_uncertain_startup_inventory_suspends_admissions(docker, registry, settings, clock, failure):
+    if failure == "leftover":
+        docker.leftover_volumes = ["shellws-old"]
+        docker.fail.add("volume rm")
+    else:
+        docker.fail.add(failure)
+    function = handler()
+
+    async def body():
+        refused = await invoke(function, sid=SID_A)
+        soon = await invoke(function, sid=SID_A)
+        docker.fail.clear()
+        clock.now += shell_workspace.SWEEP_INTERVAL_SECONDS
+        admitted = await invoke(function, sid=SID_A)
+        return refused, soon, admitted
+    refused, soon, admitted = scenario(registry, body)
+    assert refused["workspace"] == {"persistent": False, "reason": "unavailable"}
+    assert soon["workspace"] == {"persistent": False, "reason": "unavailable"}
+    # Aucune création tant que l'inventaire est incertain : la seule a suivi la purge confirmée.
+    assert sum(1 for c in docker.commands if c[:2] == ["volume", "create"]) == 1
+    assert len(docker.calls) == 3
+    assert admitted["workspace"]["persistent"] is True
+    assert docker.leftover_volumes == []
+
+
+def test_tmpfs_layout_keeps_data_and_entries_within_the_space_budget():
+    for size in (MiB, 8 * MiB, 256 * MiB, 1024 * MiB + 12345):
+        data, entries = shell_workspace.tmpfs_layout(size)
+        assert data > 0 and entries > 0
+        assert data + entries * shell_workspace.INODE_COST_BYTES <= size
+    assert shell_workspace.tmpfs_layout(256 * MiB) == (224 * MiB, 16384)
+
+
+# --- réponses d'erreur et indices combinés ------------------------------------------
+
+def test_timeout_response_keeps_the_workspace_state(docker, registry, settings, monkeypatch):
+    async def timing_out(*args, **kwargs):
+        raise asyncio.TimeoutError()
+    monkeypatch.setattr(shell, "_run_in_sandbox", timing_out)
+    result = scenario(registry, lambda: invoke(handler(), "sleep 99"))
+    assert result["status"] == "error" and "Timeout" in result["message"]
+    assert result["workspace"]["persistent"] is True and result["workspace"]["new"] is True
+
+
+def test_timeout_response_on_ephemeral_fallback_says_so(docker, registry, settings, monkeypatch):
+    settings["value"] = make_settings(shell_workspace_max_total_bytes=0)
+
+    async def timing_out(*args, **kwargs):
+        raise asyncio.TimeoutError()
+    monkeypatch.setattr(shell, "_run_in_sandbox", timing_out)
+    result = scenario(registry, lambda: invoke(handler(), "sleep 99", cwd="/tmp/a"))
+    assert result["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert result["hint"].startswith(shell.CWD_IGNORED_WORKSPACE_HINT)
+    assert "éphémère" in result["hint"]
+
+
+def test_cwd_hint_does_not_hide_the_ephemeral_reason(docker, registry, settings):
+    settings["value"] = make_settings(shell_workspace_max_total_bytes=0)
+    result = scenario(registry, lambda: invoke(handler(), "ls", cwd="/tmp/a"))
+    assert result["workspace"] == {"persistent": False, "reason": "capacity"}
+    assert shell.CWD_IGNORED_WORKSPACE_HINT in result["hint"]
+    assert "capacité du serveur atteinte" in result["hint"]
+
+
+def test_without_workspace_cwd_hint_is_unchanged(docker, registry, settings):
+    result = scenario(registry, lambda: invoke(handler(), "ls", sid=None, cwd="/tmp/a"))
+    assert result["hint"] == shell.CWD_IGNORED_HINT and "workspace" not in result
+
+
 def test_missing_path_hint_names_the_session_workspace(docker, registry, settings, monkeypatch):
     async def failing(*args, **kwargs):
         return {"status": "error", "stdout": "", "stderr": "cd: /tmp/src: No such file or directory\n",
@@ -500,7 +722,9 @@ def test_startup_purge_only_targets_this_instance(docker, registry, settings):
     assert instance in ls and f"label={shell_workspace.LABEL}={shell_workspace.VOLUME_ROLE}" in ls
     assert ["rm", "-f", "old-holder", "old-call"] in docker.commands
     assert ["volume", "rm", "shellws-old"] in docker.commands
-    assert sum(1 for c in docker.commands if c[0] == "ps") == 1
+    # Inventaire, puis second inventaire qui confirme la purge ; aucun autre au deuxième appel.
+    assert sum(1 for c in docker.commands if c[0] == "ps") == 2
+    assert docker.leftover_containers == [] and docker.leftover_volumes == []
 
 
 # --- journaux -----------------------------------------------------------------------
@@ -623,22 +847,43 @@ def run_http(registry, monkeypatch, body):
     return asyncio.run(main())
 
 
-def test_http_same_session_shares_other_session_and_other_token_do_not(docker, registry, settings, monkeypatch):
+def test_http_same_session_shares_other_session_does_not(docker, registry, settings, monkeypatch):
     async def body(h):
         sid_a = await h.open("token-A")
         sid_a2 = await h.open("token-A")
         replies = [await h.shell("echo 1", sid=sid_a), await h.shell("echo 2", sid=sid_a),
-                   await h.shell("echo 3", sid=sid_a2),
-                   await h.shell("echo 4", token="token-B", sid=sid_a)]
+                   await h.shell("echo 3", sid=sid_a2)]
         return sid_a, replies
     sid_a, replies = run_http(registry, monkeypatch, body)
-    assert [status for status, _ in replies] == [200, 200, 200, 200]
-    first, second, other_session, other_token = [mounted_volume(c) for c in docker.calls]
-    assert first == second
-    assert len({first, other_session, other_token}) == 3
-    assert [r["workspace"]["new"] for _, r in replies] == [True, False, True, True]
+    assert [status for status, _ in replies] == [200, 200, 200]
+    first, second, other_session = [mounted_volume(c) for c in docker.calls]
+    assert first == second != other_session
+    assert [r["workspace"]["new"] for _, r in replies] == [True, False, True]
     for _, reply in replies:
         assert sid_a not in json.dumps(reply)
+
+
+def test_http_session_is_bound_to_the_token_that_opened_it(docker, registry, settings, monkeypatch):
+    """Un autre jeton qui présente l'identifiant reçoit 404 du SDK, avant tout routage vers le transport.
+
+    Sans cette liaison, les deux jetons partageaient le transport de la session,
+    donc sa table de réponses indexée par identifiant JSON-RPC.
+    """
+    async def body(h):
+        sid_a = await h.open("token-A")
+        await h.shell("echo a", sid=sid_a)
+        before = len(docker.commands)
+        intruder = [await h.shell("cat /tmp/f", token="token-B", sid=sid_a),
+                    await h.post({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}, token="token-B", sid=sid_a)]
+        after = len(docker.commands)
+        owner = await h.shell("echo a2", sid=sid_a)
+        return intruder, before, after, owner
+    intruder, before, after, owner = run_http(registry, monkeypatch, body)
+    assert intruder[0] == (404, None)
+    assert intruder[1].status_code == 404
+    assert before == after
+    assert owner[0] == 200 and owner[1]["workspace"]["new"] is False
+    assert len(registry.live()) == 1
 
 
 def test_http_invented_session_id_is_refused_before_the_tool(docker, registry, settings, monkeypatch):
@@ -711,6 +956,9 @@ def test_real_docker_files_persist_in_session_and_stay_isolated(registry, settin
             "cd_same": await h.shell("cd /tmp/src && cat f && pwd", sid=sid_a),
             "other_session": await h.shell("cat /tmp/src/f", sid=sid_a2),
             "other_token": await h.shell("cat /tmp/src/f", token="token-B", sid=sid_a),
+            "entries_bound": await h.shell("mkdir /tmp/n && cd /tmp/n && "
+                                           "for i in $(seq 1 600); do : > f$i || { echo stop $i; break; }; done; "
+                                           "cd / && rm -rf /tmp/n", sid=sid_a),
             "size_bound": await h.shell("dd if=/dev/zero of=/tmp/big bs=1M count=20 2>&1 | tail -1; "
                                         "df -k /tmp | tail -1; truncate -s 0 /tmp/big", sid=sid_a),
             "no_exec": await h.shell("printf 'echo ran' > /tmp/s.sh && chmod +x /tmp/s.sh && /tmp/s.sh", sid=sid_a),
@@ -724,13 +972,17 @@ def test_real_docker_files_persist_in_session_and_stay_isolated(registry, settin
     assert out["write"][1]["stdout"] == "ok\n" and out["write"][1]["workspace"]["new"] is True
     assert out["read_same"][1]["stdout"] == "secret-A\n"
     assert out["cd_same"][1]["stdout"] == "secret-A\n/tmp/src\n"
-    for case in ("other_session", "other_token"):
-        assert out[case][1]["returncode"] != 0 and "secret-A" not in out[case][1]["stdout"]
-        assert out[case][1]["workspace"]["new"] is True
-    assert "No space left" in out["size_bound"][1]["stdout"] or "8192" in out["size_bound"][1]["stdout"]
+    assert out["other_session"][1]["returncode"] != 0 and "secret-A" not in out["other_session"][1]["stdout"]
+    assert out["other_session"][1]["workspace"]["new"] is True
+    assert out["other_token"] == (404, None)
+    # 8 Mio : 512 entrées au plus, dont la racine et /tmp/src déjà présents.
+    assert out["entries_bound"][1]["stdout"].startswith("stop ")
+    assert int(out["entries_bound"][1]["stdout"].split()[1]) < 512
+    assert "No space left" in out["size_bound"][1]["stdout"] or "7168" in out["size_bound"][1]["stdout"]
     assert out["no_exec"][1]["returncode"] == 126
     mounts = out["mounts"][1]["stdout"]
-    assert "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec" in mounts and "size=8192k" in mounts
-    assert len(names) == 3
+    assert "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec" in mounts and "size=7168k" in mounts
+    assert "nr_inodes=512" in mounts
+    assert len(names) == 2
     for volume, holder in names:
         assert not docker_exists("volume", volume) and not docker_exists("container", holder)

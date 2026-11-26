@@ -61,6 +61,10 @@ NEW_WORKSPACE_HINT = (
     "L'espace /tmp de cette session vient d'être créé : aucun fichier d'un appel antérieur n'y figure. "
     + WORKSPACE_HINT
 )
+CWD_IGNORED_WORKSPACE_HINT = (
+    "cwd est ignoré en sandbox : la commande a démarré dans le répertoire par défaut. "
+    "Écrire cd <répertoire> && ... dans command."
+)
 EPHEMERAL_REASONS = {
     "capacity": "capacité du serveur atteinte",
     "unavailable": "création impossible",
@@ -76,20 +80,33 @@ def _ephemeral_hint(reason: Optional[str]) -> str:
 def _stateless_hint(result: dict, cwd: Optional[str], lease=None) -> Optional[str]:
     """Indice si un cwd non vide a été ignoré, si /tmp est éphémère malgré une session,
     ou si un échec signale un chemin absent."""
-    if cwd:
-        return CWD_IGNORED_HINT
-    if lease is not None and lease.workspace is None:
-        return _ephemeral_hint(lease.reason)
-    if result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or ""):
-        if lease is None:
-            return STATELESS_HINT
-        return NEW_WORKSPACE_HINT if lease.new else WORKSPACE_HINT
-    return None
+    missing = result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or "")
+    if lease is None:
+        # Sans session : texte identique à celui d'avant #72.
+        if cwd:
+            return CWD_IGNORED_HINT
+        return STATELESS_HINT if missing else None
+    hints = [CWD_IGNORED_WORKSPACE_HINT] if cwd else []
+    if lease.workspace is None:
+        hints.append(_ephemeral_hint(lease.reason))
+    elif missing:
+        hints.append(NEW_WORKSPACE_HINT if lease.new else WORKSPACE_HINT)
+    return " ".join(hints) or None
 
 
-def _with_cwd_hint(response: dict, cwd_ignored: bool) -> dict:
-    if cwd_ignored:
-        response["hint"] = CWD_IGNORED_HINT
+def _with_cwd_hint(response: dict, cwd_ignored: bool, lease=None, settings=None) -> dict:
+    """Réponse d'erreur : garde l'état de /tmp quand la session a demandé un espace (#72).
+
+    Après un délai dépassé, la commande a pu écrire dans l'espace avant d'être arrêtée.
+    """
+    if lease is None:
+        if cwd_ignored:
+            response["hint"] = CWD_IGNORED_HINT
+        return response
+    hint = _stateless_hint({}, "cwd" if cwd_ignored else None, lease)
+    if hint:
+        response["hint"] = hint
+    response["workspace"] = lease.public(settings)
     return response
 
 
@@ -277,9 +294,9 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("shell")
     async def shell(
-        command: Annotated[str, Field(description="Commande complète. En mode sandbox, chaque appel démarre dans un conteneur neuf : le répertoire courant et les variables ne passent pas à l'appel suivant ; seuls les fichiers sous /tmp de la même session MCP sont conservés (voir le champ workspace de la réponse). Mettre dans une seule commande les étapes qui dépendent d'un cd ou d'une variable (&&, ;, script multiligne).")],
+        command: Annotated[str, Field(description="Commande complète. En mode sandbox, chaque appel démarre dans un conteneur neuf : le répertoire courant et les variables ne passent pas à l'appel suivant ; les fichiers sous /tmp peuvent être conservés pour la même session MCP, seulement si le champ workspace de la réponse indique persistent=true. Mettre dans une seule commande les étapes qui dépendent d'un cd ou d'une variable (&&, ;, script multiligne).")],
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
-        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel et démarre dans le répertoire par défaut. Écrire cd <répertoire> && ... dans command ; un répertoire créé par un appel précédent n'existe que s'il est sous /tmp, dans la même session MCP.")] = None,
+        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel et démarre dans le répertoire par défaut. Écrire cd <répertoire> && ... dans command ; un répertoire créé par un appel précédent n'existe que s'il est sous /tmp, dans la même session MCP, et si workspace.persistent valait true pour ces appels.")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
         network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau ; /tmp reste non exécutable. Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
@@ -290,6 +307,7 @@ def register(mcp: MCPServer) -> None:
         # cwd ignoré : l'indice accompagne aussi un échec après tentative sandbox (timeout).
         cwd_ignored = False
         lease = None
+        settings = None
         try:
             check_tool_access("shell")
             settings = get_settings()
@@ -326,11 +344,12 @@ def register(mcp: MCPServer) -> None:
             return result
 
         except asyncio.TimeoutError:
-            return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."}, cwd_ignored)
+            return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."},
+                                  cwd_ignored, lease, settings)
         except FileNotFoundError:
             return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
         except Exception as e:
-            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored)
+            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored, lease, settings)
         finally:
             if lease is not None:
                 shell_workspace.registry.release(lease)

@@ -90,11 +90,16 @@ lancé via `docker run --rm` avec les contraintes de sécurité suivantes :
 | `--tmpfs /tmp:noexec` | Temp sans exec          | Pas d'exécution depuis /tmp            |
 
 **Espace /tmp de session (#72)** : pour une requête d'une session MCP
-authentifiée, `/tmp` est un volume tmpfs (`size`, `mode=1777,nosuid,nodev,noexec`)
-propre au couple identifiant de session et jeton validé. Un conteneur de
+authentifiée, `/tmp` est un volume tmpfs (`size`, `nr_inodes`,
+`mode=1777,nosuid,nodev,noexec`) propre au couple identifiant de session et
+jeton validé. `AuthMiddleware` renseigne `scope["user"]` avec l'empreinte du
+jeton : le SDK refuse en 404 une session présentée par un autre jeton. Un conteneur de
 maintien sans réseau ni droit garde le volume monté entre deux appels ; il
 s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
-ou l'âge maximal, et purge au démarrage les espaces de son instance. Bornes :
+ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace
+reste compté dans la capacité jusqu'à ce que Docker confirme le retrait de
+son volume ; tant que la purge du démarrage n'est pas confirmée, aucun espace
+n'est créé. Bornes :
 `SHELL_WORKSPACE_*` (`src/mcp_tools/config.py`). La table des espaces vit dans
 le processus : mcp-tools reste mono-processus.
 

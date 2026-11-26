@@ -28,7 +28,7 @@ Les contraintes appliquées systématiquement sont excellentes et conformes aux 
 - `--security-opt=no-new-privileges:true` : Bloque l'escalade de privilèges via setuid/setgid.
 - `--memory=256m` et `--pids-limit=10` (ou 50) : Protège contre l'épuisement des ressources hôtes (fork-bombs et OOMs).
 - `/tmp` monté en `tmpfs` avec options `nosuid,nodev,noexec`, avec ou sans `network` : Docker ajoute `noexec` à un `--tmpfs` qui ne demande pas `exec` (constat #72).
-- Depuis #72, une session MCP authentifiée monte sur `/tmp` un volume tmpfs propre à la session et au jeton validé (mêmes options, taille bornée). Ce volume ne passe jamais à une autre session ni à un autre jeton. L'identifiant de session ne sort pas des journaux du SDK ni du WAF.
+- Depuis #72, une session MCP authentifiée monte sur `/tmp` un volume tmpfs propre à la session et au jeton validé (mêmes options, taille bornée). Ce volume ne passe jamais à une autre session ni à un autre jeton. Sa taille couvre données et métadonnées : `size` et `nr_inodes` bornés. L'identifiant de session ne sort pas des journaux du SDK ni du WAF. `AuthMiddleware` lie aussi chaque session MCP au jeton qui l'a ouverte : le SDK répond 404 à un autre jeton qui présente l'identifiant, avant tout routage vers le transport de la session.
 
 ### 2.2. Outil HTTP et Anti-SSRF Avancé
 Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et efficace :
@@ -67,7 +67,7 @@ Le fichier `http.py` intègre un dispositif **anti-SSRF** très sophistiqué et 
 - **Statut** : ✅ **Corrigé v0.2.1** — Utilisation de `SSHPASS` + flag `-e` dans `ssh.py`. Le mot de passe n'apparaît plus dans `/proc/[pid]/cmdline`.
 
 ### 3.4. Paramètre `network=true` du Shell affaiblissant l'isolation
-- **Analyse** : Le tool `shell` inclut désormais `network=true`. Lorsque ce paramètre est activé pour télécharger des dépendances (ex: `pip install`), les limites de processus (PIDs) sont quintuplées. Le code voulait aussi retirer `noexec` de `/tmp`, mais Docker l'ajoute par défaut : `/tmp` reste non exécutable (constat #72). 
+- **Analyse** : Le tool `shell` inclut désormais `network=true`. Lorsque ce paramètre est activé pour télécharger des dépendances (ex: `pip install`), les limites de processus (PIDs) sont quintuplées. Le code voulait aussi retirer `noexec` de `/tmp`, mais Docker l'ajoute par défaut : `/tmp` reste non exécutable (constat #72).
 - **Risque (Moyen)** : Un attaquant (via une injection d'instructions ou une défaillance du LLM) pourrait écrire un script d'exfiltration ou un reverse-shell dans `/tmp` et l'exécuter. 
 - **Recommandation** : Documenter que le paramètre `network=true` est une élévation de privilège. Limiter au maximum (au niveau des `tool_ids` / permissions) les profils capables d'utiliser un shell avec réseau. Les LLMs de profil standard devraient rester forcés sur du `network=false`.
 

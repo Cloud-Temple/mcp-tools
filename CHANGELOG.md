@@ -17,13 +17,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   L'espace est un volume tmpfs propre au couple identifiant de session et jeton
   validé par `AuthMiddleware`, jamais tiré d'un argument. Il est gardé monté
   par un conteneur de maintien sans réseau ni droit, qui s'arrête seul à l'âge
-  maximal. Bornes réglables : 256 Mio par espace, 16 espaces, 4 Gio au total,
+  maximal. Bornes réglables : 256 Mio par espace, métadonnées comprises
+  (224 Mio de données et 16384 entrées), 16 espaces, 4 Gio au total,
   15 min d'inactivité, 2 h au plus (`SHELL_WORKSPACE_*`) ; `0` espace rend le
   comportement antérieur. Au-delà de la capacité, la commande s'exécute avec le
   `/tmp` éphémère et la réponse le dit (`workspace.persistent: false`, `hint`).
   Sans session MCP, ou sur le chemin sans session du SDK (protocole
   `2026-07-28`), rien ne change. La réponse porte un champ `workspace` sans
-  identifiant.
+  identifiant, y compris après un délai dépassé. Un espace reste compté dans la
+  capacité jusqu'au retrait confirmé de son volume.
+- Une session MCP est liée au jeton qui l'a ouverte : un autre jeton qui
+  présente son identifiant reçoit 404 du SDK, avant tout routage. Auparavant,
+  deux jetons valides pouvaient partager le transport d'une session (#72).
 - L'identifiant de session MCP ne sort plus en clair : les journaux du SDK le
   remplacent par une empreinte courte, et le journal d'accès du WAF ne garde
   plus l'en-tête `Mcp-Session-Id` (#72).
@@ -36,8 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   description change, pas les droits de la sandbox (#72).
 
 - `shell` : la description de l'outil et celles de `command` et `cwd` disent
-  qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun fichier, `cd`
-  ni variable ne passe à l'appel suivant. En sandbox, la réponse porte un champ
+  qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun `cd` ni
+  variable ne passe à l'appel suivant. Un fichier non plus, sauf sous `/tmp`
+  dans une session MCP depuis #72. En sandbox, la réponse porte un champ
   `hint` quand `cwd` est fourni, donc ignoré, ou quand un échec signale « No such
   file or directory ». `status`, `returncode`, `stdout` et `stderr` ne changent
   pas. Le CLI affiche `hint` (#68).
