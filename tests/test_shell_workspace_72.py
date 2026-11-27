@@ -1540,12 +1540,25 @@ def test_timeout_with_uncertain_inventory_does_not_announce_the_workspace(docker
 
 
 def test_timeout_inventory_stays_within_the_response_wait(docker, registry, settings, monkeypatch):
-    """L'inventaire du maintien partage la borne de CLEANUP_RESPONSE_WAIT avec le retrait."""
-    monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 0.2)
+    """L'inventaire du maintien partage la borne de CLEANUP_RESPONSE_WAIT avec le retrait.
+
+    Le retrait consomme 0,6 s du délai de 1 s : l'inventaire bloqué n'en reçoit que
+    le reste. Un délai rendu entier à l'inventaire porterait la réponse à 1,6 s.
+    """
+    monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 1.0)
     function = handler()
     stuck = asyncio.Event()
+    times = {}
+    real_kill = shell._kill_container
+
+    async def slow_kill(name):
+        times["cleanup"] = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.6)
+        return await real_kill(name)
+    monkeypatch.setattr(shell, "_kill_container", slow_kill)
 
     async def slow_inventory(container_name, workspace):
+        times["inventory"] = asyncio.get_running_loop().time()
         await stuck.wait()
         return 0, [workspace.holder]
     monkeypatch.setattr(shell, "_end_inventory", slow_inventory)
@@ -1553,18 +1566,19 @@ def test_timeout_inventory_stays_within_the_response_wait(docker, registry, sett
 
     async def body():
         loop = asyncio.get_running_loop()
-        start = loop.time()
         try:
             result = await asyncio.wait_for(invoke(function, "sleep 600", timeout=1), 5)
         except asyncio.TimeoutError:
             result = None
-        elapsed = loop.time() - start
+        times["answer"] = loop.time()
         stuck.set()
         docker.gate.pop("call").set()
         await _settle(docker, registry)
-        return result, elapsed
-    result, elapsed = scenario(registry, body)
-    assert result is not None and elapsed < 3
+        return result
+    result = scenario(registry, body)
+    assert result is not None and "inventory" in times
+    assert times["inventory"] - times["cleanup"] >= 0.6
+    assert times["answer"] - times["cleanup"] < 1.3
     assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
 
 

@@ -103,9 +103,11 @@ un filtre seccomp ajouté qui refuse les attributs étendus, ACL comprises
 maintien sans réseau ni droit garde le volume monté entre deux appels ; il
 s'arrête seul à l'âge maximal, plus le délai maximal d'un
 appel et 60 s de marge. En fin d'appel, délai dépassé compris, un `docker ps`
-vérifie que le maintien tourne ou est en pause. S'il manque, le conteneur
-d'appel était le dernier à monter le volume : la réponse annonce
-`reason: lost` et la session reçoit un espace neuf. mcp-tools retire l'espace après l'inactivité
+vérifie que le maintien tourne ou est en pause. S'il manque, les fichiers
+disparaissent avec le dernier conteneur d'appel qui monte encore le volume :
+la réponse annonce `reason: lost` et l'espace n'est plus remis. L'appel suivant
+de la session reçoit un espace neuf si la capacité le permet, sinon un refus
+`capacity` jusqu'au retrait confirmé de l'ancien volume. mcp-tools retire l'espace après l'inactivité
 ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace
 reste compté dans la capacité jusqu'à ce que Docker confirme le retrait de
 son volume ; tant que la purge du démarrage n'est pas confirmée, aucun espace
