@@ -66,6 +66,22 @@ class FakeProcess:
         return self.returncode
 
 
+class BrokenClient(FakeProcess):
+    """Client docker run dont la connexion au démon tombe pendant l'appel."""
+
+    def __init__(self):
+        super().__init__(1)
+
+    async def communicate(self):
+        raise ConnectionResetError("connexion au démon Docker perdue")
+
+    def kill(self):
+        pass
+
+    async def wait(self):
+        return 1
+
+
 class GatedProcess(FakeProcess):
     """Client docker run d'un appel qui dure jusqu'à l'ouverture de la porte."""
 
@@ -85,6 +101,10 @@ class GatedProcess(FakeProcess):
     async def wait(self):
         await self.killed.wait()
         return -9
+
+
+def shell_workspace_call_name(docker):
+    return option(docker.calls[-1], "--name=")
 
 
 def option(args, prefix):
@@ -117,6 +137,12 @@ class FakeDocker:
         self.gate = {}
         # Conteneurs d'appel encore en marche après l'arrêt de leur client : nom -> volume monté.
         self.running = {}
+        # Sortie forcée de docker inspect (None : comportement de Docker).
+        self.inspect_output = None
+        # Le client docker run se termine mais laisse son conteneur en marche.
+        self.leave_running = False
+        # Le client docker run échoue en E/S pendant l'appel, conteneur en marche.
+        self.client_error = False
 
     def mounted(self):
         return {mounted_volume(args) for args in self.holders.values()} | set(self.running.values())
@@ -161,6 +187,12 @@ class FakeDocker:
                 # Docker a démarré le conteneur, mais le lancement du client n'a pas encore rendu la main.
                 self.running[option(args, "--name=")] = mounted_volume(args)
                 await self.gate["launch"].wait()
+            if self.client_error:
+                self.running[option(args, "--name=")] = mounted_volume(args)
+                return BrokenClient()
+            if self.leave_running:
+                self.running[option(args, "--name=")] = mounted_volume(args)
+                return FakeProcess(0, b"ok\n", b"")
             if "call" in self.gate:
                 # Le conteneur tourne tant que la porte reste fermée, même si son client est arrêté.
                 name = option(args, "--name=")
@@ -170,6 +202,8 @@ class FakeDocker:
         if verb == "inspect":
             if "inspect" in self.fail:
                 return FakeProcess(1)
+            if self.inspect_output is not None:
+                return FakeProcess(0, self.inspect_output)
             return FakeProcess(0, b"true\n") if args[-1] in self.holders else FakeProcess(1)
         if verb == "rm":
             if "rm" in self.fail:
@@ -1183,6 +1217,164 @@ def test_purge_restarts_after_stop_before_its_first_step(docker, registry, setti
         return registry._purged
     assert scenario(registry, body) is True
 
+async def _settle(docker, registry):
+    for _ in range(300):
+        if not docker.running and all(w.active == 0 and w.cleaning == 0 for w in registry.live()):
+            return
+        await asyncio.sleep(0.01)
+
+
+def test_call_does_not_promise_a_workspace_retired_while_it_ran(docker, registry, settings, monkeypatch):
+    """B, même session, échoue à retirer son conteneur pendant que A tourne : A n'annonce plus l'espace."""
+    real_run = shell._run_in_sandbox
+
+    async def run_then_other_call_fails(*args, **kwargs):
+        result = await real_run(*args, **kwargs)
+        other = registry.live()[0]
+        other.active += 1
+        registry.release(shell_workspace.Lease(other), orphaned=True)
+        return result
+    monkeypatch.setattr(shell, "_run_in_sandbox", run_then_other_call_fails)
+
+    async def body():
+        result = await invoke(handler())
+        await registry.stop()
+        return result
+    result = scenario(registry, body)
+    assert result["status"] == "success"
+    assert result["workspace"] == {"persistent": False, "reason": "orphaned"}
+    assert "a été retiré" in result["hint"]
+
+
+def test_client_exit_with_container_still_running_triggers_cleanup(docker, registry, settings):
+    """Client docker run terminé, conteneur encore en marche : l'espace n'est rendu qu'après son retrait."""
+    function = handler()
+    docker.leave_running = True
+
+    async def body():
+        first = await invoke(function)
+        docker.leave_running = False
+        await _settle(docker, registry)
+        second = await invoke(function)
+        return first, second
+    first, second = scenario(registry, body)
+    assert first["status"] == "success"
+    assert first["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    name = option(docker.calls[0], "--name=")
+    assert ["kill", name] in docker.commands and docker.running == {}
+    assert second["workspace"]["persistent"] is True and second["workspace"]["new"] is False
+    assert mounted_volume(docker.calls[1]) == mounted_volume(docker.calls[0])
+
+
+def test_client_failure_during_the_call_triggers_cleanup(docker, registry, settings):
+    function = handler()
+    docker.client_error = True
+
+    async def body():
+        first = await invoke(function)
+        docker.client_error = False
+        await _settle(docker, registry)
+        return first
+    first = scenario(registry, body)
+    assert first["status"] == "error" and "connexion" in first["message"]
+    assert first["workspace"]["persistent"] is False
+    assert first["workspace"]["reason"] in ("cleanup_pending", "orphaned")
+    name = option(docker.calls[0], "--name=")
+    assert ["kill", name] in docker.commands and docker.running == {}
+    assert [w.active for w in registry.live()] == [0]
+
+def test_timeout_response_does_not_wait_for_a_slow_cleanup(docker, registry, settings, monkeypatch):
+    monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 0.05)
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+    docker.gate["kill"] = asyncio.Event()
+
+    async def body():
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        try:
+            # Borne du test : une réponse qui attendrait tout le nettoyage échoue ici, sans bloquer.
+            result = await asyncio.wait_for(invoke(function, "sleep 600", timeout=1), 5)
+        except asyncio.TimeoutError:
+            result = None
+        elapsed = loop.time() - start
+        reserved = [w.active for w in registry.live()]
+        docker.gate.pop("kill").set()
+        await _settle(docker, registry)
+        docker.gate.pop("call").set()
+        return result, elapsed, reserved
+    result, elapsed, reserved = scenario(registry, body)
+    assert result is not None and elapsed < 3
+    assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    assert reserved == [1]
+    assert registry.live()[0].active == 0 and docker.running == {}
+
+
+def test_inspect_with_unexpected_output_keeps_the_workspace(docker, registry, settings):
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        volume = registry.live()[0].volume
+        docker.inspect_output = b""
+        docker.fail.add("ps")
+        during = await invoke(function)
+        return volume, during
+    volume, during = scenario(registry, body)
+    assert during["workspace"] == {"persistent": False, "reason": "unavailable"}
+    assert volume in docker.volumes and not any(c[:2] == ["volume", "rm"] for c in docker.commands)
+
+
+def test_missing_docker_cli_keeps_the_workspace_state(docker, registry, settings, monkeypatch):
+    docker.fail.add("volume create")
+
+    async def missing(*args, **kwargs):
+        raise FileNotFoundError("docker")
+    monkeypatch.setattr(shell, "_run_in_sandbox", missing)
+    result = scenario(registry, lambda: invoke(handler()))
+    assert result["message"].startswith("Docker CLI non trouvé")
+    assert result["workspace"] == {"persistent": False, "reason": "unavailable"}
+    # Sans session, la réponse reste celle de main.
+    plain = scenario(registry, lambda: invoke(handler(), sid=None))
+    assert set(plain) == {"status", "message"}
+
+
+def test_background_retry_does_not_carry_the_trace_of_the_call(docker, registry, settings, monkeypatch):
+    from src.mcp_tools import observability
+    monkeypatch.setattr(shell, "CLEANUP_CHECK_INTERVAL", 0)
+    monkeypatch.setattr(shell, "CLEANUP_RETRY_INTERVAL", 0.01)
+    seen = []
+    monkeypatch.setattr(shell, "record_activity",
+                        lambda event, **kw: seen.append((event, dict(observability._activity_context.get()))))
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        observability._activity_context.set({"actor": "caller-A", "trace_id": "trace-A"})
+        docker.fail.update({"kill", "rm"})
+        call = asyncio.ensure_future(invoke(function, "sleep 600", sid=None))
+        while not docker.running:
+            await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(300):
+            if shell._UNREMOVED:
+                break
+            await asyncio.sleep(0.01)
+        docker.fail.clear()
+        for _ in range(300):
+            if not shell._UNREMOVED:
+                break
+            await asyncio.sleep(0.01)
+        docker.gate.pop("call").set()
+    scenario(registry, body)
+    recovered = [context for event, context in seen if event == "sandbox.cleanup_recovered"]
+    failed = [context for event, context in seen if event == "sandbox.cleanup_failed"]
+    assert recovered == [{}]
+    # Le nettoyage de l'appel, lui, garde sa trace.
+    assert failed and failed[0].get("trace_id") == "trace-A"
+
 def test_workspace_stays_reserved_until_the_call_container_is_gone(docker, registry, settings, clock):
     function = handler()
     docker.gate["call"] = asyncio.Event()
@@ -1271,7 +1463,10 @@ def test_startup_purge_only_targets_this_instance(docker, registry, settings):
     assert ["rm", "-f", "old-holder", "old-call"] in docker.commands
     assert ["volume", "rm", "shellws-old"] in docker.commands
     # Inventaire, puis second inventaire qui confirme la purge ; aucun autre au deuxième appel.
-    assert sum(1 for c in docker.commands if c[0] == "ps") == 2
+    assert sum(1 for c in docker.commands if c[0] == "ps" and instance in c) == 2
+    # Seul autre ps : le contrôle du conteneur d'appel après la fin de son client.
+    assert [c for c in docker.commands if c[0] == "ps" and instance not in c] == [
+        ["ps", "-q", "--filter", f"name=^{shell_workspace_call_name(docker)}$", "--filter", "status=running"]]
     assert docker.leftover_containers == [] and docker.leftover_volumes == []
 
 

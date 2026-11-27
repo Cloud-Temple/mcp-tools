@@ -29,6 +29,7 @@ ne retire que les ressources de sa propre instance.
 """
 
 import asyncio
+import contextvars
 import hashlib
 import logging
 import re
@@ -270,6 +271,11 @@ def confined_command(shell: str, exec_flag: str, command: str) -> list[str]:
     return ["python3", "-I", "-S", "-c", XATTR_GUARD, shell, exec_flag, command]
 
 
+def background_task(coroutine) -> asyncio.Task:
+    """Tâche de fond sans le contexte de l'appel qui la lance : ses événements ne portent ni sa trace ni son acteur."""
+    return asyncio.get_running_loop().create_task(coroutine, context=contextvars.Context())
+
+
 async def _docker(*args: str, timeout: float = DOCKER_COMMAND_TIMEOUT) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         "docker", *args,
@@ -342,7 +348,7 @@ class WorkspaceRegistry:
 
     def _start_sweeper(self, settings) -> None:
         if self._sweeper is None or self._sweeper.done():
-            self._sweeper = asyncio.get_running_loop().create_task(self._sweep_forever(settings))
+            self._sweeper = background_task(self._sweep_forever(settings))
 
     async def stop(self) -> None:
         """Arrête nettoyage et purge en attente, puis attend les retraits lancés (tests, arrêt propre)."""
@@ -471,7 +477,7 @@ class WorkspaceRegistry:
         """
         try:
             code, out = await _docker("inspect", "--format", "{{.State.Running}}", workspace.holder)
-            if code == 0:
+            if code == 0 and out.strip() in ("true", "false"):
                 return out.strip() == "true"
             # inspect échoue aussi bien sur un conteneur absent que sur un démon
             # indisponible : seul un inventaire réussi et vide confirme l'absence.
@@ -547,7 +553,7 @@ class WorkspaceRegistry:
     def _spawn(self, coroutine) -> None:
         """Lance un retrait ou une purge hors du chemin de l'appel, sans que son annulation l'interrompe."""
         try:
-            task = asyncio.get_running_loop().create_task(coroutine)
+            task = background_task(coroutine)
         except RuntimeError:
             coroutine.close()
             return
@@ -565,7 +571,7 @@ class WorkspaceRegistry:
             return
         self._purging = True
         try:
-            self._purge_task = asyncio.get_running_loop().create_task(self._purge_in_background(settings))
+            self._purge_task = background_task(self._purge_in_background(settings))
         except RuntimeError:
             self._purging = False
 
@@ -653,6 +659,13 @@ class WorkspaceRegistry:
         for workspace in pending:
             self._spawn(self._destroy(workspace))
         return lease
+
+    def view(self, lease: Lease) -> Lease:
+        """État à annoncer en fin d'appel : un espace retiré pendant l'appel n'est plus promis."""
+        workspace = lease.workspace
+        if workspace is None or self._spaces.get(workspace.key) is workspace:
+            return lease
+        return Lease(None, reason=workspace.retire_reason or "lost")
 
     def release(self, lease: Lease, orphaned: bool = False) -> None:
         """Fin d'appel. Un espace retiré pendant l'appel passe à détruire maintenant.

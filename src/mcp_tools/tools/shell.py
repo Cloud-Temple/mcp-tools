@@ -16,6 +16,7 @@ Fallback : si SANDBOX_ENABLED=false (dev local), exécution locale via subproces
 """
 
 import asyncio
+import contextvars
 import sys
 import uuid
 from typing import Annotated, Optional
@@ -67,8 +68,17 @@ CWD_IGNORED_WORKSPACE_HINT = (
 )
 EPHEMERAL_REASONS = {
     "unavailable": "espace indisponible pour cet appel",
-    "orphaned": "arrêt du conteneur d'appel non confirmé, espace retiré",
 }
+# Espace retiré pendant ou après l'appel : il n'est plus remis, son démontage peut être en cours.
+RETIRED_REASONS = {
+    "orphaned": "arrêt d'un conteneur d'appel non confirmé",
+    "expired": "âge maximal ou inactivité atteints",
+    "lost": "conteneur de maintien perdu",
+}
+CLEANUP_PENDING_HINT = (
+    "Le retrait du conteneur de cet appel n'est pas encore confirmé : l'espace /tmp de cette "
+    "session peut ne plus être disponible à l'appel suivant ; le champ workspace de cet appel le dira. "
+)
 CAPACITY_MESSAGE = (
     "Capacité des espaces /tmp de session atteinte : la commande n'a pas été exécutée."
 )
@@ -80,6 +90,13 @@ CAPACITY_HINT = (
 
 
 def _ephemeral_hint(reason: Optional[str]) -> str:
+    if reason == "cleanup_pending":
+        return CLEANUP_PENDING_HINT + STATELESS_HINT
+    if reason in RETIRED_REASONS or reason in ("failed",):
+        cause = RETIRED_REASONS.get(reason, "création interrompue")
+        return (f"L'espace /tmp de cette session a été retiré ({cause}) : les fichiers écrits sous /tmp "
+                "ne seront pas disponibles à l'appel suivant, dont la réponse indiquera un espace neuf. "
+                + STATELESS_HINT)
     cause = EPHEMERAL_REASONS.get(reason or "", "indisponible")
     return (f"L'espace /tmp persistant de cette session n'est pas disponible ({cause}) : "
             "ce /tmp est éphémère et disparaît à la fin de l'appel. " + STATELESS_HINT)
@@ -132,6 +149,8 @@ CLEANUP_CHECKS = 10
 CLEANUP_CHECK_INTERVAL = 0.5
 # Conteneurs d'appel dont le retrait a échoué : retentés jusqu'au succès, avec ou sans espace.
 CLEANUP_RETRY_INTERVAL = 60
+# Attente maximale du nettoyage avant la réponse à un délai dépassé ; le nettoyage continue ensuite.
+CLEANUP_RESPONSE_WAIT = 10
 _UNREMOVED: set = set()
 _RETRY_TASK: Optional[asyncio.Task] = None
 # Nettoyages en cours : une référence les garde en vie jusqu'à leur fin.
@@ -195,7 +214,7 @@ def _remember_unremoved(name: str) -> None:
     _UNREMOVED.add(name)
     loop = asyncio.get_running_loop()
     if _RETRY_TASK is None or _RETRY_TASK.done() or _RETRY_TASK.get_loop() is not loop:
-        _RETRY_TASK = loop.create_task(_retry_unremoved())
+        _RETRY_TASK = loop.create_task(_retry_unremoved(), context=contextvars.Context())
 
 
 def _start_cleanup(process, container_name: str, cleanups: Optional[list], workspace=None) -> asyncio.Task:
@@ -249,6 +268,19 @@ def _cleanups_succeeded_now(cleanups: list) -> bool:
         return all(task.done() and task.result() is True for task in cleanups)
     except BaseException:
         return False
+
+
+def _shown_lease(lease, cleanups: list):
+    """Espace annoncé dans la réponse : jamais promis s'il est retiré ou si son nettoyage reste incertain."""
+    if lease is None or lease.workspace is None:
+        return lease
+    if cleanups:
+        if not all(task.done() for task in cleanups):
+            return shell_workspace.Lease(None, reason="cleanup_pending")
+        if not _cleanups_succeeded_now(cleanups):
+            # Le rappel de fin d'appel va retirer cet espace.
+            return shell_workspace.Lease(None, reason="orphaned")
+    return shell_workspace.registry.view(lease)
 
 
 def _end_cleanups(lease, count: int, done) -> None:
@@ -351,8 +383,10 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
-        # Tuer le process docker run ET le conteneur Docker
-        await asyncio.shield(_start_cleanup(process, container_name, cleanups, workspace))
+        # Tuer le process docker run ET le conteneur Docker. La réponse attend au plus
+        # CLEANUP_RESPONSE_WAIT : sur un Docker lent, le nettoyage continue après elle.
+        await asyncio.wait({_start_cleanup(process, container_name, cleanups, workspace)},
+                           timeout=CLEANUP_RESPONSE_WAIT)
         raise  # Re-raise pour que l'appelant gère le message d'erreur
     except asyncio.CancelledError:
         # Le SDK v2 propage l'annulation du client : docker run ne doit pas
@@ -361,6 +395,22 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         # Pas d'attente ici : l'annulation interromprait le nettoyage (#72).
         _start_cleanup(process, container_name, cleanups, workspace)
         raise
+    except Exception:
+        # Client docker run en échec (transport, E/S) : le conteneur a pu rester en marche.
+        if process is not None:
+            _start_cleanup(process, container_name, cleanups, workspace)
+        raise
+
+    if workspace is not None:
+        # Le client docker run peut se terminer en laissant le conteneur en marche
+        # (connexion au démon perdue). L'espace n'est rendu qu'une fois ce conteneur arrêté.
+        code, out = await _docker_quiet("ps", "-q", "--filter", f"name=^{container_name}$",
+                                        "--filter", "status=running")
+        if code != 0 or out.split():
+            record_activity("sandbox.still_running", level="warning",
+                            message="Sandbox encore en marche après la fin du client, nettoyage lancé",
+                            details={"sandbox_id": container_name})
+            _start_cleanup(process, container_name, cleanups, workspace)
 
     max_chars = settings.tool_max_output_chars
     record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
@@ -458,27 +508,28 @@ def register(mcp: MCPServer) -> None:
                         workspace=lease.workspace)
                 else:
                     result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
-                hint = _stateless_hint(result, cwd, lease)
+                shown = _shown_lease(lease, cleanups)
+                hint = _stateless_hint(result, cwd, shown)
                 if hint:
                     result["hint"] = hint
-                if lease is not None:
-                    result["workspace"] = lease.public(settings)
+                if shown is not None:
+                    result["workspace"] = shown.public(settings)
             else:
                 result = await _run_local(command, shell, cwd, timeout, settings)
 
             return result
 
         except asyncio.TimeoutError:
-            shown = lease
-            if lease is not None and lease.workspace is not None and not _cleanups_succeeded_now(cleanups):
-                # Le rappel de fin d'appel va retirer cet espace : ne pas le promettre.
-                shown = shell_workspace.Lease(None, reason="orphaned")
             return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."},
-                                  cwd_ignored, shown, settings)
+                                  cwd_ignored, _shown_lease(lease, cleanups), settings)
         except FileNotFoundError:
-            return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
+            response = {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
+            if lease is not None:
+                response = _with_cwd_hint(response, cwd_ignored, _shown_lease(lease, cleanups), settings)
+            return response
         except Exception as e:
-            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored, lease, settings)
+            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored,
+                                  _shown_lease(lease, cleanups), settings)
         finally:
             if lease is not None:
                 if cleanups:

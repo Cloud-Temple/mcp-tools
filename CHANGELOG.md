@@ -41,9 +41,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docker run`, le conteneur d'appel est arrêté et retiré dans une tâche à
   part. Auparavant, l'annulation interrompait ce nettoyage et le conteneur
   pouvait tourner jusqu'à la fin de sa commande. Si le retrait échoue, une
-  tâche le retente chaque minute jusqu'au succès, avec ou sans espace, et
-  l'espace de la session est retiré et reste compté jusqu'à son démontage.
-  Tant que ce retrait est en cours, l'espace n'est remis à aucun appel (#72).
+  tâche le retente chaque minute tant que le processus tourne, avec ou sans
+  espace ; un conteneur sans espace n'est pas retrouvé après un redémarrage.
+  L'espace de la session est alors retiré et reste compté jusqu'à son
+  démontage. Tant qu'un retrait est en cours, l'espace n'est remis à aucun
+  appel. Après un délai dépassé, la réponse attend ce retrait 10 s au plus.
+  Si le client `docker run` d'un appel avec espace se termine en laissant son
+  conteneur en marche, ce conteneur est retiré avant de rendre l'espace (#72).
 - `shell` : un contrôle Docker sans réponse sûre ne détruit plus l'espace
   d'une session ; seul un arrêt ou une absence confirmés du conteneur de
   maintien le font (#72).
