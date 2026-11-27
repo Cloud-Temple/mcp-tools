@@ -149,6 +149,8 @@ class Workspace:
     retire_reason: str = ""
     # Nettoyages de conteneurs d'appel en cours : l'espace n'est pas remis tant qu'il en reste.
     cleaning: int = 0
+    # Docker a confirmé l'absence du conteneur de maintien en fin d'appel : fichiers perdus.
+    holder_lost: bool = False
 
 
 @dataclass
@@ -662,20 +664,24 @@ class WorkspaceRegistry:
             self._spawn(self._destroy(workspace))
         return lease
 
-    def view(self, lease: Lease, settings) -> Lease:
+    def view(self, lease: Lease, settings, settled: int = 0) -> Lease:
         """État à annoncer en fin d'appel : jamais un espace que l'appel suivant ne retrouvera pas.
 
         Retiré pendant l'appel, âge maximal déjà atteint, ou conteneur d'appel en
         cours de retrait, cet appel ou un autre de la session : l'espace n'est pas promis.
+        `settled` : nettoyages de cet appel déjà confirmés, dont le rappel n'a pas
+        encore décompté `cleaning`.
         """
         workspace = lease.workspace
         if workspace is None:
             return lease
         if self._spaces.get(workspace.key) is not workspace:
             return Lease(None, reason=workspace.retire_reason or "lost")
+        if workspace.holder_lost:
+            return Lease(None, reason="lost")
         if self._clock() - workspace.created >= settings.shell_workspace_max_age_seconds:
             return Lease(None, reason="expired")
-        if workspace.cleaning:
+        if workspace.cleaning - settled > 0:
             return Lease(None, reason="cleanup_pending")
         return lease
 

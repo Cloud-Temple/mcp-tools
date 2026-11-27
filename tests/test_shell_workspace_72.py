@@ -217,10 +217,11 @@ class FakeDocker:
         if verb == "ps":
             if "ps" in self.fail:
                 return FakeProcess(1)
-            name = next((a[len("name=^"):-1] for a in args if a.startswith("name=^")), None)
-            if name is not None:
-                present = name in self.running or name in self.holders
-                return FakeProcess(0, (name + "\n").encode() if present else b"")
+            names = [a[len("name=^"):-1] for a in args if a.startswith("name=^")]
+            if names:
+                # Comme Docker : plusieurs filtres name se cumulent en « ou ».
+                present = [n for n in names if n in self.running or n in self.holders]
+                return FakeProcess(0, "".join(n + "\n" for n in present).encode())
             volume = next((a[len("volume="):] for a in args if a.startswith("volume=")), None)
             if volume is not None:
                 users = [n for n, v in self.running.items() if v == volume]
@@ -1243,7 +1244,7 @@ def test_call_does_not_promise_a_workspace_retired_while_it_ran(docker, registry
     result = scenario(registry, body)
     assert result["status"] == "success"
     assert result["workspace"] == {"persistent": False, "reason": "orphaned"}
-    assert "a été retiré" in result["hint"]
+    assert "n'est plus conservé" in result["hint"]
 
 
 def test_client_exit_with_container_still_running_triggers_cleanup(docker, registry, settings):
@@ -1348,7 +1349,7 @@ def test_call_finishing_after_max_age_does_not_promise_the_workspace(docker, reg
     monkeypatch.setattr(shell, "_run_in_sandbox", run_past_max_age)
     result = scenario(registry, lambda: invoke(handler()))
     assert result["workspace"] == {"persistent": False, "reason": "expired"}
-    assert "a été retiré" in result["hint"] and "espace neuf" not in result["hint"].split("dira")[0]
+    assert "n'est plus conservé" in result["hint"] and "a été retiré" not in result["hint"]
 
 
 def test_hints_never_promise_what_the_server_has_not_established(docker, registry, settings, monkeypatch):
@@ -1382,6 +1383,68 @@ def test_startup_purge_on_the_first_call_does_not_carry_its_trace(docker, regist
     created = [context for event, context in seen if event == "shell.workspace.created"]
     assert purged == [{}]
     assert created and created[0].get("trace_id") == "trace-A"
+
+def test_holder_lost_during_the_call_is_reported(docker, registry, settings, monkeypatch):
+    """Le maintien s'arrête pendant l'appel : ses fichiers disparaissent avec le conteneur d'appel."""
+    real_run = shell._run_in_sandbox
+    function = handler()
+
+    async def run_while_holder_stops(*args, **kwargs):
+        docker.holders.clear()
+        return await real_run(*args, **kwargs)
+
+    async def body():
+        await invoke(function)
+        old = registry.live()[0].volume
+        monkeypatch.setattr(shell, "_run_in_sandbox", run_while_holder_stops)
+        during = await invoke(function)
+        monkeypatch.setattr(shell, "_run_in_sandbox", real_run)
+        after = await invoke(function)
+        return old, during, after
+    old, during, after = scenario(registry, body)
+    assert during["status"] == "success"
+    assert during["workspace"] == {"persistent": False, "reason": "lost"}
+    assert after["workspace"]["new"] is True and after["workspace"]["reason"] == "lost"
+    assert mounted_volume(docker.calls[-1]) != old
+
+
+def test_uncertain_end_check_does_not_declare_the_holder_lost(docker, registry, settings):
+    """Inventaire de fin d'appel en échec : rien ne prouve la perte du maintien ; le conteneur d'appel est retiré."""
+    function = handler()
+    docker.gate["kill"] = asyncio.Event()
+
+    async def body():
+        await invoke(function)
+        workspace = registry.live()[0]
+        docker.fail.add("ps")
+        during = await invoke(function)
+        lost = workspace.holder_lost
+        docker.fail.discard("ps")
+        docker.gate.pop("kill").set()
+        await _settle(docker, registry)
+        return during, lost
+    during, lost = scenario(registry, body)
+    assert lost is False
+    assert during["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    assert any(c[0] == "kill" for c in docker.commands)
+
+def test_timeout_with_confirmed_cleanup_keeps_announcing_the_workspace(docker, registry, settings):
+    """Délai dépassé, retrait confirmé avant la réponse : les fichiers restent, l'espace est annoncé."""
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        await asyncio.sleep(0)
+        result = await invoke(function, "sleep 600", timeout=1)
+        docker.gate.pop("call").set()
+        await _settle(docker, registry)
+        after = await invoke(function)
+        return result, after
+    result, after = scenario(registry, body)
+    assert result["message"].startswith("Timeout")
+    assert result["workspace"]["persistent"] is True
+    assert after["workspace"]["persistent"] is True and after["workspace"]["new"] is False
+    assert mounted_volume(docker.calls[0]) == mounted_volume(docker.calls[1])
 
 def test_timeout_response_does_not_wait_for_a_slow_cleanup(docker, registry, settings, monkeypatch):
     monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 0.05)
@@ -1565,8 +1628,10 @@ def test_startup_purge_only_targets_this_instance(docker, registry, settings):
     # Inventaire, puis second inventaire qui confirme la purge ; aucun autre au deuxième appel.
     assert sum(1 for c in docker.commands if c[0] == "ps" and instance in c) == 2
     # Seul autre ps : le contrôle du conteneur d'appel après la fin de son client.
+    holder = next(iter(docker.holders))
     assert [c for c in docker.commands if c[0] == "ps" and instance not in c] == [
-        ["ps", "-q", "--filter", f"name=^{shell_workspace_call_name(docker)}$", "--filter", "status=running"]]
+        ["ps", "--format", "{{.Names}}", "--filter", f"name=^{shell_workspace_call_name(docker)}$",
+         "--filter", f"name=^{holder}$", "--filter", "status=running"]]
     assert docker.leftover_containers == [] and docker.leftover_volumes == []
 
 

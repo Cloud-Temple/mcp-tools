@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   conteneur neuf : `cd`, variables et processus ne passent toujours pas.
   L'espace est un volume tmpfs propre au couple identifiant de session et jeton
   validé par `AuthMiddleware`, jamais tiré d'un argument. Il est gardé monté
-  par un conteneur de maintien sans réseau ni droit, qui s'arrête seul à l'âge
+  par un conteneur de maintien sans réseau ni droit, qui s'arrête seul peu après l'âge
   maximal. Bornes réglables : 256 Mio de mémoire noyau par espace, entrées et
   index des pages compris (152 Mio de données, 16384 entrées, fichier de
   152 Mio au plus), 4 Gio au total, 15 min d'inactivité, 2 h au plus

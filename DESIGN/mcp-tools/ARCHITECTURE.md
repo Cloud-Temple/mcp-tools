@@ -101,7 +101,8 @@ au pire données, entrées et index (`tmpfs_layout`). La commande y tourne sous
 un filtre seccomp ajouté qui refuse les attributs étendus, ACL comprises
 (`XATTR_GUARD`). Un conteneur de
 maintien sans réseau ni droit garde le volume monté entre deux appels ; il
-s'arrête seul à l'âge maximal. mcp-tools retire l'espace après l'inactivité
+s'arrête seul à l'âge maximal, plus le délai maximal d'un
+appel et 60 s de marge. mcp-tools retire l'espace après l'inactivité
 ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace
 reste compté dans la capacité jusqu'à ce que Docker confirme le retrait de
 son volume ; tant que la purge du démarrage n'est pas confirmée, aucun espace
