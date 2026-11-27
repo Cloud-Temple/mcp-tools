@@ -76,8 +76,10 @@ RETIRED_REASONS = {
     "lost": "conteneur de maintien perdu",
 }
 CLEANUP_PENDING_HINT = (
-    "Le retrait du conteneur de cet appel n'est pas encore confirmé : l'espace /tmp de cette "
-    "session peut ne plus être disponible à l'appel suivant ; le champ workspace de cet appel le dira. "
+    "Le retrait d'un conteneur d'appel de cette session n'est pas encore confirmé : l'espace /tmp "
+    "peut être indisponible à l'appel suivant, et ses fichiers peuvent être perdus. Le champ "
+    "workspace de l'appel suivant dira son état. Pour ne pas en dépendre, enchaîner les étapes "
+    "dépendantes dans une seule commande, ou conserver le résultat avec l'outil files."
 )
 CAPACITY_MESSAGE = (
     "Capacité des espaces /tmp de session atteinte : la commande n'a pas été exécutée."
@@ -91,12 +93,13 @@ CAPACITY_HINT = (
 
 def _ephemeral_hint(reason: Optional[str]) -> str:
     if reason == "cleanup_pending":
-        return CLEANUP_PENDING_HINT + STATELESS_HINT
+        return CLEANUP_PENDING_HINT
     if reason in RETIRED_REASONS or reason in ("failed",):
         cause = RETIRED_REASONS.get(reason, "création interrompue")
         return (f"L'espace /tmp de cette session a été retiré ({cause}) : les fichiers écrits sous /tmp "
-                "ne seront pas disponibles à l'appel suivant, dont la réponse indiquera un espace neuf. "
-                + STATELESS_HINT)
+                "ne seront pas disponibles à l'appel suivant ; le champ workspace de cet appel dira "
+                "s'il reçoit un espace neuf. Enchaîner les étapes dépendantes dans une seule commande, "
+                "ou conserver le résultat avec l'outil files.")
     cause = EPHEMERAL_REASONS.get(reason or "", "indisponible")
     return (f"L'espace /tmp persistant de cette session n'est pas disponible ({cause}) : "
             "ce /tmp est éphémère et disparaît à la fin de l'appel. " + STATELESS_HINT)
@@ -280,7 +283,7 @@ def _shown_lease(lease, cleanups: list):
         if not _cleanups_succeeded_now(cleanups):
             # Le rappel de fin d'appel va retirer cet espace.
             return shell_workspace.Lease(None, reason="orphaned")
-    return shell_workspace.registry.view(lease)
+    return shell_workspace.registry.view(lease, get_settings())
 
 
 def _end_cleanups(lease, count: int, done) -> None:
@@ -404,8 +407,13 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     if workspace is not None:
         # Le client docker run peut se terminer en laissant le conteneur en marche
         # (connexion au démon perdue). L'espace n'est rendu qu'une fois ce conteneur arrêté.
-        code, out = await _docker_quiet("ps", "-q", "--filter", f"name=^{container_name}$",
-                                        "--filter", "status=running")
+        try:
+            code, out = await _docker_quiet("ps", "-q", "--filter", f"name=^{container_name}$",
+                                            "--filter", "status=running")
+        except asyncio.CancelledError:
+            # Annulé pendant le contrôle : l'état du conteneur reste inconnu, il est retiré.
+            _start_cleanup(process, container_name, cleanups, workspace)
+            raise
         if code != 0 or out.split():
             record_activity("sandbox.still_running", level="warning",
                             message="Sandbox encore en marche après la fin du client, nettoyage lancé",
@@ -525,7 +533,8 @@ def register(mcp: MCPServer) -> None:
         except FileNotFoundError:
             response = {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
             if lease is not None:
-                response = _with_cwd_hint(response, cwd_ignored, _shown_lease(lease, cleanups), settings)
+                # La commande n'a pas démarré : pas d'indice sur cwd.
+                response = _with_cwd_hint(response, False, _shown_lease(lease, cleanups), settings)
             return response
         except Exception as e:
             return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored,

@@ -592,7 +592,9 @@ class WorkspaceRegistry:
         lock = self._bind_loop()
         async with lock:
             self._start_sweeper(settings)
-            if not await self._ensure_purged(settings):
+            # Purge dans une tâche sans le contexte de l'appel : ses événements ne
+            # portent ni l'acteur ni la trace du premier appelant.
+            if not await background_task(self._ensure_purged(settings)):
                 return Lease(None, reason="unavailable")
             # Les retraits déjà en attente sont retentés par le nettoyage
             # périodique, pas sur le chemin d'un appel.
@@ -660,12 +662,22 @@ class WorkspaceRegistry:
             self._spawn(self._destroy(workspace))
         return lease
 
-    def view(self, lease: Lease) -> Lease:
-        """État à annoncer en fin d'appel : un espace retiré pendant l'appel n'est plus promis."""
+    def view(self, lease: Lease, settings) -> Lease:
+        """État à annoncer en fin d'appel : jamais un espace que l'appel suivant ne retrouvera pas.
+
+        Retiré pendant l'appel, âge maximal déjà atteint, ou conteneur d'appel en
+        cours de retrait, cet appel ou un autre de la session : l'espace n'est pas promis.
+        """
         workspace = lease.workspace
-        if workspace is None or self._spaces.get(workspace.key) is workspace:
+        if workspace is None:
             return lease
-        return Lease(None, reason=workspace.retire_reason or "lost")
+        if self._spaces.get(workspace.key) is not workspace:
+            return Lease(None, reason=workspace.retire_reason or "lost")
+        if self._clock() - workspace.created >= settings.shell_workspace_max_age_seconds:
+            return Lease(None, reason="expired")
+        if workspace.cleaning:
+            return Lease(None, reason="cleanup_pending")
+        return lease
 
     def release(self, lease: Lease, orphaned: bool = False) -> None:
         """Fin d'appel. Un espace retiré pendant l'appel passe à détruire maintenant.

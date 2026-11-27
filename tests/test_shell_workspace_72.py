@@ -1283,6 +1283,106 @@ def test_client_failure_during_the_call_triggers_cleanup(docker, registry, setti
     assert ["kill", name] in docker.commands and docker.running == {}
     assert [w.active for w in registry.live()] == [0]
 
+def test_cancellation_during_the_post_call_check_keeps_the_reservation(docker, registry, settings):
+    """Annulé pendant le docker ps de fin d'appel : le conteneur peut tourner, l'espace reste réservé."""
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        docker.leave_running = True
+        docker.gate["ps"] = asyncio.Event()
+        call = asyncio.ensure_future(invoke(function))
+        # Le premier appel a déjà fait son contrôle : attendre celui du second.
+        while sum(1 for c in docker.commands if c[0] == "ps" and "status=running" in c) < 2:
+            await asyncio.sleep(0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.sleep(0.01)
+        during = [(w.active, w.cleaning) for w in registry.live()]
+        docker.leave_running = False
+        docker.gate.pop("ps").set()
+        await _settle(docker, registry)
+        return during
+    during = scenario(registry, body)
+    assert during == [(1, 1)]
+    name = option(docker.calls[1], "--name=")
+    assert ["kill", name] in docker.commands and docker.running == {}
+    assert [w.active for w in registry.live()] == [0]
+
+
+def test_call_reports_a_concurrent_cleanup_of_its_session(docker, registry, settings):
+    """A et B partagent l'espace ; B est annulé, son retrait traîne : A n'annonce pas l'espace."""
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+    docker.gate["kill"] = asyncio.Event()
+
+    async def body():
+        first = asyncio.ensure_future(invoke(function, "sleep 1"))
+        second = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while len(docker.running) < 2:
+            await asyncio.sleep(0)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        docker.gate.pop("call").set()
+        result = await first
+        docker.gate.pop("kill").set()
+        await _settle(docker, registry)
+        return result
+    result = scenario(registry, body)
+    assert result["status"] == "success"
+    assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    assert "détruit à la fin de l'appel" not in result["hint"]
+
+
+def test_call_finishing_after_max_age_does_not_promise_the_workspace(docker, registry, settings, clock, monkeypatch):
+    settings["value"] = make_settings(shell_workspace_idle_seconds=100_000)
+    max_age = settings["value"].shell_workspace_max_age_seconds
+    real_run = shell._run_in_sandbox
+
+    async def run_past_max_age(*args, **kwargs):
+        result = await real_run(*args, **kwargs)
+        clock.now += max_age
+        return result
+    monkeypatch.setattr(shell, "_run_in_sandbox", run_past_max_age)
+    result = scenario(registry, lambda: invoke(handler()))
+    assert result["workspace"] == {"persistent": False, "reason": "expired"}
+    assert "a été retiré" in result["hint"] and "espace neuf" not in result["hint"].split("dira")[0]
+
+
+def test_hints_never_promise_what_the_server_has_not_established(docker, registry, settings, monkeypatch):
+    retired = shell._ephemeral_hint("orphaned")
+    assert "indiquera un espace neuf" not in retired and "dira s'il reçoit un espace neuf" in retired
+    pending = shell._ephemeral_hint("cleanup_pending")
+    assert "détruit à la fin de l'appel" not in pending and "pas encore confirmé" in pending
+    docker.fail.add("volume create")
+
+    async def missing(*args, **kwargs):
+        raise FileNotFoundError("docker")
+    monkeypatch.setattr(shell, "_run_in_sandbox", missing)
+    result = scenario(registry, lambda: invoke(handler(), cwd="/tmp/a"))
+    assert "a démarré" not in result["hint"]
+    assert result["workspace"] == {"persistent": False, "reason": "unavailable"}
+
+
+def test_startup_purge_on_the_first_call_does_not_carry_its_trace(docker, registry, settings, monkeypatch):
+    from src.mcp_tools import observability
+    docker.leftover_containers = ["old-holder"]
+    seen = []
+    monkeypatch.setattr(shell_workspace, "record_activity",
+                        lambda event, **kw: seen.append((event, dict(observability._activity_context.get()))))
+
+    async def body():
+        observability._activity_context.set({"actor": "caller-A", "trace_id": "trace-A"})
+        return await invoke(handler())
+    result = scenario(registry, body)
+    assert result["workspace"]["persistent"] is True
+    purged = [context for event, context in seen if event == "shell.workspace.purged"]
+    created = [context for event, context in seen if event == "shell.workspace.created"]
+    assert purged == [{}]
+    assert created and created[0].get("trace_id") == "trace-A"
+
 def test_timeout_response_does_not_wait_for_a_slow_cleanup(docker, registry, settings, monkeypatch):
     monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 0.05)
     function = handler()
