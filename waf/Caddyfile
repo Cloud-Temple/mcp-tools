@@ -186,9 +186,18 @@
 	# =========================================================================
 	# Logging
 	# =========================================================================
+	# L'identifiant de session MCP donne accès à l'espace /tmp de shell de la
+	# session (#72) : il ne sort pas dans le journal d'accès, ni en requête ni
+	# en réponse. Caddy masque déjà Authorization et les cookies.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>Mcp-Session-Id delete
+				resp_headers>Mcp-Session-Id delete
+			}
+		}
 		level INFO
 	}
 }

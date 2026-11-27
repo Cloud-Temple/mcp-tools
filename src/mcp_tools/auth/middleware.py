@@ -4,13 +4,17 @@ Middlewares ASGI : authentification pour mcp-tools.
 Vérifie le Bearer token et injecte ses infos pour les outils.
 """
 
+import hashlib
 import hmac
 import json
 import time
 import sys
 from typing import Optional
 
-from .context import current_token_info
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
+
+from .context import current_credential_sha256, current_token_info
 from .token_store import TokenStoreUnavailable
 from ..config import get_settings
 from ..observability import bind_activity, get_activity_context, record_activity
@@ -90,10 +94,20 @@ class AuthMiddleware:
                 details={"role": "admin" if "admin" in token_info.get("permissions", []) else "access"},
             )
 
+        digest = hashlib.sha256(token.encode()).hexdigest()
         tok = current_token_info.set(token_info)
+        # Empreinte du jeton validé ci-dessus, pour lier un espace shell à ce jeton (#72).
+        credential = current_credential_sha256.set(digest)
+        # Lie la session MCP au jeton qui l'a ouverte (#72). Le gestionnaire de
+        # sessions du SDK compare cette identité à chaque requête et répond 404,
+        # avant tout routage, à un autre jeton qui présente l'identifiant. Sans
+        # elle, deux jetons partageaient le transport, donc sa table de réponses.
+        scope = {**scope, "user": AuthenticatedUser(
+            AccessToken(token=digest, client_id=f"sha256:{digest}", scopes=[]))}
         try:
             await self.app(scope, receive, send)
         finally:
+            current_credential_sha256.reset(credential)
             current_token_info.reset(tok)
 
     def _extract_token(self, scope) -> Optional[str]:

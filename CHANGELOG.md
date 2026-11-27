@@ -8,11 +8,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.11.1] — en préparation, non publiée
 
+### Changed
+
+- `shell` : en sandbox, les fichiers écrits sous `/tmp` peuvent être conservés
+  entre les appels d'une même session MCP (#72). Désactivé par défaut
+  (`SHELL_WORKSPACE_MAX_COUNT=0`) : l'identifiant de session devient un secret
+  d'accès à ce `/tmp`. À activer, avec 16 espaces, seulement si chaque mission
+  a son propre jeton ou si le client ne journalise pas cet identifiant
+  (mcp-agent#618). Une fois activé, un worker qui télécharge et décompresse
+  des sources à un appel les retrouve à l'appel suivant. Chaque appel garde un
+  conteneur neuf : `cd`, variables et processus ne passent toujours pas.
+  L'espace est un volume tmpfs propre au couple identifiant de session et jeton
+  validé par `AuthMiddleware`, jamais tiré d'un argument. Il est gardé monté
+  par un conteneur de maintien sans réseau ni droit, qui s'arrête seul peu après l'âge
+  maximal. Bornes réglables : 256 Mio de mémoire noyau par espace, entrées et
+  index des pages compris (152 Mio de données, 16384 entrées, fichier de
+  152 Mio au plus), 4 Gio au total, 15 min d'inactivité, 2 h au plus
+  (`SHELL_WORKSPACE_*`) ; `0` espace rend le comportement antérieur. Dans un
+  appel avec espace, la taille d'un fichier est limitée à celle des données,
+  partout dans le conteneur, et les attributs étendus, ACL POSIX comprises,
+  sont refusés (`EOPNOTSUPP`) : le noyau les garderait hors du budget. Au-delà de la capacité, la commande n'est pas exécutée :
+  la réponse est une erreur avec `workspace.reason: capacity` et un `hint`.
+  Si l'espace ne peut pas être créé pour une autre raison, la commande
+  s'exécute avec le `/tmp` éphémère et la réponse le dit
+  (`workspace.persistent: false`, `reason: unavailable`).
+  Sans session MCP, ou sur le chemin sans session du SDK (protocole
+  `2026-07-28`), rien ne change. La réponse porte un champ `workspace` sans
+  identifiant, y compris après un délai dépassé. Un espace reste compté dans la
+  capacité jusqu'au retrait confirmé de son volume. Au premier appel sandbox,
+  la purge retire les espaces d'un processus précédent, même avec `0` espace.
+- `shell` : après une annulation MCP, y compris pendant le lancement de
+  `docker run`, le conteneur d'appel est arrêté et retiré dans une tâche à
+  part. Auparavant, l'annulation interrompait ce nettoyage et le conteneur
+  pouvait tourner jusqu'à la fin de sa commande. Si le retrait échoue, une
+  tâche le retente chaque minute tant que le processus tourne, avec ou sans
+  espace ; un conteneur sans espace n'est pas retrouvé après un redémarrage.
+  L'espace de la session est alors retiré et reste compté jusqu'à son
+  démontage. Tant qu'un retrait est en cours, l'espace n'est remis à aucun
+  appel. Après un délai dépassé, la réponse attend ce retrait 10 s au plus.
+  Si le client `docker run` d'un appel avec espace se termine en laissant son
+  conteneur en marche, ce conteneur est retiré avant de rendre l'espace (#72).
+- `shell` : un contrôle Docker sans réponse sûre ne détruit plus l'espace
+  d'une session ; seul un arrêt ou une absence confirmés du conteneur de
+  maintien le font. Un maintien en pause compte comme présent. Si Docker
+  confirme l'arrêt du maintien pendant un appel, la réponse de cet appel
+  annonce `reason: lost`, y compris après un délai dépassé, et l'espace n'est
+  plus remis. Sans confirmation dans le délai de réponse, elle annonce
+  `reason: cleanup_pending` (#72).
+- Une session MCP est liée au jeton qui l'a ouverte : un autre jeton qui
+  présente son identifiant reçoit 404 du SDK, avant tout routage. Auparavant,
+  deux jetons valides pouvaient partager le transport d'une session (#72).
+- L'identifiant de session MCP ne sort plus en clair : les journaux du SDK le
+  remplacent par une empreinte courte, et le journal d'accès du WAF ne garde
+  plus l'en-tête `Mcp-Session-Id` (#72).
+
 ### Fixed
 
+- `shell` : la description de `network` disait que `network=true` retirait
+  `noexec` de `/tmp`. Docker ajoute `noexec` à un `--tmpfs` qui ne demande pas
+  `exec` : `/tmp` reste non exécutable dans tous les modes. Seule la
+  description change, pas les droits de la sandbox (#72).
+
 - `shell` : la description de l'outil et celles de `command` et `cwd` disent
-  qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun fichier, `cd`
-  ni variable ne passe à l'appel suivant. En sandbox, la réponse porte un champ
+  qu'en sandbox chaque appel démarre dans un conteneur neuf. Aucun `cd` ni
+  variable ne passe à l'appel suivant. Un fichier non plus, sauf sous `/tmp`
+  dans une session MCP depuis #72. En sandbox, la réponse porte un champ
   `hint` quand `cwd` est fourni, donc ignoré, ou quand un échec signale « No such
   file or directory ». `status`, `returncode`, `stdout` et `stderr` ne changent
   pas. Le CLI affiche `hint` (#68).

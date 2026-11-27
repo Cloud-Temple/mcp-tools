@@ -89,6 +89,33 @@ lancé via `docker run --rm` avec les contraintes de sécurité suivantes :
 | `--no-new-privileges` | Pas d'escalade          | Bloque setuid/setgid                   |
 | `--tmpfs /tmp:noexec` | Temp sans exec          | Pas d'exécution depuis /tmp            |
 
+**Espace /tmp de session (#72)** : désactivé par défaut
+(`SHELL_WORKSPACE_MAX_COUNT=0`). Une fois activé, pour une requête d'une session MCP
+authentifiée, `/tmp` est un volume tmpfs (`size`, `nr_inodes`,
+`mode=1777,nosuid,nodev,noexec`) propre au couple identifiant de session et
+jeton validé. `AuthMiddleware` renseigne `scope["user"]` avec l'empreinte du
+jeton : le SDK refuse en 404 une session présentée par un autre jeton. Le
+conteneur d'appel reçoit `--ulimit fsize` : la taille d'un fichier, donc la
+hauteur de l'index de ses pages, reste bornée ; `size_bytes` de 256 Mio couvre
+au pire données, entrées et index (`tmpfs_layout`). La commande y tourne sous
+un filtre seccomp ajouté qui refuse les attributs étendus, ACL comprises
+(`XATTR_GUARD`). Un conteneur de
+maintien sans réseau ni droit garde le volume monté entre deux appels ; il
+s'arrête seul à l'âge maximal, plus le délai maximal d'un
+appel et 60 s de marge. En fin d'appel, délai dépassé compris, un `docker ps`
+vérifie que le maintien tourne ou est en pause. S'il manque, les fichiers
+disparaissent avec le dernier conteneur d'appel qui monte encore le volume :
+la réponse annonce `reason: lost` et l'espace n'est plus remis. L'appel suivant
+de la session reçoit un espace neuf si la capacité le permet, sinon un refus
+`capacity` jusqu'au retrait confirmé de l'ancien volume. mcp-tools retire l'espace après l'inactivité
+ou l'âge maximal, et purge au démarrage les espaces de son instance. Un espace
+reste compté dans la capacité jusqu'à ce que Docker confirme le retrait de
+son volume ; tant que la purge du démarrage n'est pas confirmée, aucun espace
+n'est créé. Capacité pleine : l'appel d'une session sans espace est refusé
+sans exécuter la commande (`workspace.reason: capacity`). Bornes :
+`SHELL_WORKSPACE_*` (`src/mcp_tools/config.py`). La table des espaces vit dans
+le processus : mcp-tools reste mono-processus.
+
 **Image sandbox** : `mcp-tools-sandbox` (Alpine 3.24 + bash, coreutils,
 grep, sed, awk, jq, bc, curl, git, openssl, gnupg, python3, node).
 Buildée par `docker compose up`.

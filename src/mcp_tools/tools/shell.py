@@ -16,6 +16,7 @@ Fallback : si SANDBOX_ENABLED=false (dev local), exécution locale via subproces
 """
 
 import asyncio
+import contextvars
 import sys
 import uuid
 from typing import Annotated, Optional
@@ -24,6 +25,7 @@ from mcp.server.mcpserver import MCPServer, Context
 from ..auth.context import check_tool_access
 from ..config import get_settings
 from ..observability import record_activity, traced_tool
+from . import shell_workspace
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -48,20 +50,91 @@ CWD_IGNORED_HINT = (
     "dans le même appel que la création du répertoire."
 )
 MISSING_PATH = "No such file or directory"
+# Indices quand la session a un espace /tmp (#72).
+WORKSPACE_HINT = (
+    "Seuls les fichiers écrits sous /tmp sont conservés entre les appels shell de cette session MCP ; "
+    "le répertoire courant et les variables ne le sont pas : utiliser des chemins absolus sous /tmp "
+    "(par exemple cd /tmp/a && make). Un chemin créé par une autre étape, un autre worker, "
+    "ou avant l'expiration de l'espace n'existe pas ici : le recréer dans cette session, "
+    "ou conserver le résultat avec l'outil files."
+)
+NEW_WORKSPACE_HINT = (
+    "L'espace /tmp de cette session vient d'être créé : aucun fichier d'un appel antérieur n'y figure. "
+    + WORKSPACE_HINT
+)
+CWD_IGNORED_WORKSPACE_HINT = (
+    "cwd est ignoré en sandbox : la commande a démarré dans le répertoire par défaut. "
+    "Écrire cd <répertoire> && ... dans command."
+)
+EPHEMERAL_REASONS = {
+    "unavailable": "espace indisponible pour cet appel",
+}
+# Espace retiré pendant ou après l'appel : il n'est plus remis, son démontage peut être en cours.
+RETIRED_REASONS = {
+    "orphaned": "arrêt d'un conteneur d'appel non confirmé",
+    "expired": "âge maximal ou inactivité atteints",
+    "lost": "conteneur de maintien perdu",
+}
+CLEANUP_PENDING_HINT = (
+    "Le retrait d'un conteneur d'appel de cette session n'est pas encore confirmé : l'espace /tmp "
+    "peut être indisponible à l'appel suivant, et ses fichiers peuvent être perdus. Le champ "
+    "workspace de l'appel suivant dira son état. Pour ne pas en dépendre, enchaîner les étapes "
+    "dépendantes dans une seule commande, ou conserver le résultat avec l'outil files."
+)
+CAPACITY_MESSAGE = (
+    "Capacité des espaces /tmp de session atteinte : la commande n'a pas été exécutée."
+)
+CAPACITY_HINT = (
+    "Aucun espace /tmp de session n'est libre sur le serveur. Réessayer plus tard : "
+    "un espace inactif est libéré après idle_seconds. Ne pas supposer que les fichiers "
+    "d'un appel antérieur de cette session existent."
+)
 
 
-def _stateless_hint(result: dict, cwd: Optional[str]) -> Optional[str]:
-    """Indice si un cwd non vide a été ignoré, ou si un échec signale un chemin absent."""
-    if cwd:
-        return CWD_IGNORED_HINT
-    if result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or ""):
-        return STATELESS_HINT
-    return None
+def _ephemeral_hint(reason: Optional[str]) -> str:
+    if reason == "cleanup_pending":
+        return CLEANUP_PENDING_HINT
+    if reason in RETIRED_REASONS or reason in ("failed",):
+        cause = RETIRED_REASONS.get(reason, "création interrompue")
+        return (f"L'espace /tmp de cette session n'est plus conservé ({cause}) : les fichiers écrits sous /tmp "
+                "ne seront pas disponibles à l'appel suivant ; le champ workspace de l'appel suivant dira "
+                "s'il reçoit un espace neuf. Enchaîner les étapes dépendantes dans une seule commande, "
+                "ou conserver le résultat avec l'outil files.")
+    cause = EPHEMERAL_REASONS.get(reason or "", "indisponible")
+    return (f"L'espace /tmp persistant de cette session n'est pas disponible ({cause}) : "
+            "ce /tmp est éphémère et disparaît à la fin de l'appel. " + STATELESS_HINT)
 
 
-def _with_cwd_hint(response: dict, cwd_ignored: bool) -> dict:
-    if cwd_ignored:
-        response["hint"] = CWD_IGNORED_HINT
+def _stateless_hint(result: dict, cwd: Optional[str], lease=None) -> Optional[str]:
+    """Indice si un cwd non vide a été ignoré, si /tmp est éphémère malgré une session,
+    ou si un échec signale un chemin absent."""
+    missing = result.get("returncode") not in (0, None) and MISSING_PATH in (result.get("stderr") or "")
+    if lease is None:
+        # Sans session : texte identique à celui d'avant #72.
+        if cwd:
+            return CWD_IGNORED_HINT
+        return STATELESS_HINT if missing else None
+    hints = [CWD_IGNORED_WORKSPACE_HINT] if cwd else []
+    if lease.workspace is None:
+        hints.append(_ephemeral_hint(lease.reason))
+    elif missing:
+        hints.append(NEW_WORKSPACE_HINT if lease.new else WORKSPACE_HINT)
+    return " ".join(hints) or None
+
+
+def _with_cwd_hint(response: dict, cwd_ignored: bool, lease=None, settings=None) -> dict:
+    """Réponse d'erreur : garde l'état de /tmp quand la session a demandé un espace (#72).
+
+    Après un délai dépassé, la commande a pu écrire dans l'espace avant d'être arrêtée.
+    """
+    if lease is None:
+        if cwd_ignored:
+            response["hint"] = CWD_IGNORED_HINT
+        return response
+    hint = _stateless_hint({}, "cwd" if cwd_ignored else None, lease)
+    if hint:
+        response["hint"] = hint
+    response["workspace"] = lease.public(settings)
     return response
 
 
@@ -74,33 +147,201 @@ SHELL_EXEC_FLAGS = {
 }
 
 
-async def _kill_container(name: str) -> None:
-    """Force-kill et supprime un conteneur Docker par son nom."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "kill", name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-    except Exception:
-        pass
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-    except Exception:
-        pass
+DOCKER_CLEANUP_TIMEOUT = 15
+CLEANUP_CHECKS = 10
+CLEANUP_CHECK_INTERVAL = 0.5
+# Conteneurs d'appel dont le retrait a échoué : retentés jusqu'au succès, avec ou sans espace.
+CLEANUP_RETRY_INTERVAL = 60
+# Attente maximale du nettoyage avant la réponse à un délai dépassé ; le nettoyage continue ensuite.
+CLEANUP_RESPONSE_WAIT = 10
+_UNREMOVED: set = set()
+_RETRY_TASK: Optional[asyncio.Task] = None
+# Nettoyages en cours : une référence les garde en vie jusqu'à leur fin.
+_CLEANUPS: set = set()
 
 
-async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False) -> dict:
+async def _docker_quiet(*args: str) -> tuple[int, bytes]:
+    """Commande docker bornée dans le temps ; (-1, b"") si elle échoue ou dépasse le délai."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except Exception:
+        return -1, b""
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=DOCKER_CLEANUP_TIMEOUT)
+    except BaseException as error:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        return -1, b""
+    return proc.returncode, out
+
+
+async def _kill_container(name: str) -> bool:
+    """Force-kill et supprime un conteneur Docker par son nom. Rend True si Docker confirme sa disparition.
+
+    `--rm` fait retirer le conteneur par Docker après `kill` : le retrait peut
+    encore être en cours au premier contrôle, d'où quelques contrôles espacés.
+    """
+    await _docker_quiet("kill", name)
+    await _docker_quiet("rm", "-f", name)
+    for attempt in range(CLEANUP_CHECKS):
+        code, out = await _docker_quiet("ps", "-aq", "--filter", f"name=^{name}$")
+        if code == 0 and not out.split():
+            return True
+        if attempt + 1 < CLEANUP_CHECKS:
+            await asyncio.sleep(CLEANUP_CHECK_INTERVAL)
+            await _docker_quiet("rm", "-f", name)
+    return False
+
+
+async def _retry_unremoved() -> None:
+    """Retente le retrait des conteneurs d'appel restés en place, jusqu'à ce qu'il n'en reste aucun."""
+    while _UNREMOVED:
+        await asyncio.sleep(CLEANUP_RETRY_INTERVAL)
+        for name in sorted(_UNREMOVED):
+            if await _kill_container(name):
+                _UNREMOVED.discard(name)
+                record_activity("sandbox.cleanup_recovered", message="Sandbox retirée après nouvelle tentative",
+                                details={"sandbox_id": name})
+
+
+def _remember_unremoved(name: str) -> None:
+    global _RETRY_TASK
+    _UNREMOVED.add(name)
+    loop = asyncio.get_running_loop()
+    if _RETRY_TASK is None or _RETRY_TASK.done() or _RETRY_TASK.get_loop() is not loop:
+        _RETRY_TASK = loop.create_task(_retry_unremoved(), context=contextvars.Context())
+
+
+def _start_cleanup(process, container_name: str, cleanups: Optional[list], workspace=None) -> asyncio.Task:
+    """Arrête le client docker run et retire le conteneur, dans une tâche à part.
+
+    Une annulation MCP annule l'appel à chaque attente : un nettoyage attendu
+    dans l'appel ne passerait jamais sa première commande docker. La tâche à
+    part va au bout, chaque commande bornée par DOCKER_CLEANUP_TIMEOUT.
+    `workspace` : l'espace monté par l'appel n'est plus remis jusqu'au rappel
+    de fin d'appel, qui décompte ce nettoyage.
+    """
+    if workspace is not None:
+        workspace.cleaning += 1
+    async def cleanup() -> bool:
+        # process vaut None si l'annulation a interrompu son lancement : le
+        # conteneur a pu démarrer quand même, son nom suffit à le retirer.
+        if process is not None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=DOCKER_CLEANUP_TIMEOUT)
+            except Exception:
+                pass
+        gone = await _kill_container(container_name)
+        if not gone:
+            record_activity("sandbox.cleanup_failed", level="error", message="Sandbox non retirée après arrêt",
+                            details={"sandbox_id": container_name})
+            _remember_unremoved(container_name)
+        return gone
+
+    task = asyncio.get_running_loop().create_task(cleanup())
+    _CLEANUPS.add(task)
+    task.add_done_callback(_CLEANUPS.discard)
+    if cleanups is not None:
+        cleanups.append(task)
+    return task
+
+
+def _cleanups_succeeded(done) -> bool:
+    try:
+        return all(result is True for result in done.result())
+    except BaseException:
+        return False
+
+
+def _cleanups_succeeded_now(cleanups: list) -> bool:
+    """Nettoyages déjà terminés (délai dépassé : attendus) et tous confirmés."""
+    try:
+        return all(task.done() and task.result() is True for task in cleanups)
+    except BaseException:
+        return False
+
+
+class _Cleanups(list):
+    """Nettoyages lancés par un appel.
+
+    `holder_seen` : après leur fin confirmée, un inventaire a vu le maintien.
+    Sans cet inventaire, le retrait du conteneur d'appel a pu emporter les
+    fichiers d'un maintien arrêté pendant l'appel : l'espace n'est pas annoncé.
+    """
+    holder_seen = False
+
+
+def _shown_lease(lease, cleanups: list):
+    """Espace annoncé dans la réponse : jamais promis s'il est retiré ou si son nettoyage reste incertain."""
+    if lease is None or lease.workspace is None:
+        return lease
+    if lease.workspace.holder_lost:
+        # Perte confirmée : plus précise qu'un nettoyage en cours.
+        return shell_workspace.Lease(None, reason="lost")
+    settled = 0
+    if cleanups:
+        if not all(task.done() for task in cleanups):
+            return shell_workspace.Lease(None, reason="cleanup_pending")
+        if not _cleanups_succeeded_now(cleanups):
+            # Le rappel de fin d'appel va retirer cet espace.
+            return shell_workspace.Lease(None, reason="orphaned")
+        if getattr(cleanups, "holder_seen", False):
+            # Confirmés, maintien vu ensuite : encore comptés dans `cleaning`
+            # jusqu'au rappel de fin d'appel, ils ne retiennent plus l'annonce.
+            settled = len(cleanups)
+    return shell_workspace.registry.view(lease, get_settings(), settled=settled)
+
+
+async def _end_inventory(container_name: str, workspace) -> tuple[int, list]:
+    """Inventaire du conteneur d'appel et du maintien, en marche ou en pause (#72).
+
+    Deux filtres name se cumulent en « ou », de même deux filtres status. Un
+    conteneur en pause monte encore son volume. Une absence du maintien
+    confirmée par un inventaire réussi pose `holder_lost` : le conteneur d'appel
+    était le dernier à monter le volume, ses fichiers disparaissent avec lui.
+    Un inventaire en échec ne déclare rien perdu.
+    """
+    code, out = await _docker_quiet("ps", "--format", "{{.Names}}",
+                                    "--filter", f"name=^{container_name}$",
+                                    "--filter", f"name=^{workspace.holder}$",
+                                    "--filter", "status=running", "--filter", "status=paused")
+    present = out.decode(errors="replace").split() if code == 0 else []
+    if code == 0 and workspace.holder not in present:
+        workspace.holder_lost = True
+        record_activity("shell.workspace.holder_lost", level="warning",
+                        message="Conteneur de maintien arrêté pendant l'appel : fichiers perdus",
+                        details={"workspace": shell_workspace.fingerprint(workspace.key)})
+    return code, present
+
+
+def _end_cleanups(lease, count: int, done) -> None:
+    """Rappel de fin des nettoyages : décompte, puis rend la réservation, avant tout autre tour de boucle."""
+    if lease.workspace is not None:
+        lease.workspace.cleaning -= count
+    shell_workspace.registry.release(lease, orphaned=not _cleanups_succeeded(done))
+
+
+async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, network: bool = False,
+                          workspace_args: Optional[list] = None, cleanups: Optional[list] = None,
+                          workspace=None) -> dict:
     """Exécute la commande dans un conteneur Docker éphémère isolé.
-    
+
     Si network=True, le conteneur a accès au réseau (--network=bridge + DNS).
     Sinon, isolation totale (--network=none).
+    Si workspace_args est fourni, le volume de session qu'il monte remplace le tmpfs de /tmp (#72).
+    Après un délai dépassé ou une annulation, la tâche de nettoyage est ajoutée à `cleanups`.
     """
     exec_flag = SHELL_EXEC_FLAGS.get(shell, "-c")
     container_name = f"sandbox-{uuid.uuid4().hex[:12]}"
@@ -125,7 +366,8 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     # - pids-limit relevé (pip spawne des sous-processus)
     if network:
         tmpfs_size = "256m"
-        tmpfs_opts = f"nosuid,nodev,size={tmpfs_size}"  # pas de noexec (pip en a besoin)
+        # Sans exec explicite, Docker ajoute noexec à --tmpfs : /tmp reste non exécutable (#72).
+        tmpfs_opts = f"nosuid,nodev,size={tmpfs_size}"
         pids_limit = 50
     else:
         tmpfs_size = settings.sandbox_tmpfs_size
@@ -140,8 +382,11 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         f"--pids-limit={pids_limit}",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
-        f"--tmpfs=/tmp:{tmpfs_opts}",
     ])
+    if workspace_args:
+        docker_cmd.extend(workspace_args)
+    else:
+        docker_cmd.append(f"--tmpfs=/tmp:{tmpfs_opts}")
 
     # Variables d'environnement pour compatibilité packages Python
     # OPENBLAS_NUM_THREADS=1 évite que numpy/scipy spawne trop de threads (pids-limit)
@@ -161,40 +406,71 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
     docker_cmd.extend([
         "--user=sandbox:sandbox",
         settings.sandbox_image,
-        shell, exec_flag, command,
     ])
+    if workspace_args:
+        docker_cmd.extend(shell_workspace.confined_command(shell, exec_flag, command))
+    else:
+        docker_cmd.extend([shell, exec_flag, command])
 
     record_activity("sandbox.starting", message="Création de la sandbox", details={"sandbox_id": container_name, "network": network, "timeout": timeout})
-    process = await asyncio.create_subprocess_exec(
-        *docker_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
-
+    process = None
     try:
+        # Lancement sous la même garde que l'attente : une annulation pendant
+        # create_subprocess_exec peut survenir après le démarrage du conteneur.
+        process = await asyncio.create_subprocess_exec(
+            *docker_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        record_activity("sandbox.started", message="Sandbox démarrée", details={"sandbox_id": container_name})
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
-        # Tuer le process docker run ET le conteneur Docker
-        try:
-            process.kill()
-            await process.wait()
-        except Exception:
-            pass
-        await _kill_container(container_name)
+        # Tuer le process docker run ET le conteneur Docker. La réponse attend au plus
+        # CLEANUP_RESPONSE_WAIT : sur un Docker lent, le nettoyage continue après elle.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLEANUP_RESPONSE_WAIT
+        cleanup = _start_cleanup(process, container_name, cleanups, workspace)
+        await asyncio.wait({cleanup}, timeout=CLEANUP_RESPONSE_WAIT)
+        if workspace is not None and cleanups is not None and _cleanups_succeeded_now([cleanup]):
+            # Conteneur d'appel retiré : s'il était le dernier à monter le volume,
+            # les fichiers sont perdus. L'espace n'est annoncé que si l'inventaire,
+            # dans la même attente, voit encore le maintien.
+            try:
+                code, present = await asyncio.wait_for(_end_inventory(container_name, workspace),
+                                                       max(0.0, deadline - loop.time()))
+            except asyncio.TimeoutError:
+                code, present = -1, []
+            if code == 0 and workspace.holder in present and container_name not in present:
+                cleanups.holder_seen = True
         raise  # Re-raise pour que l'appelant gère le message d'erreur
     except asyncio.CancelledError:
         # Le SDK v2 propage l'annulation du client : docker run ne doit pas
         # survivre au call MCP abandonné.
-        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée et nettoyée", details={"sandbox_id": container_name})
-        try:
-            process.kill()
-            await process.wait()
-        except Exception:
-            pass
-        await _kill_container(container_name)
+        record_activity("sandbox.cancelled", level="warning", message="Sandbox annulée, nettoyage lancé", details={"sandbox_id": container_name})
+        # Pas d'attente ici : l'annulation interromprait le nettoyage (#72).
+        _start_cleanup(process, container_name, cleanups, workspace)
         raise
+    except Exception:
+        # Client docker run en échec (transport, E/S) : le conteneur a pu rester en marche.
+        if process is not None:
+            _start_cleanup(process, container_name, cleanups, workspace)
+        raise
+
+    if workspace is not None:
+        # Le client docker run peut se terminer en laissant le conteneur en marche
+        # (connexion au démon perdue). L'espace n'est rendu qu'une fois ce conteneur arrêté.
+        try:
+            code, running = await _end_inventory(container_name, workspace)
+        except asyncio.CancelledError:
+            # Annulé pendant le contrôle : l'état du conteneur reste inconnu, il est retiré.
+            _start_cleanup(process, container_name, cleanups, workspace)
+            raise
+        if code != 0 or container_name in running:
+            record_activity("sandbox.still_running", level="warning",
+                            message="Sandbox encore en marche après la fin du client, nettoyage lancé",
+                            details={"sandbox_id": container_name})
+            _start_cleanup(process, container_name, cleanups, workspace)
 
     max_chars = settings.tool_max_output_chars
     record_activity("sandbox.completed", level="error" if process.returncode else "info", message="Sandbox terminée", details={"sandbox_id": container_name, "returncode": process.returncode})
@@ -243,18 +519,21 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool()
     @traced_tool("shell")
     async def shell(
-        command: Annotated[str, Field(description="Commande complète. En mode sandbox, elle s'exécute dans un conteneur neuf : mettre dans une seule commande les étapes qui dépendent les unes des autres (&&, ;, script multiligne), car un fichier créé ou un cd fait par un appel précédent n'existe plus.")],
+        command: Annotated[str, Field(description="Commande complète. En mode sandbox, chaque appel démarre dans un conteneur neuf : le répertoire courant et les variables ne passent pas à l'appel suivant ; les fichiers sous /tmp peuvent être conservés pour la même session MCP, seulement si le champ workspace de la réponse indique persistent=true. Mettre dans une seule commande les étapes qui dépendent d'un cd ou d'une variable (&&, ;, script multiligne).")],
         shell: Annotated[str, Field(default="bash", description="Shell à utiliser : bash, sh, python3 ou node")] = "bash",
-        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel, un répertoire créé par un appel précédent n'existe donc plus. Écrire cd <répertoire> && ... dans command, dans le même appel que la création du répertoire.")] = None,
+        cwd: Annotated[Optional[str], Field(default=None, description="Ignoré en sandbox : le conteneur est neuf à chaque appel et démarre dans le répertoire par défaut. Écrire cd <répertoire> && ... dans command ; un répertoire créé par un appel précédent n'existe que s'il est sous /tmp, dans la même session MCP, et si workspace.persistent valait true pour ces appels.")] = None,
         timeout: Annotated[int, Field(default=30, description="Timeout en secondes (max selon config serveur)")] = 30,
-        network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau et noexec de /tmp. Défaut: false (isolé, sans réseau)")] = False,
+        network: Annotated[bool, Field(default=False, description="⚠️ ÉLÉVATION DE PRIVILÈGE : active l'accès réseau (pour pip install, curl, wget). Retire l'isolation réseau ; /tmp reste non exécutable. Défaut: false (isolé, sans réseau)")] = False,
         ctx: Optional[Context] = None,
     ) -> dict:
-        """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
+        """Exécute une commande dans une sandbox : en mode sandbox, celui des déploiements, chaque appel démarre dans un conteneur neuf et isolé, détruit à la fin de l'appel (sans réseau par défaut, mémoire limitée, non-root). Shells disponibles : bash, sh, python3, node.
 
-        En mode sandbox, aucun état ne passe d'un appel au suivant : fichiers téléchargés ou créés, répertoire courant, variables et paquets installés disparaissent. Enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour réutiliser un résultat plus tard, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
+        En mode sandbox, si le serveur l'active, les fichiers écrits sous /tmp sont conservés entre les appels de la même session MCP (le même worker), dans une limite de taille, d'inactivité et de durée ; seul le champ workspace de la réponse le confirme et donne ces limites. Si la capacité des espaces du serveur est atteinte, la commande n'est pas exécutée : la réponse est une erreur avec workspace.reason=capacity, réessayer plus tard. Si le serveur ne peut pas créer l'espace pour une autre raison, workspace.persistent vaut false et /tmp est éphémère pour cet appel. Rien d'autre ne passe d'un appel au suivant : répertoire courant, variables, processus et paquets installés disparaissent, donc utiliser des chemins absolus sous /tmp. Rien ne passe à une autre session, donc à une autre étape ou un autre worker. Sans espace persistant (champ workspace absent ou persistent=false), enchaîner les étapes dépendantes dans une seule commande, par exemple curl -LO URL && tar xzf a.tar.gz && cd a && make. Pour transmettre un résultat à une autre étape, l'afficher sur stdout ou l'écrire avec l'outil files. Seul /tmp est inscriptible, en mémoire, non exécutable (lancer un script par bash script.sh) et de taille limitée ; network=true ajoute ~/.local et ~/.cache."""
         # cwd ignoré : l'indice accompagne aussi un échec après tentative sandbox (timeout).
         cwd_ignored = False
+        lease = None
+        settings = None
+        cleanups = _Cleanups()
         try:
             check_tool_access("shell")
             settings = get_settings()
@@ -269,18 +548,56 @@ def register(mcp: MCPServer) -> None:
                 cwd_ignored = bool(cwd)
                 if cwd:
                     print(f"[shell] WARN: cwd ignoré en mode sandbox (pas de montage volume)", file=sys.stderr)
-                result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
-                hint = _stateless_hint(result, cwd)
+                # Purge des espaces d'un processus précédent, même sans session ni espace (#72).
+                shell_workspace.registry.prepare(settings)
+                # Espace de session (#72) : clé tirée de la requête, jamais des arguments.
+                # Sans session MCP, ou espaces désactivés, /tmp reste éphémère comme avant.
+                key = shell_workspace.key_from_context(ctx)
+                if key is not None and settings.shell_workspace_max_count > 0:
+                    lease = await shell_workspace.registry.acquire(key, settings)
+                if lease is not None and lease.reason == "capacity" and lease.workspace is None:
+                    # Décision Root (#72) : capacité pleine = refus explicite, pas de /tmp
+                    # éphémère silencieux. La commande ne démarre pas.
+                    return {"status": "error", "message": CAPACITY_MESSAGE, "hint": CAPACITY_HINT,
+                            "workspace": {**lease.public(settings),
+                                          "idle_seconds": settings.shell_workspace_idle_seconds}}
+                if lease is not None and lease.workspace is not None:
+                    result = await _run_in_sandbox(
+                        command, shell, timeout, settings, network=network,
+                        workspace_args=shell_workspace.call_args(lease.workspace, settings), cleanups=cleanups,
+                        workspace=lease.workspace)
+                else:
+                    result = await _run_in_sandbox(command, shell, timeout, settings, network=network)
+                shown = _shown_lease(lease, cleanups)
+                hint = _stateless_hint(result, cwd, shown)
                 if hint:
                     result["hint"] = hint
+                if shown is not None:
+                    result["workspace"] = shown.public(settings)
             else:
                 result = await _run_local(command, shell, cwd, timeout, settings)
 
             return result
 
         except asyncio.TimeoutError:
-            return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."}, cwd_ignored)
+            return _with_cwd_hint({"status": "error", "message": f"Timeout de {timeout}s dépassé."},
+                                  cwd_ignored, _shown_lease(lease, cleanups), settings)
         except FileNotFoundError:
-            return {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
+            response = {"status": "error", "message": "Docker CLI non trouvé. Vérifiez que le binaire docker est installé et que docker.sock est monté."}
+            if lease is not None:
+                # La commande n'a pas démarré : pas d'indice sur cwd.
+                response = _with_cwd_hint(response, False, _shown_lease(lease, cleanups), settings)
+            return response
         except Exception as e:
-            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored)
+            return _with_cwd_hint({"status": "error", "message": str(e)}, cwd_ignored,
+                                  _shown_lease(lease, cleanups), settings)
+        finally:
+            if lease is not None:
+                if cleanups:
+                    # Le conteneur d'appel peut encore monter l'espace : la
+                    # réservation tient jusqu'à la fin de son retrait. Un retrait
+                    # non confirmé retire l'espace, compté jusqu'à son démontage.
+                    asyncio.gather(*cleanups, return_exceptions=True).add_done_callback(
+                        lambda done, lease=lease, n=len(cleanups): _end_cleanups(lease, n, done))
+                else:
+                    shell_workspace.registry.release(lease)
