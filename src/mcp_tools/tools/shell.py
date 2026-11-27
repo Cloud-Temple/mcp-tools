@@ -97,7 +97,7 @@ def _ephemeral_hint(reason: Optional[str]) -> str:
     if reason in RETIRED_REASONS or reason in ("failed",):
         cause = RETIRED_REASONS.get(reason, "création interrompue")
         return (f"L'espace /tmp de cette session n'est plus conservé ({cause}) : les fichiers écrits sous /tmp "
-                "ne seront pas disponibles à l'appel suivant ; le champ workspace de cet appel dira "
+                "ne seront pas disponibles à l'appel suivant ; le champ workspace de l'appel suivant dira "
                 "s'il reçoit un espace neuf. Enchaîner les étapes dépendantes dans une seule commande, "
                 "ou conserver le résultat avec l'outil files.")
     cause = EPHEMERAL_REASONS.get(reason or "", "indisponible")
@@ -273,18 +273,57 @@ def _cleanups_succeeded_now(cleanups: list) -> bool:
         return False
 
 
+class _Cleanups(list):
+    """Nettoyages lancés par un appel.
+
+    `holder_seen` : après leur fin confirmée, un inventaire a vu le maintien.
+    Sans cet inventaire, le retrait du conteneur d'appel a pu emporter les
+    fichiers d'un maintien arrêté pendant l'appel : l'espace n'est pas annoncé.
+    """
+    holder_seen = False
+
+
 def _shown_lease(lease, cleanups: list):
     """Espace annoncé dans la réponse : jamais promis s'il est retiré ou si son nettoyage reste incertain."""
     if lease is None or lease.workspace is None:
         return lease
+    if lease.workspace.holder_lost:
+        # Perte confirmée : plus précise qu'un nettoyage en cours.
+        return shell_workspace.Lease(None, reason="lost")
+    settled = 0
     if cleanups:
         if not all(task.done() for task in cleanups):
             return shell_workspace.Lease(None, reason="cleanup_pending")
         if not _cleanups_succeeded_now(cleanups):
             # Le rappel de fin d'appel va retirer cet espace.
             return shell_workspace.Lease(None, reason="orphaned")
-    # Les nettoyages de cet appel, tous confirmés, sont encore comptés dans `cleaning`.
-    return shell_workspace.registry.view(lease, get_settings(), settled=len(cleanups))
+        if getattr(cleanups, "holder_seen", False):
+            # Confirmés, maintien vu ensuite : encore comptés dans `cleaning`
+            # jusqu'au rappel de fin d'appel, ils ne retiennent plus l'annonce.
+            settled = len(cleanups)
+    return shell_workspace.registry.view(lease, get_settings(), settled=settled)
+
+
+async def _end_inventory(container_name: str, workspace) -> tuple[int, list]:
+    """Inventaire du conteneur d'appel et du maintien, en marche ou en pause (#72).
+
+    Deux filtres name se cumulent en « ou », de même deux filtres status. Un
+    conteneur en pause monte encore son volume. Une absence du maintien
+    confirmée par un inventaire réussi pose `holder_lost` : le conteneur d'appel
+    était le dernier à monter le volume, ses fichiers disparaissent avec lui.
+    Un inventaire en échec ne déclare rien perdu.
+    """
+    code, out = await _docker_quiet("ps", "--format", "{{.Names}}",
+                                    "--filter", f"name=^{container_name}$",
+                                    "--filter", f"name=^{workspace.holder}$",
+                                    "--filter", "status=running", "--filter", "status=paused")
+    present = out.decode(errors="replace").split() if code == 0 else []
+    if code == 0 and workspace.holder not in present:
+        workspace.holder_lost = True
+        record_activity("shell.workspace.holder_lost", level="warning",
+                        message="Conteneur de maintien arrêté pendant l'appel : fichiers perdus",
+                        details={"workspace": shell_workspace.fingerprint(workspace.key)})
+    return code, present
 
 
 def _end_cleanups(lease, count: int, done) -> None:
@@ -389,8 +428,21 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         record_activity("sandbox.timeout", level="warning", message="Délai de sandbox dépassé", details={"sandbox_id": container_name, "timeout": timeout})
         # Tuer le process docker run ET le conteneur Docker. La réponse attend au plus
         # CLEANUP_RESPONSE_WAIT : sur un Docker lent, le nettoyage continue après elle.
-        await asyncio.wait({_start_cleanup(process, container_name, cleanups, workspace)},
-                           timeout=CLEANUP_RESPONSE_WAIT)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLEANUP_RESPONSE_WAIT
+        cleanup = _start_cleanup(process, container_name, cleanups, workspace)
+        await asyncio.wait({cleanup}, timeout=CLEANUP_RESPONSE_WAIT)
+        if workspace is not None and cleanups is not None and _cleanups_succeeded_now([cleanup]):
+            # Conteneur d'appel retiré : s'il était le dernier à monter le volume,
+            # les fichiers sont perdus. L'espace n'est annoncé que si l'inventaire,
+            # dans la même attente, voit encore le maintien.
+            try:
+                code, present = await asyncio.wait_for(_end_inventory(container_name, workspace),
+                                                       max(0.0, deadline - loop.time()))
+            except asyncio.TimeoutError:
+                code, present = -1, []
+            if code == 0 and workspace.holder in present and container_name not in present:
+                cleanups.holder_seen = True
         raise  # Re-raise pour que l'appelant gère le message d'erreur
     except asyncio.CancelledError:
         # Le SDK v2 propage l'annulation du client : docker run ne doit pas
@@ -409,24 +461,11 @@ async def _run_in_sandbox(command: str, shell: str, timeout: int, settings, netw
         # Le client docker run peut se terminer en laissant le conteneur en marche
         # (connexion au démon perdue). L'espace n'est rendu qu'une fois ce conteneur arrêté.
         try:
-            # Un seul inventaire pour le conteneur d'appel et le maintien : deux filtres
-            # name se cumulent en « ou ».
-            code, out = await _docker_quiet("ps", "--format", "{{.Names}}",
-                                            "--filter", f"name=^{container_name}$",
-                                            "--filter", f"name=^{workspace.holder}$",
-                                            "--filter", "status=running")
+            code, running = await _end_inventory(container_name, workspace)
         except asyncio.CancelledError:
             # Annulé pendant le contrôle : l'état du conteneur reste inconnu, il est retiré.
             _start_cleanup(process, container_name, cleanups, workspace)
             raise
-        running = out.decode(errors="replace").split() if code == 0 else []
-        if code == 0 and workspace.holder not in running:
-            # Maintien arrêté pendant l'appel : le conteneur d'appel était le dernier
-            # à monter le volume, ses fichiers disparaissent avec lui.
-            workspace.holder_lost = True
-            record_activity("shell.workspace.holder_lost", level="warning",
-                            message="Conteneur de maintien arrêté pendant l'appel : fichiers perdus",
-                            details={"workspace": shell_workspace.fingerprint(workspace.key)})
         if code != 0 or container_name in running:
             record_activity("sandbox.still_running", level="warning",
                             message="Sandbox encore en marche après la fin du client, nettoyage lancé",
@@ -494,7 +533,7 @@ def register(mcp: MCPServer) -> None:
         cwd_ignored = False
         lease = None
         settings = None
-        cleanups: list = []
+        cleanups = _Cleanups()
         try:
             check_tool_access("shell")
             settings = get_settings()

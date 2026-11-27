@@ -50,7 +50,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   conteneur en marche, ce conteneur est retiré avant de rendre l'espace (#72).
 - `shell` : un contrôle Docker sans réponse sûre ne détruit plus l'espace
   d'une session ; seul un arrêt ou une absence confirmés du conteneur de
-  maintien le font (#72).
+  maintien le font. Un maintien en pause compte comme présent. S'il s'arrête
+  pendant un appel, la réponse de cet appel annonce `reason: lost`, y compris
+  après un délai dépassé, et l'espace n'est plus remis (#72).
 - Une session MCP est liée au jeton qui l'a ouverte : un autre jeton qui
   présente son identifiant reçoit 404 du SDK, avant tout routage. Auparavant,
   deux jetons valides pouvaient partager le transport d'une session (#72).

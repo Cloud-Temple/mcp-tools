@@ -143,6 +143,10 @@ class FakeDocker:
         self.leave_running = False
         # Le client docker run échoue en E/S pendant l'appel, conteneur en marche.
         self.client_error = False
+        # Conteneurs en pause : présents, volume monté, State.Running vaut true.
+        self.paused = set()
+        # Avec leave_running : le conteneur d'appel resté en marche est en pause.
+        self.pause_calls = False
 
     def mounted(self):
         return {mounted_volume(args) for args in self.holders.values()} | set(self.running.values())
@@ -192,6 +196,8 @@ class FakeDocker:
                 return BrokenClient()
             if self.leave_running:
                 self.running[option(args, "--name=")] = mounted_volume(args)
+                if self.pause_calls:
+                    self.paused.add(option(args, "--name="))
                 return FakeProcess(0, b"ok\n", b"")
             if "call" in self.gate:
                 # Le conteneur tourne tant que la porte reste fermée, même si son client est arrêté.
@@ -211,6 +217,7 @@ class FakeDocker:
             for name in args[2:]:
                 self.holders.pop(name, None)
                 self.running.pop(name, None)
+                self.paused.discard(name)
                 if name in self.leftover_containers:
                     self.leftover_containers.remove(name)
             return FakeProcess(0)
@@ -221,6 +228,10 @@ class FakeDocker:
             if names:
                 # Comme Docker : plusieurs filtres name se cumulent en « ou ».
                 present = [n for n in names if n in self.running or n in self.holders]
+                statuses = [a[len("status="):] for a in args if a.startswith("status=")]
+                if statuses:
+                    # Plusieurs filtres status se cumulent aussi en « ou ».
+                    present = [n for n in present if ("paused" if n in self.paused else "running") in statuses]
                 return FakeProcess(0, "".join(n + "\n" for n in present).encode())
             volume = next((a[len("volume="):] for a in args if a.startswith("volume=")), None)
             if volume is not None:
@@ -231,6 +242,7 @@ class FakeDocker:
             if "kill" in self.fail:
                 return FakeProcess(1)
             self.running.pop(args[1], None)
+            self.paused.discard(args[1])
             return FakeProcess(0)
         raise AssertionError(f"commande docker inattendue : {args}")
 
@@ -1354,7 +1366,10 @@ def test_call_finishing_after_max_age_does_not_promise_the_workspace(docker, reg
 
 def test_hints_never_promise_what_the_server_has_not_established(docker, registry, settings, monkeypatch):
     retired = shell._ephemeral_hint("orphaned")
-    assert "indiquera un espace neuf" not in retired and "dira s'il reçoit un espace neuf" in retired
+    assert "indiquera un espace neuf" not in retired
+    # Cet appel a déjà son champ workspace, sans espace : seul l'appel suivant peut en recevoir un.
+    assert "le champ workspace de l'appel suivant dira s'il reçoit un espace neuf" in retired
+    assert "de cet appel dira" not in retired
     pending = shell._ephemeral_hint("cleanup_pending")
     assert "détruit à la fin de l'appel" not in pending and "pas encore confirmé" in pending
     docker.fail.add("volume create")
@@ -1471,6 +1486,197 @@ def test_timeout_response_does_not_wait_for_a_slow_cleanup(docker, registry, set
     assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
     assert reserved == [1]
     assert registry.live()[0].active == 0 and docker.running == {}
+
+
+def test_timeout_after_holder_loss_does_not_announce_the_workspace(docker, registry, settings):
+    """Délai dépassé, maintien arrêté pendant l'appel, retrait confirmé : les fichiers ont disparu."""
+    function = handler()
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        call = asyncio.ensure_future(invoke(function, "sleep 600", timeout=1))
+        while not docker.running:
+            await asyncio.sleep(0)
+        old = registry.live()[0].volume
+        docker.holders.clear()
+        result = await call
+        docker.gate.pop("call").set()
+        await _settle(docker, registry)
+        after = await invoke(function)
+        return old, result, after
+    old, result, after = scenario(registry, body)
+    assert result["message"].startswith("Timeout")
+    assert result["workspace"] == {"persistent": False, "reason": "lost"}
+    assert after["workspace"]["new"] is True and after["workspace"]["reason"] == "lost"
+    assert mounted_volume(docker.calls[-1]) != old
+
+
+def test_timeout_with_uncertain_inventory_does_not_announce_the_workspace(docker, registry, settings, monkeypatch):
+    """Retrait confirmé, inventaire du maintien en échec : rien ne prouve que les fichiers restent."""
+    function = handler()
+    real_inventory = shell._end_inventory
+    failing = {"on": True}
+
+    async def inventory(container_name, workspace):
+        if failing["on"]:
+            return -1, []
+        return await real_inventory(container_name, workspace)
+    monkeypatch.setattr(shell, "_end_inventory", inventory)
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        result = await invoke(function, "sleep 600", timeout=1)
+        lost = registry.live()[0].holder_lost
+        failing["on"] = False
+        docker.gate.pop("call").set()
+        await _settle(docker, registry)
+        after = await invoke(function)
+        return result, lost, after
+    result, lost, after = scenario(registry, body)
+    assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    assert lost is False
+    assert after["workspace"]["persistent"] is True and after["workspace"]["new"] is False
+    assert mounted_volume(docker.calls[0]) == mounted_volume(docker.calls[1])
+
+
+def test_timeout_inventory_stays_within_the_response_wait(docker, registry, settings, monkeypatch):
+    """L'inventaire du maintien partage la borne de CLEANUP_RESPONSE_WAIT avec le retrait."""
+    monkeypatch.setattr(shell, "CLEANUP_RESPONSE_WAIT", 0.2)
+    function = handler()
+    stuck = asyncio.Event()
+
+    async def slow_inventory(container_name, workspace):
+        await stuck.wait()
+        return 0, [workspace.holder]
+    monkeypatch.setattr(shell, "_end_inventory", slow_inventory)
+    docker.gate["call"] = asyncio.Event()
+
+    async def body():
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        try:
+            result = await asyncio.wait_for(invoke(function, "sleep 600", timeout=1), 5)
+        except asyncio.TimeoutError:
+            result = None
+        elapsed = loop.time() - start
+        stuck.set()
+        docker.gate.pop("call").set()
+        await _settle(docker, registry)
+        return result, elapsed
+    result, elapsed = scenario(registry, body)
+    assert result is not None and elapsed < 3
+    assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+
+
+def test_paused_holder_is_not_declared_lost(docker, registry, settings):
+    """Un maintien en pause monte encore le volume : ni perte annoncée, ni espace remplacé."""
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        workspace = registry.live()[0]
+        docker.paused.add(workspace.holder)
+        during = await invoke(function)
+        lost = workspace.holder_lost
+        docker.paused.clear()
+        after = await invoke(function)
+        return during, lost, after
+    during, lost, after = scenario(registry, body)
+    assert lost is False
+    assert during["workspace"]["persistent"] is True and during["workspace"]["new"] is False
+    assert after["workspace"]["persistent"] is True and after["workspace"]["new"] is False
+    assert len({mounted_volume(c) for c in docker.calls}) == 1
+
+
+def test_paused_call_container_is_still_removed(docker, registry, settings):
+    """Un conteneur d'appel en pause monte encore l'espace : il est retiré avant de rendre la réservation."""
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        docker.leave_running = True
+        docker.pause_calls = True
+        docker.gate["kill"] = asyncio.Event()
+        result = await invoke(function)
+        held = [(w.active, w.cleaning) for w in registry.live()]
+        docker.leave_running = docker.pause_calls = False
+        docker.gate.pop("kill").set()
+        await _settle(docker, registry)
+        return result, held
+    result, held = scenario(registry, body)
+    assert result["workspace"] == {"persistent": False, "reason": "cleanup_pending"}
+    assert held == [(1, 1)]
+    name = option(docker.calls[1], "--name=")
+    assert ["kill", name] in docker.commands and docker.running == {}
+
+
+def test_end_check_seeing_only_the_call_container_holds_the_reservation(docker, registry, settings, monkeypatch):
+    """Maintien arrêté, conteneur d'appel encore en marche : perte annoncée, retrait avant la remise."""
+    function = handler()
+    real_run = shell._run_in_sandbox
+
+    async def run_while_holder_stops(*args, **kwargs):
+        docker.holders.clear()
+        return await real_run(*args, **kwargs)
+
+    async def body():
+        await invoke(function)
+        docker.leave_running = True
+        docker.gate["kill"] = asyncio.Event()
+        monkeypatch.setattr(shell, "_run_in_sandbox", run_while_holder_stops)
+        result = await invoke(function)
+        held = [(w.active, w.cleaning) for w in registry.live()]
+        docker.leave_running = False
+        docker.gate.pop("kill").set()
+        await _settle(docker, registry)
+        return result, held
+    result, held = scenario(registry, body)
+    assert result["workspace"] == {"persistent": False, "reason": "lost"}
+    assert held == [(1, 1)]
+    name = option(docker.calls[1], "--name=")
+    assert ["kill", name] in docker.commands and docker.running == {}
+
+
+@pytest.mark.parametrize("max_count", [16, 1])
+def test_admission_does_not_hand_out_a_workspace_lost_during_its_holder_check(docker, registry, settings,
+                                                                              monkeypatch, max_count):
+    """L'inspect de B voit le maintien en marche ; A confirme sa perte avant que B ne reprenne la main."""
+    settings["value"] = make_settings(shell_workspace_max_count=max_count)
+    function = handler()
+
+    async def body():
+        await invoke(function)
+        old = registry.live()[0].volume
+        docker.gate["call"] = asyncio.Event()
+        first = asyncio.ensure_future(invoke(function, "sleep 600"))
+        while not docker.running:
+            await asyncio.sleep(0)
+        real_check = registry._holder_running
+        read, resume = asyncio.Event(), asyncio.Event()
+
+        async def stale_check(workspace):
+            running = await real_check(workspace)
+            read.set()
+            await resume.wait()
+            return running
+        monkeypatch.setattr(registry, "_holder_running", stale_check)
+        second = asyncio.ensure_future(invoke(function, "echo B"))
+        await read.wait()
+        docker.holders.clear()
+        docker.gate.pop("call").set()
+        a = await first
+        resume.set()
+        b = await second
+        return old, a, b
+    old, a, b = scenario(registry, body)
+    assert a["workspace"] == {"persistent": False, "reason": "lost"}
+    assert all(mounted_volume(c) == old for c in docker.calls[:2])
+    if max_count == 1:
+        assert b["status"] == "error" and b["message"] == shell.CAPACITY_MESSAGE
+        assert len(docker.calls) == 2
+    else:
+        assert b["workspace"]["new"] is True and b["workspace"]["reason"] == "lost"
+        assert len(docker.calls) == 3 and mounted_volume(docker.calls[2]) != old
 
 
 def test_inspect_with_unexpected_output_keeps_the_workspace(docker, registry, settings):
@@ -1631,7 +1837,7 @@ def test_startup_purge_only_targets_this_instance(docker, registry, settings):
     holder = next(iter(docker.holders))
     assert [c for c in docker.commands if c[0] == "ps" and instance not in c] == [
         ["ps", "--format", "{{.Names}}", "--filter", f"name=^{shell_workspace_call_name(docker)}$",
-         "--filter", f"name=^{holder}$", "--filter", "status=running"]]
+         "--filter", f"name=^{holder}$", "--filter", "status=running", "--filter", "status=paused"]]
     assert docker.leftover_containers == [] and docker.leftover_volumes == []
 
 
@@ -1900,6 +2106,34 @@ def test_real_docker_files_persist_in_session_and_stay_isolated(registry, settin
     assert len(names) == 2
     for volume, holder in names:
         assert not docker_exists("volume", volume) and not docker_exists("container", holder)
+
+
+@real_docker
+def test_real_docker_paused_holder_keeps_the_workspace(registry, settings, monkeypatch, clock):
+    """Docker liste un maintien en pause sous status=paused : l'inventaire de fin d'appel le voit présent."""
+    instance = f"t72-{uuid.uuid4().hex[:8]}"
+    settings["value"] = make_settings(sandbox_image=REAL_IMAGE, shell_workspace_instance=instance,
+                                      shell_workspace_size_bytes=8 * MiB)
+
+    async def body(h):
+        sid = await h.open("token-A")
+        write = await h.shell("echo kept > /tmp/f && echo ok", sid=sid)
+        workspace = registry.live()[0]
+        paused = subprocess.run(["docker", "pause", workspace.holder], capture_output=True).returncode
+        during = await h.shell("cat /tmp/f", sid=sid)
+        lost = workspace.holder_lost
+        subprocess.run(["docker", "unpause", workspace.holder], capture_output=True)
+        after = await h.shell("cat /tmp/f", sid=sid)
+        clock.now += 10_000
+        await registry.sweep(settings["value"])
+        await registry.stop()
+        return write, paused, during, lost, after
+    write, paused, during, lost, after = run_http(registry, monkeypatch, body)
+    assert write[1]["stdout"] == "ok\n" and paused == 0
+    assert during[1]["stdout"] == "kept\n" and lost is False
+    assert during[1]["workspace"]["persistent"] is True and during[1]["workspace"]["new"] is False
+    assert after[1]["stdout"] == "kept\n" and after[1]["workspace"]["new"] is False
+    assert registry.live() == []
 
 
 WORST_CASE_WRITER = r"""

@@ -609,10 +609,12 @@ class WorkspaceRegistry:
                 running = None
                 if expired is None:
                     running = await self._holder_running(current)
-                    # L'âge maximal a pu passer pendant le contrôle.
+                    # L'âge maximal a pu passer pendant le contrôle. La fin d'un autre
+                    # appel a pu y confirmer la perte du maintien : un `inspect` lu
+                    # avant ne vaut plus, l'ancien volume n'a plus ses fichiers.
                     now = self._clock()
                     expired = _expired(current, now, settings)
-                    if expired is None and running is False:
+                    if expired is None and (running is False or current.holder_lost):
                         expired = "lost"
                 if self._spaces.get(key) is not current:
                     # Retiré pendant le contrôle du maintien, hors verrou, par
@@ -677,8 +679,6 @@ class WorkspaceRegistry:
             return lease
         if self._spaces.get(workspace.key) is not workspace:
             return Lease(None, reason=workspace.retire_reason or "lost")
-        if workspace.holder_lost:
-            return Lease(None, reason="lost")
         if self._clock() - workspace.created >= settings.shell_workspace_max_age_seconds:
             return Lease(None, reason="expired")
         if workspace.cleaning - settled > 0:
